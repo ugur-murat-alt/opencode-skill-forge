@@ -1,0 +1,9 @@
+{
+  // Optional identity/model overrides for the hidden prompt-editor agent.
+  // Read only when this file sits next to the plugin bundle (dist/).
+  // Model and variant can also be set through `options.promptEditor`; those
+  // options win over this file.
+  "model": null, // "provider/model"; null inherits OpenCode's model resolution
+  "variant": null,
+  "description": "Internal prompt rewriter (prompt engineering for the main agent).",
+}

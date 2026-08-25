@@ -1,0 +1,37 @@
+{
+  "name": "@vaur94/opencode2-skill-forge",
+  "version": "0.5.1",
+  "description": "Independent OpenCode V2 automatic skill evolution plugin, plus an opt-in prompt-editor (prompt engineering) subsystem.",
+  "type": "module",
+  "main": "./dist/plugin.js",
+  "exports": {
+    ".": "./dist/plugin.js"
+  },
+  "license": "MIT",
+  "files": [
+    "dist",
+    "spr-agent.jsonc",
+    "prompt-editor-agent.jsonc",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "bunx oxlint src test",
+    "fmt:check": "bunx prettier --check .",
+    "test": "bun test",
+    "build:plugin": "bash scripts/build-plugin.sh",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build:plugin"
+  },
+  "dependencies": {
+    "@opencode-ai/ai": "0.0.0-next-17203",
+    "@opencode-ai/client": "0.0.0-next-17203",
+    "@opencode-ai/plugin": "0.0.0-next-17203",
+    "jsonc-parser": "^3.3.1",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
