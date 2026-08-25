@@ -102,18 +102,11 @@ export async function setupSprHandoff(
   let stopped = false;
 
   try {
-    const commandRegistration = await runtime.command?.transform((commands) => {
-      commands.update("skill-forge", (command) => {
-        command.description =
-          "Queue a concise background review of the completed workflow";
-        command.template = `[skillforge:curate]
-The user explicitly requests a background skill review of the completed workflow. Their optional curation note is: $ARGUMENTS
-
-Immediately before your brief final answer, call ${SPR_HANDOFF_TOOL} once with only the reusable method and verified constraints. Do not copy the transcript, hidden reasoning, raw tool output, secrets, or the final answer. Do not wait for or report the background result.`;
-      });
-    });
-    const commandDisposable = disposable(commandRegistration);
-    if (commandDisposable) registrations.push(commandDisposable);
+    // Note: runtime.command.transform is intentionally skipped. On OpenCode 2
+    // beta (0.0.0-beta-18155) registering a command during plugin setup wedges
+    // the model catalog ("Model catalog initialization timed out", 5s timeout),
+    // which stalls every session. The handoff tool below is registered through
+    // tool.transform and remains fully functional without the slash command.
 
     const toolRegistration = await runtime.tool.transform((tools) => {
       tools.add({

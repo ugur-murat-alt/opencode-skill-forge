@@ -3435,7 +3435,7 @@ var EDITOR_AGENT_DEFAULTS = {
   description: "Internal prompt rewriter (prompt engineering before the main agent)."
 };
 function parseJsonc(text) {
-  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/,\s*([}\]])/g, "$1");
+  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/[ \t]*\/\/.*$/gm, "").replace(/,\s*([}\]])/g, "$1");
   return JSON.parse(stripped);
 }
 function loadEditorAgentConfig(importMetaUrl) {
@@ -3902,18 +3902,6 @@ async function setupSprHandoff(runtime, activation, allowedAgentIDs) {
   const registrations = [];
   let stopped = false;
   try {
-    const commandRegistration = await runtime.command?.transform((commands) => {
-      commands.update("skill-forge", (command) => {
-        command.description = "Queue a concise background review of the completed workflow";
-        command.template = `[skillforge:curate]
-The user explicitly requests a background skill review of the completed workflow. Their optional curation note is: $ARGUMENTS
-
-Immediately before your brief final answer, call ${SPR_HANDOFF_TOOL} once with only the reusable method and verified constraints. Do not copy the transcript, hidden reasoning, raw tool output, secrets, or the final answer. Do not wait for or report the background result.`;
-      });
-    });
-    const commandDisposable = disposable(commandRegistration);
-    if (commandDisposable)
-      registrations.push(commandDisposable);
     const toolRegistration = await runtime.tool.transform((tools) => {
       tools.add({
         name: SPR_HANDOFF_TOOL,

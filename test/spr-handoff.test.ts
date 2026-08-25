@@ -191,9 +191,8 @@ describe("SPR handoff", () => {
       },
     });
     const runtime = {
-      command: {
-        transform: async () => registration("command"),
-      },
+      // command.transform is intentionally not used: registering a command
+      // during plugin setup wedges the OpenCode 2 model catalog.
       tool: {
         transform: async () => registration("tool"),
       },
@@ -208,6 +207,6 @@ describe("SPR handoff", () => {
     await expect(
       setupSprHandoff(runtime, harness.activation, ["build"]),
     ).rejects.toThrow("hook registration failed");
-    expect(disposed).toEqual(["tool", "command"]);
+    expect(disposed).toEqual(["tool"]);
   });
 });

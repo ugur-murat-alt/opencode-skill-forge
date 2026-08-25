@@ -40400,18 +40400,7 @@ function startEventConsumer(ctx, skills) {
   };
 }
 
-// src/commands.ts
-async function registerCommands(ctx) {
-  await ctx.command.transform((commands2) => {
-    commands2.update("skill-forge", (command) => {
-      command.description = "Turn this completed workflow into a reusable skill, optionally guided by a note";
-      command.template = `[skillforge:curate]
-The user is satisfied with the completed work and explicitly requests a background skill review. Their optional curation note is: $ARGUMENTS
-
-Acknowledge briefly. Do not create or modify skills in this foreground session; the isolated spr reviewer will inspect the completed conversation after this turn.`;
-    });
-  });
-}
+// src/commands.ts (registerCommands removed: ctx.command.transform wedges the model catalog)
 
 // src/skills/v2/command.ts
 var SKILL_FORGE_COMMAND = "skill-forge";
@@ -44280,7 +44269,7 @@ class SkillsSubsystem {
     return (async () => {
       await ctx.agent.transform((agents) => applySprAgent(agents, app.sprAgent));
       await ctx.skill.transform((skills) => registerSkillCreator(skills));
-      await ctx.command.transform((commands2) => registerSkillForgeCommand(commands2));
+      // ctx.command.transform intentionally skipped (see spr-handoff.ts note).
       await registerTools(app);
       await ctx.tool.hook("execute.after", (event) => {
         if (!evolutionGates(app.cfg, this.bootstrap).launchReview || app.host.isReview(event.sessionID))
@@ -44746,7 +44735,8 @@ async function setupPlugin(ctx) {
   const skills = new SkillsSubsystem(ctx, config, { bootstrap: PRODUCTION_BOOTSTRAP_READY });
   await skills.register();
   await registerContextHook(ctx, skills);
-  await registerCommands(ctx);
+  // registerCommands intentionally skipped: ctx.command.transform wedges the
+  // OpenCode 2 model catalog (see spr-handoff.ts note).
   await initFsHelperCapability(import.meta.url);
   await sweepPluginSessions({
     log: (level, message) => console[level === "error" ? "error" : "warn"](`[opencode2-skill-forge] ${message}`)

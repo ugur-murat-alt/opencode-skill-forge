@@ -28,7 +28,9 @@ export const EDITOR_AGENT_DEFAULTS: EditorAgentConfig = {
 function parseJsonc(text: string): unknown {
   const stripped = text
     .replace(/\/\*[\s\S]*?\*\//g, "")
+    // Strip both full-line and trailing (end-of-line) comments.
     .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/[ \t]*\/\/.*$/gm, "")
     .replace(/,\s*([}\]])/g, "$1");
   return JSON.parse(stripped);
 }
