@@ -34,6 +34,8 @@ interface Recorded {
   tools: Array<Record<string, unknown>>;
   contextHooks: number;
   disposed?: string[];
+  sessionCreates?: number;
+  sessionPrompts?: number;
 }
 
 function makeMockCtx(
@@ -53,8 +55,13 @@ function makeMockCtx(
         },
       };
     },
-    create: async (_input) => ({ id: "editor-session-1" }),
-    prompt: async () => undefined,
+    create: async (_input) => {
+      recorded.sessionCreates = (recorded.sessionCreates ?? 0) + 1;
+      return { id: "editor-session-1" };
+    },
+    prompt: async () => {
+      recorded.sessionPrompts = (recorded.sessionPrompts ?? 0) + 1;
+    },
     interrupt: async () => undefined,
     get: async () => ({ location: { directory: "/tmp" } }),
     message: async () => ({ type: "user" }),
@@ -145,6 +152,7 @@ describe("setupPromptEditor wiring", () => {
     expect(agent.mode).toBe("subagent");
     expect(agent.hidden).toBe(true);
     expect(agent.steps).toBe(PROMPT_EDITOR_DEFAULTS.maxSteps);
+    expect(agent.model).toBeUndefined();
     // deny-first permissions must not expose write tools
     const perms = agent.permissions as Array<{
       action: string;
@@ -161,6 +169,8 @@ describe("setupPromptEditor wiring", () => {
     };
     expect(input.required).toEqual(["prompt", "learn"]);
     expect(input.properties.learn.maxLength).toBe(5_000);
+    expect(recorded.sessionCreates ?? 0).toBe(0);
+    expect(recorded.sessionPrompts ?? 0).toBe(0);
     const execute = submitTool.execute as (
       args: Record<string, unknown>,
       context: { sessionID: string },

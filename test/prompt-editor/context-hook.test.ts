@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   lastUserMessage,
   userText,
@@ -19,6 +22,20 @@ import {
 import type { PromptEditorConfig } from "../../src/prompt-editor/config.js";
 import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
 import { EditorRegistry } from "../../src/prompt-editor/runner.js";
+
+let sandbox: string;
+let previousSkillPowerHome: string | undefined;
+beforeAll(() => {
+  sandbox = mkdtempSync(join(tmpdir(), "pe-context-hook-"));
+  previousSkillPowerHome = process.env.OC_SKILL_POWER_HOME;
+  process.env.OC_SKILL_POWER_HOME = sandbox;
+});
+afterAll(() => {
+  if (previousSkillPowerHome === undefined)
+    delete process.env.OC_SKILL_POWER_HOME;
+  else process.env.OC_SKILL_POWER_HOME = previousSkillPowerHome;
+  rmSync(sandbox, { recursive: true, force: true });
+});
 
 const cfg: PromptEditorConfig = {
   ...PROMPT_EDITOR_DEFAULTS,

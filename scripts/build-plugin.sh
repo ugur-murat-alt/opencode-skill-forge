@@ -15,8 +15,8 @@ if [[ ! -f dist/skillforge-core.js ]]; then
 fi
 
 # Ship the agent config beside the bundle.
-cp spr-agent.jsonc dist/ 2>/dev/null || true
-cp prompt-editor-agent.jsonc dist/ 2>/dev/null || true
+cp spr-agent.jsonc dist/
+cp prompt-editor-agent.jsonc dist/
 
 # Keep the preserved core external so rebuilding the wrapper cannot silently
 # replace or rebundle its byte-for-byte runtime artifact.

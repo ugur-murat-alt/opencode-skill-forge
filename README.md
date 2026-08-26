@@ -154,13 +154,13 @@ explicitly chooses the candidate, sends the original, or re-evaluates it.
     "spr": {
       // Optional model override for the SPR reviewer; maps onto the core's
       // reviewModel option and updates the registered agent definition.
-      "model": "opencode/mimo-v2.5-free", // omit to keep the packaged default
+      "model": null, // use the packaged default (currently OpenCode's model)
       "variant": null,
       "allowedAgents": ["general", "plan", "build"],
     },
     "promptEditor": {
       "enabled": true, // opt-in; default false
-      "model": "opencode-go/deepseek-v4-flash", // null -> session model
+      "model": null, // use the packaged default (currently OpenCode's model)
       "variant": null,
       "description": null, // null -> prompt-editor-agent.jsonc/default
       "maxSteps": 30, // editor step budget; range 1..100
@@ -209,13 +209,16 @@ before an item is dropped.
 write-capable tool names are discarded.
 
 The editor agent model, variant, and description can additionally be tuned via
-`prompt-editor-agent.jsonc` next to the plugin bundle; the `options` block wins
-over that file. Its system prompt, hidden subagent mode, and deny-first
-permissions are fixed safety controls.
+`prompt-editor-agent.jsonc` next to the plugin bundle; non-null values in the
+`options` block win over that file. Its system prompt, hidden subagent mode, and
+deny-first permissions are fixed safety controls.
 
-An explicit `spr.model` overrides the packaged `spr-agent.jsonc` model for
-review sessions (the core's `reviewModel` knob) and also updates the
-registered `spr` agent definition; `spr.variant` applies to that definition.
+The shipped agent files default to OpenCode's configured model instead of
+pinning a provider. An explicit non-null `spr.model` overrides the packaged
+`spr-agent.jsonc` model for review sessions (the core's `reviewModel` knob) and
+also updates the registered `spr` agent definition; `spr.variant` applies to
+that definition. A customized agent file or legacy `reviewModel` remains in
+effect when `spr.model` is null or omitted.
 `spr.allowedAgents` controls which agent sessions can submit the bounded
 background handoff. Invalid values fail closed for handoff access.
 

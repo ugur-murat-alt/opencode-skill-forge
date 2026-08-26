@@ -1,6 +1,6 @@
 {
   // Set to "provider/model" to make spr use a fixed model. Null inherits OpenCode's model resolution.
-  "model": "opencode-go/deepseek-v4-flash",
+  "model": null,
   // Applied to either this model or the plugin's skills.reviewModel override.
   "variant": null,
   "description": "Internal skill-library reviewer",

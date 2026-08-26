@@ -2,8 +2,8 @@
   // Optional identity/model overrides for the hidden prompt-editor agent.
   // Read only when this file sits next to the plugin bundle (dist/).
   // Model and variant can also be set through `options.promptEditor`; those
-  // options win over this file.
+  // non-null options win over this file.
   "model": null,
   "variant": null,
-  "description": "Internal prompt rewriter (prompt engineering for the main agent)."
+  "description": "Internal prompt rewriter (prompt engineering for the main agent).",
 }
