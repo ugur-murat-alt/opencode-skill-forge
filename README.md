@@ -104,6 +104,11 @@ explicitly chooses the candidate, sends the original, or re-evaluates it.
   messages, previous three assistant messages, and previous ten tool calls by
   default. Tool names, states, inputs, and outputs are bounded and sanitized;
   reasoning, media, files, and credential material are omitted.
+- **Intent and capability routing.** Every run also receives a compact catalog
+  of the tools actually exposed to the main agent for that request, including
+  one-line runtime descriptions and visible MCP/plugin namespaces inferred from
+  namespaced tools. The editor silently analyzes intent and, when useful, adds
+  a short `Likely tools` suggestion containing only relevant available tools.
 - **Learning.** By default each run returns a lesson (≤5,000 characters) that the
   plugin appends to a **single global** `learn.md`
   (`~/.opencode/.skill-power/prompt-editor/learn.md`, overridable with
@@ -239,7 +244,8 @@ Oversized messages above `maxChars` skip editing immediately by design.
   instructions).
 - Commands (`/…`), messages below `minChars`, and messages above `maxChars`
   are skipped.
-- Tool context and `learn.md` content are treated as data by the editor.
+- Tool context, capability descriptions, and `learn.md` content are treated as
+  data by the editor.
   Credentials are redacted; per-field, aggregate, per-entry, and file caps
   plus full journaling contain prompt-injection risk.
 - Builds require the preserved core bundle at `dist/skillforge-core.js` and

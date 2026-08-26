@@ -4,6 +4,7 @@ import {
   editorSystemForConfig,
 } from "../../src/prompt-editor/system.js";
 import type { PromptEditorContextSnapshot } from "../../src/prompt-editor/context-snapshot.js";
+import { collectRuntimeCapabilities } from "../../src/prompt-editor/capabilities.js";
 import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
 
 describe("buildEditorPrompt", () => {
@@ -50,6 +51,33 @@ describe("buildEditorPrompt", () => {
     expect(system).toContain("Add every useful detail supported");
     expect(system).toContain("Every submission MUST include a `learn` lesson");
     expect(system).toContain("5000 characters");
+    expect(system).toContain("Intent and execution routing");
+    expect(system).toContain("`Likely tools`");
+    expect(system).toContain("Never dump the full catalog");
+  });
+
+  test("places the effective main-agent tool catalog before the sole rewrite target", () => {
+    const capabilities = collectRuntimeCapabilities({
+      read: { description: "Read workspace files." },
+      context7_query_docs: { description: "Read current library docs." },
+    });
+    const prompt = buildEditorPrompt(
+      "",
+      "Update the library integration",
+      false,
+      null,
+      PROMPT_EDITOR_DEFAULTS,
+      capabilities,
+    );
+
+    expect(prompt).toContain("MAIN AGENT EXECUTION CAPABILITIES");
+    expect(prompt).toContain("`context7`");
+    expect(prompt).toContain(
+      '`context7_query_docs` — "Read current library docs."',
+    );
+    expect(prompt.indexOf("MAIN AGENT EXECUTION CAPABILITIES")).toBeLessThan(
+      prompt.indexOf("TARGET USER MESSAGE JSON STRING"),
+    );
   });
 
   test("keeps existing re-evaluation calls valid when no snapshot is supplied", () => {

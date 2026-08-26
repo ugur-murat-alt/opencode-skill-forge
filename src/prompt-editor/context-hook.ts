@@ -6,6 +6,10 @@ import { appendState, readSessionFlags } from "./live.js";
 import type { PromptEditorRequest } from "./live.js";
 import { buildEditorPrompt } from "./system.js";
 import {
+  collectRuntimeCapabilities,
+  type PromptEditorCapabilityCatalog,
+} from "./capabilities.js";
+import {
   collectContextSnapshot,
   type PromptEditorContextSnapshot,
 } from "./context-snapshot.js";
@@ -81,6 +85,7 @@ interface EditorCandidate extends ApprovalCandidate {
   durationMs: number;
   directory: string;
   contextSnapshot: PromptEditorContextSnapshot | null;
+  capabilities: PromptEditorCapabilityCatalog;
   error?: string;
 }
 
@@ -98,6 +103,7 @@ interface ManualRun {
   model: { providerID: string; id: string; variant?: string } | undefined;
   directory: string;
   contextSnapshot: PromptEditorContextSnapshot | null;
+  capabilities: PromptEditorCapabilityCatalog;
   cancellationEpoch: number;
   candidate: EditorCandidate;
 }
@@ -481,6 +487,7 @@ export async function registerContextHook(
       recordStart?: boolean;
       directory?: string;
       contextSnapshot?: PromptEditorContextSnapshot | null;
+      capabilities: PromptEditorCapabilityCatalog;
     },
   ): Promise<EditorCandidate> => {
     const started = Date.now();
@@ -553,6 +560,7 @@ export async function registerContextHook(
           reason === "re-evaluate",
           contextSnapshot,
           cfg,
+          options.capabilities,
         );
         payload = await (deps.runEditor ?? runEditor)(
           ctx,
@@ -583,6 +591,7 @@ export async function registerContextHook(
         durationMs,
         directory,
         contextSnapshot,
+        capabilities: options.capabilities,
         ...(error ? { error } : {}),
       };
     } finally {
@@ -737,6 +746,7 @@ export async function registerContextHook(
     model: { providerID: string; id: string; variant?: string } | undefined,
     autoAccept: boolean,
     contextSnapshot: PromptEditorContextSnapshot | null,
+    capabilities: PromptEditorCapabilityCatalog,
     cancellationEpoch: number,
   ): Promise<CacheEntry> => {
     const candidate = await runEditorCandidate(
@@ -747,6 +757,7 @@ export async function registerContextHook(
       {
         autoAccept,
         contextSnapshot,
+        capabilities,
       },
     );
     if (
@@ -782,6 +793,7 @@ export async function registerContextHook(
       model,
       directory: candidate.directory,
       contextSnapshot: candidate.contextSnapshot,
+      capabilities: candidate.capabilities,
       cancellationEpoch,
       candidate,
     });
@@ -947,6 +959,7 @@ export async function registerContextHook(
         recordStart: false,
         directory: active.directory,
         contextSnapshot: active.contextSnapshot,
+        capabilities: active.capabilities,
       },
     );
     const nextCandidate: EditorCandidate = {
@@ -1065,6 +1078,7 @@ export async function registerContextHook(
         "",
         cfg,
       );
+      const capabilities = collectRuntimeCapabilities(event.tools);
       const cached = cache.get(key);
       if (
         cached &&
@@ -1143,6 +1157,7 @@ export async function registerContextHook(
         deps.model,
         flags.autoAccept,
         contextSnapshot,
+        capabilities,
         cancellationEpoch,
       );
       inflight.set(key, {

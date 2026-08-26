@@ -229,6 +229,34 @@ describe("manual prompt approval", () => {
     registry.dispose();
   });
 
+  test("passes only the main agent's effective tools into the editor prompt", async () => {
+    const { controller, hook, prompts, registry } = await setup([
+      { prompt: "Improved request with tool guidance" },
+    ]);
+    const input = event();
+    input.tools = {
+      read: { description: "Read workspace files." },
+      github_search_code: { description: "Search GitHub code." },
+      omni_prompt_submit: { description: "Submit the editor result." },
+    };
+    const dispatch = Promise.resolve(hook(input));
+    const awaiting = await waitForPhase("awaiting-decision", 1);
+
+    expect(prompts[0]).toContain("MAIN AGENT EXECUTION CAPABILITIES");
+    expect(prompts[0]).toContain('`read` — "Read workspace files."');
+    expect(prompts[0]).toContain(
+      '`github_search_code` — "Search GitHub code."',
+    );
+    expect(prompts[0]).not.toContain("Submit the editor result.");
+
+    expect(
+      await controller.processRequest(request("reject", awaiting.gateID!, 1)),
+    ).toBe(true);
+    await dispatch;
+    await controller.stop();
+    registry.dispose();
+  });
+
   test("reject releases only the original and never persists the candidate", async () => {
     const { controller, hook, persisted, registry } = await setup([
       { prompt: "Improved request" },
