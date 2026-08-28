@@ -31,6 +31,11 @@ import type {
   PluginRuntime,
   SubmitPayload,
 } from "./types.js";
+import {
+  collectWorkspaceContext,
+  fallbackWorkspaceContext,
+  type PromptEditorWorkspaceContext,
+} from "./workspace-context.js";
 
 export interface ContextHookDeps {
   cfg: PromptEditorConfig;
@@ -53,6 +58,10 @@ export interface ContextHookDeps {
     sessionID: string,
     messageID: string,
   ) => Promise<string | null>;
+  collectWorkspaceContext?: (
+    ctx: PluginRuntime,
+    directory: string,
+  ) => Promise<PromptEditorWorkspaceContext>;
 }
 
 export interface ContextHookController {
@@ -86,6 +95,7 @@ interface EditorCandidate extends ApprovalCandidate {
   directory: string;
   contextSnapshot: PromptEditorContextSnapshot | null;
   capabilities: PromptEditorCapabilityCatalog;
+  workspaceContext: PromptEditorWorkspaceContext;
   error?: string;
 }
 
@@ -104,6 +114,7 @@ interface ManualRun {
   directory: string;
   contextSnapshot: PromptEditorContextSnapshot | null;
   capabilities: PromptEditorCapabilityCatalog;
+  workspaceContext: PromptEditorWorkspaceContext;
   cancellationEpoch: number;
   candidate: EditorCandidate;
 }
@@ -488,6 +499,7 @@ export async function registerContextHook(
       directory?: string;
       contextSnapshot?: PromptEditorContextSnapshot | null;
       capabilities: PromptEditorCapabilityCatalog;
+      workspaceContext?: PromptEditorWorkspaceContext;
     },
   ): Promise<EditorCandidate> => {
     const started = Date.now();
@@ -516,6 +528,24 @@ export async function registerContextHook(
           ? options.contextSnapshot
           : Object.freeze({ ...options.contextSnapshot, directory })
         : null;
+      let workspaceTimer: ReturnType<typeof setTimeout> | undefined;
+      const workspaceContext =
+        options.workspaceContext ??
+        (await Promise.race([
+          (deps.collectWorkspaceContext ?? collectWorkspaceContext)(
+            ctx,
+            directory,
+          ).catch(() => fallbackWorkspaceContext(directory)),
+          new Promise<PromptEditorWorkspaceContext>((resolveWorkspace) => {
+            workspaceTimer = setTimeout(
+              () => resolveWorkspace(fallbackWorkspaceContext(directory)),
+              Math.min(cfg.directoryTimeoutMs, 2_000),
+            );
+            (workspaceTimer as unknown as { unref?: () => void }).unref?.();
+          }),
+        ]).finally(() => {
+          if (workspaceTimer) clearTimeout(workspaceTimer);
+        }));
       if (options.recordStart !== false) {
         const recorded = appendState({
           protocolVersion: 2,
@@ -561,6 +591,7 @@ export async function registerContextHook(
           contextSnapshot,
           cfg,
           options.capabilities,
+          workspaceContext,
         );
         payload = await (deps.runEditor ?? runEditor)(
           ctx,
@@ -592,6 +623,7 @@ export async function registerContextHook(
         directory,
         contextSnapshot,
         capabilities: options.capabilities,
+        workspaceContext,
         ...(error ? { error } : {}),
       };
     } finally {
@@ -794,6 +826,7 @@ export async function registerContextHook(
       directory: candidate.directory,
       contextSnapshot: candidate.contextSnapshot,
       capabilities: candidate.capabilities,
+      workspaceContext: candidate.workspaceContext,
       cancellationEpoch,
       candidate,
     });
@@ -960,6 +993,7 @@ export async function registerContextHook(
         directory: active.directory,
         contextSnapshot: active.contextSnapshot,
         capabilities: active.capabilities,
+        workspaceContext: active.workspaceContext,
       },
     );
     const nextCandidate: EditorCandidate = {

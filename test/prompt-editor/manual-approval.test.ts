@@ -101,6 +101,8 @@ async function setup(
     directoryDelay?: Promise<void>;
     directoryStarted?: () => void;
     runEditor?: ContextHookDeps["runEditor"];
+    directoryTimeoutMs?: number;
+    collectWorkspaceContext?: ContextHookDeps["collectWorkspaceContext"];
   } = {},
 ) {
   const sandbox = mkdtempSync(join(tmpdir(), "pe-manual-"));
@@ -140,6 +142,8 @@ async function setup(
       ...PROMPT_EDITOR_DEFAULTS,
       enabled: true,
       blocking: options.blocking ?? false,
+      directoryTimeoutMs:
+        options.directoryTimeoutMs ?? PROMPT_EDITOR_DEFAULTS.directoryTimeoutMs,
       minChars: 1,
       persist: true,
     },
@@ -157,6 +161,20 @@ async function setup(
     },
     isExcludedSession: () => false,
     log: () => undefined,
+    collectWorkspaceContext:
+      options.collectWorkspaceContext ??
+      (async (_ctx, directory) => ({
+        directory,
+        root: "/workspace",
+        gitRepository: true,
+        manifest: {
+          file: "package.json",
+          name: "workspace-app",
+          description: "Workspace application",
+        },
+        topLevelEntries: ["src/", "README.md"],
+        activePlugins: ["workspace-plugin"],
+      })),
     runEditor:
       options.runEditor ??
       (async (_ctx, _deps, buildPrompt) => {
@@ -248,6 +266,8 @@ describe("manual prompt approval", () => {
       '`github_search_code` — "Search GitHub code."',
     );
     expect(prompts[0]).not.toContain("Submit the editor result.");
+    expect(prompts[0]).toContain("WORKSPACE SNAPSHOT JSON");
+    expect(prompts[0]).toContain('"activePlugins":["workspace-plugin"]');
 
     expect(
       await controller.processRequest(request("reject", awaiting.gateID!, 1)),
@@ -501,6 +521,30 @@ describe("manual prompt approval", () => {
       "Continue the existing work",
     );
     expect(readStates(statesFile())[0]?.phase).toBe("failed");
+    await controller.stop();
+    registry.dispose();
+  });
+
+  test("a stalled workspace snapshot is bounded and falls back", async () => {
+    const { controller, hook, prompts, registry } = await setup(
+      [{ prompt: "Improved request" }],
+      {
+        autoAccept: true,
+        blocking: true,
+        directoryTimeoutMs: 5,
+        collectWorkspaceContext: async () =>
+          await new Promise<never>(() => undefined),
+      },
+    );
+
+    const outcome = await Promise.race([
+      Promise.resolve(hook(event())).then(() => "completed"),
+      Bun.sleep(250).then(() => "timed-out"),
+    ]);
+
+    expect(outcome).toBe("completed");
+    expect(prompts[0]).toContain("WORKSPACE SNAPSHOT JSON");
+    expect(prompts[0]).toContain('"root":"/workspace/current"');
     await controller.stop();
     registry.dispose();
   });

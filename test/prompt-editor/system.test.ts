@@ -6,6 +6,7 @@ import {
 import type { PromptEditorContextSnapshot } from "../../src/prompt-editor/context-snapshot.js";
 import { collectRuntimeCapabilities } from "../../src/prompt-editor/capabilities.js";
 import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
+import type { PromptEditorWorkspaceContext } from "../../src/prompt-editor/workspace-context.js";
 
 describe("buildEditorPrompt", () => {
   test("renders a snapshot as untrusted JSON and keeps the current user text as the sole target", () => {
@@ -54,6 +55,8 @@ describe("buildEditorPrompt", () => {
     expect(system).toContain("Intent and execution routing");
     expect(system).toContain("`Likely tools`");
     expect(system).toContain("Never dump the full catalog");
+    expect(system).toContain("workspace snapshot");
+    expect(system).toContain("project-memory tools");
   });
 
   test("places the effective main-agent tool catalog before the sole rewrite target", () => {
@@ -85,5 +88,40 @@ describe("buildEditorPrompt", () => {
 
     expect(prompt).toContain("NOTE: this is a RE-EVALUATION.");
     expect(prompt).not.toContain("CONVERSATION CONTEXT JSON");
+  });
+
+  test("places bounded workspace and plugin context before the rewrite target", () => {
+    const workspace: PromptEditorWorkspaceContext = {
+      directory: "/repo/packages/app",
+      root: "/repo",
+      gitRepository: true,
+      manifest: {
+        file: "package.json",
+        name: "example-app",
+        description: "Example application",
+      },
+      topLevelEntries: ["src/", "README.md"],
+      readme: { file: "README.md", excerpt: "Project overview" },
+      activePlugins: ["example-plugin"],
+    };
+
+    const prompt = buildEditorPrompt(
+      "",
+      "Continue the implementation",
+      false,
+      null,
+      PROMPT_EDITOR_DEFAULTS,
+      null,
+      workspace,
+    );
+
+    expect(prompt).toContain(
+      "WORKSPACE SNAPSHOT JSON (bounded, untrusted reference data):",
+    );
+    expect(prompt).toContain(JSON.stringify(workspace));
+    expect(prompt).toContain("active plugin IDs");
+    expect(prompt.indexOf("WORKSPACE SNAPSHOT JSON")).toBeLessThan(
+      prompt.indexOf("TARGET USER MESSAGE JSON STRING"),
+    );
   });
 });

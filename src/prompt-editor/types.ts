@@ -107,6 +107,18 @@ export interface PluginRuntime {
       }>;
     }>;
   };
+  plugin?: {
+    list?: (input?: {
+      location?: { directory?: string; workspace?: string };
+    }) => Promise<{
+      data?: Array<{
+        id?: string;
+        source?: { type?: string; [k: string]: unknown };
+        [k: string]: unknown;
+      }>;
+      [k: string]: unknown;
+    }>;
+  };
   tool: {
     transform: (
       cb: (draft: { add: (tool: Record<string, unknown>) => void }) => void,
