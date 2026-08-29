@@ -66,15 +66,23 @@ describe("SPR skill-authoring contract", () => {
     expect(packageJson.files).toContain("SPR_SKILL_AUTHORING.md");
 
     const handbook = readFileSync("SPR_SKILL_AUTHORING.md", "utf8");
-    for (const heading of [
+    for (const marker of [
       "## 5. Deterministic decision model",
       "## 6. Global versus project scope",
+      "path-derived, exact, case-sensitive ID",
+      "explicit `skills` config entries",
       "## 7. Skill artifact contract",
+      "### 7.1 Identity and frontmatter",
+      "`allowed-tools` is experimental",
+      "Use this skill when",
       "## 9. Evaluation contract",
+      "8–10 should-trigger",
+      "8–10 should-not-trigger",
+      "fixed train/validation split",
       "## 10. Lifecycle protocol",
       "## 12. Definition of done",
     ]) {
-      expect(handbook).toContain(heading);
+      expect(handbook).toContain(marker);
     }
   });
 });
