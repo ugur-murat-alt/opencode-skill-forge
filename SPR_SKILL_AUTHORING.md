@@ -221,9 +221,22 @@ rules, undeclared dependencies, or hidden environment assumptions.
 
 ### 6.3 Precedence and shadowing
 
-Current OpenCode 2 discovery gives later same-ID sources precedence; project
-OpenCode skills can therefore override same-ID global skills. Shadowing is a
-behavioral change, not an implementation detail.
+OpenCode 2 keys skills by their path-derived, exact, case-sensitive ID. When more
+than one source defines the same ID, the later source wins. Current source order
+from lower to higher precedence is:
+
+1. built-in skills;
+2. `.claude/skills`, global first and then project ancestors;
+3. `.agents/skills`, global first and then project ancestors;
+4. `~/.config/opencode/skills`;
+5. project `.opencode/skills`, from project root toward the current directory;
+6. explicit `skills` config entries, in config priority and array order.
+
+The plugin directly manages only its project and global OpenCode stores. Compatible
+or explicitly configured sources can still win at runtime. SPR must rely on
+manager-visible inventory/conflict information and must reject an unresolved
+external collision rather than assuming its managed definition will be active.
+Shadowing is a behavioral change, not an implementation detail.
 
 Before creating or renaming:
 
@@ -259,23 +272,37 @@ Otherwise leave the skill in place and update only its valid content, or reject.
 A skill is a directory with `SKILL.md` and, when justified, bounded support
 resources. Use the lifecycle manager's schema as the source of truth.
 
-### 7.1 Frontmatter
+### 7.1 Identity and frontmatter
 
-At minimum, follow the Agent Skills/OpenCode requirements supported by the manager:
+OpenCode 2 derives the runtime skill ID from the file path; the frontmatter `name`
+is a display label. V2 currently does not enforce the Agent Skills name regex,
+length limits, directory/name equality, or description maximum. SPR nevertheless
+emits the stricter portable form unless the lifecycle manager requires otherwise:
 
-- `name`: 1–64 characters, lowercase alphanumeric and hyphens; no leading,
-  trailing, or consecutive hyphen; match the directory ID;
-- `description`: 1–1024 characters; state both **what** the skill does and
-  **when** it should be used.
+- directory/runtime ID and `name`: the same unique 1–64 character lowercase
+  kebab-case value; no leading, trailing, or consecutive hyphen;
+- `description`: non-empty and at most 1024 characters; state both **what** the
+  skill enables and **when** it should be used.
 
-Optional standard fields such as `license`, `compatibility`, `metadata`, and
-`allowed-tools` may be used only when the manager supports them and they carry
-necessary information. Do not add decorative metadata.
+Collision checks and permissions use the manager's canonical/path-derived ID, not
+the display label. Renaming only `name` does not create a new skill or resolve an
+ID collision.
+
+Current OpenCode 2 interprets `name`, `description`, `slash`,
+`metadata.opencode/slash`, and `metadata.opencode/autoinvoke`; a missing description
+prevents model-facing advertisement. `license`, `compatibility`, and other metadata
+may be retained for Agent Skills portability but are not interpreted by V2.
+`allowed-tools` is experimental in the Agent Skills specification and support
+varies by implementation; SPR must not emit or broaden it unless the lifecycle
+manager explicitly supports it and the evidence requires it. Do not add decorative
+metadata or hide a new skill from discovery accidentally.
 
 ### 7.2 Description and activation design
 
 The description is routing metadata, not marketing copy. It should:
 
+- use concise imperative phrasing such as “Use this skill when …”;
+- describe the user's intended outcome, not the skill's internal implementation;
 - name the concrete capability and intended task class;
 - include distinctive triggers, artifacts, technologies, or outcomes;
 - identify the nearest confusable cases and exclusions where space permits;
@@ -283,9 +310,10 @@ The description is routing metadata, not marketing copy. It should:
 - avoid claiming portability, safety, or test coverage not demonstrated;
 - remain stable enough that small task wording changes do not alter activation.
 
-A good description separates intent from incidental vocabulary. Mentioning “Rust”
-in a request is not enough to activate a Rust release skill; the request must be
-about the release workflow the skill owns.
+A good description separates intent from incidental vocabulary and avoids
+overfitting to exact eval phrases. Mentioning “Rust” in a request is not enough to
+activate a Rust release skill; the request must be about the release workflow the
+skill owns.
 
 ### 7.3 SKILL.md body
 
@@ -384,9 +412,13 @@ Maintain representative cases for:
   repository/global scope edges.
 
 For high-impact global skills or major description changes, a maintainer-grade eval
-set should aim for roughly 20 should-trigger and 20 should-not-trigger cases across
-wording variations. This is an evaluation target, not permission for SPR to invent
-runs or block all small safe edits mechanically.
+set should start at about 20 realistic queries total: roughly 8–10 should-trigger
+and 8–10 should-not-trigger near-misses. Because model routing is nondeterministic,
+run each query multiple times (three is a reasonable starting point), record trigger
+rates, and keep a fixed train/validation split while optimizing. Select by
+validation performance, then check fresh holdout queries. These are foreground
+maintainer targets, not permission for hidden SPR to invent runs or block every
+small safe edit mechanically.
 
 ### 9.2 Functional acceptance
 
