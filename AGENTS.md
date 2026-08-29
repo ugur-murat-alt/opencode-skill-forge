@@ -10,7 +10,8 @@
 - Tests that touch global state must set `OC_SKILL_POWER_HOME` to a temp dir
   instead of writing the real home directory.
 - Before publishing: `npm pack --dry-run`; only `dist/`, `spr-agent.jsonc`,
-  `prompt-editor-agent.jsonc`, `README.md`, `LICENSE` are packaged.
+  `prompt-editor-agent.jsonc`, `SPR_SKILL_AUTHORING.md`, `README.md`, and
+  `LICENSE` are packaged.
 
 ## Architecture
 
@@ -31,6 +32,21 @@
   the bridge reader in `opencode2-web/apps/bridge/src/index.ts`.
 - The prompt-editor is fail-open: the original user message passes through on
   any editor error, timeout, or missing model. Keep it that way.
+
+## SPR policy changes
+
+- Read `SPR_SKILL_AUTHORING.md` before changing the SPR prompt, permissions,
+  lifecycle expectations, global/project scope rules, or skill quality gates.
+- Keep `spr-agent.jsonc` and `dist/spr-agent.jsonc` byte-identical. The build
+  copies the root definition into `dist/`; committed files must already agree.
+- The SPR security boundary is deny-first. Do not grant filesystem, shell,
+  question, task-delegation, main-history, or additional lifecycle tools.
+- The only supported lifecycle tools are `omni_skill_list`, `omni_skill_view`,
+  `omni_skill_manage`, and `omni_skill_finalize`, plus the in-memory
+  `skill-creator`. Do not document or prompt for imaginary validate/review tools.
+- Preserve deterministic `create | update | no-op | reject` decisions, explicit
+  project/global precedence handling, evidence-backed evaluation, and reversible
+  manager-controlled writes. Add or update policy tests with every contract change.
 
 ## Local plugin reload
 
