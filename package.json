@@ -12,6 +12,7 @@
     "dist",
     "spr-agent.jsonc",
     "prompt-editor-agent.jsonc",
+    "SPR_SKILL_AUTHORING.md",
     "README.md",
     "LICENSE"
   ],
