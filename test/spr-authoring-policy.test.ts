@@ -7,7 +7,11 @@ const distConfigText = readFileSync("dist/spr-agent.jsonc", "utf8");
 const config = parse(rootConfigText) as {
   description?: string;
   system?: string;
-  permissions?: Array<{ action?: string; resource?: string; effect?: string }>;
+  permissions?: Array<{
+    action?: string;
+    resource?: string;
+    effect?: string;
+  }>;
 };
 
 describe("SPR skill-authoring contract", () => {
@@ -15,23 +19,28 @@ describe("SPR skill-authoring contract", () => {
     expect(distConfigText).toBe(rootConfigText);
   });
 
-  test("encodes deterministic decision, scope, conflict, and evaluation gates", () => {
-    const system = config.system ?? "";
-    for (const marker of [
-      "create, update, no-op, or reject",
-      "list managed skills in both available scopes",
-      "project scope",
-      "global scope",
-      "shadow",
-      "should-trigger",
-      "should-not-trigger",
-      "prior version or no-skill baseline",
-      "forceReview means inspect; it never means save",
-      "list -> view -> decide -> manage the minimal candidate -> re-view manager-visible state -> finalize",
-    ]) {
-      expect(system).toContain(marker);
-    }
-  });
+  test(
+    "encodes deterministic decision, scope, conflict, and evaluation gates",
+    () => {
+      const system = config.system ?? "";
+      for (const marker of [
+        "create, update, no-op, or reject",
+        "list managed skills in both available scopes",
+        "path-derived, exact, and case-sensitive",
+        "primary model-facing activation signal",
+        "project scope",
+        "global scope",
+        "shadow",
+        "should-trigger",
+        "should-not-trigger",
+        "prior version or no-skill baseline",
+        "forceReview means inspect; it never means save",
+        "list -> view -> decide -> manage the minimal candidate -> re-view manager-visible state -> finalize",
+      ]) {
+        expect(system).toContain(marker);
+      }
+    },
+  );
 
   test("names only the lifecycle tools exposed by the wrapper", () => {
     const system = config.system ?? "";
