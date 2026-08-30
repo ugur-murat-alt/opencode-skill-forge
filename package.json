@@ -1,6 +1,6 @@
 {
   "name": "@vaur94/opencode2-skill-forge",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Independent OpenCode V2 automatic skill evolution plugin, plus an opt-in prompt-editor (prompt engineering) subsystem.",
   "type": "module",
   "main": "./dist/plugin.js",
