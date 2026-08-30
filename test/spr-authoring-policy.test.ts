@@ -19,30 +19,31 @@ describe("SPR skill-authoring contract", () => {
     expect(distConfigText).toBe(rootConfigText);
   });
 
-  test(
-    "encodes deterministic decision, scope, conflict, and evaluation gates",
-    () => {
-      const system = config.system ?? "";
-      for (const marker of [
-        "create, update, no-op, or reject",
-        "list managed skills in both available scopes",
-        "path-derived, exact, and case-sensitive",
-        "primary model-facing activation signal",
-        "project scope",
-        "global scope",
-        "shadow",
-        "should-trigger",
-        "should-not-trigger",
-        "prior version or no-skill baseline",
-        "forceReview means inspect; it never means save",
-        "list -> view -> decide -> manage the minimal candidate -> re-view manager-visible state -> finalize",
-      ]) {
-        expect(system).toContain(marker);
-      }
-    },
-  );
+  test("encodes deterministic decision, scope, conflict, and evaluation gates", () => {
+    const system = config.system ?? "";
+    for (const marker of [
+      "create, update, no-op, or reject",
+      "manager-visible project/global inventory",
+      "effective project-first entry",
+      "does not enumerate compatible or explicit skill sources",
+      "path-derived, exact, and case-sensitive",
+      "primary model-facing activation signal",
+      "project scope",
+      "global scope",
+      "Never knowingly create a shadow, silent duplicate, or disguised fork when manager-visible or handoff evidence identifies the collision",
+      "should-trigger",
+      "should-not-trigger",
+      "prior version or no-skill baseline",
+      "must not create, modify, or remove executable files under scripts/",
+      "forceReview means inspect; it never means save",
+      "list -> view -> decide -> manage the minimal candidate -> re-view manager-visible state -> finalize",
+      "For no-op/reject, do not call manage; finalize with no-change",
+    ]) {
+      expect(system).toContain(marker);
+    }
+  });
 
-  test("names only the lifecycle tools exposed by the wrapper", () => {
+  test("names only the lifecycle tools exposed by the preserved core", () => {
     const system = config.system ?? "";
     for (const tool of [
       "omni_skill_list",
@@ -89,9 +90,19 @@ describe("SPR skill-authoring contract", () => {
       "8–10 should-not-trigger",
       "fixed train/validation split",
       "## 10. Lifecycle protocol",
+      "finalize(mutation-complete)",
+      "finalize(no-change)",
+      "do not call `manage` or `re-view` after a `no-op` or `reject` decision",
       "## 12. Definition of done",
+      "manager-visible and explicitly reported same-ID and semantic conflicts",
+      "preserved core bundle's registered tool",
+      "https://opencode.ai/v2/docs/skills",
+      "https://opencode.ai/v2/docs/agents",
+      "https://agentskills.io/skill-creation/evaluating-skills",
     ]) {
       expect(handbook).toContain(marker);
     }
+    expect(handbook).not.toContain("https://opencode.ai/docs/");
+    expect(handbook).not.toContain("https://agentskills.io/skill-evals");
   });
 });

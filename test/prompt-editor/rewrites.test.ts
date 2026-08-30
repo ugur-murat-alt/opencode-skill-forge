@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REWRITES_MAX_ENTRIES, appendRewrite, readRewrites } from "../../src/prompt-editor/rewrites.js";
+import {
+  REWRITES_MAX_ENTRIES,
+  appendRewrite,
+  readRewrites,
+} from "../../src/prompt-editor/rewrites.js";
 import type { RewriteRecord } from "../../src/prompt-editor/rewrites.js";
 
 function stub(over: Partial<RewriteRecord> = {}): RewriteRecord {
@@ -24,8 +28,14 @@ describe("rewrites", () => {
     const dir = mkdtempSync(join(tmpdir(), "pe-rewrites-"));
     const file = join(dir, "rewrites.jsonl");
     try {
-      appendRewrite(file, stub({ messageID: "a", original: "x", rewritten: "xx" }));
-      appendRewrite(file, stub({ messageID: "b", original: "y", rewritten: "yy" }));
+      appendRewrite(
+        file,
+        stub({ messageID: "a", original: "x", rewritten: "xx" }),
+      );
+      appendRewrite(
+        file,
+        stub({ messageID: "b", original: "y", rewritten: "yy" }),
+      );
       const entries = readRewrites(file);
       expect(entries.map((e) => e.messageID)).toEqual(["b", "a"]);
       expect(entries[0]!.rewritten).toBe("yy");
@@ -39,7 +49,14 @@ describe("rewrites", () => {
     const file = join(dir, "rewrites.jsonl");
     try {
       for (let i = 0; i < REWRITES_MAX_ENTRIES + 25; i++) {
-        appendRewrite(file, stub({ messageID: `msg-${i}`, original: `o${i}`, rewritten: `r${i}` }));
+        appendRewrite(
+          file,
+          stub({
+            messageID: `msg-${i}`,
+            original: `o${i}`,
+            rewritten: `r${i}`,
+          }),
+        );
       }
       const entries = readRewrites(file);
       expect(entries.length).toBe(REWRITES_MAX_ENTRIES);
