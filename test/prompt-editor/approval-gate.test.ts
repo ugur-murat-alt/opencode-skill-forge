@@ -50,8 +50,14 @@ describe("ApprovalGateRegistry", () => {
         original: "Original",
         rewritten: "Second",
       }),
-    ).toMatchObject({ revision: 2, rewritten: "Second", phase: "awaiting-decision" });
-    expect(gates.request(request("accept", gate.gateID, 2)).kind).toBe("accepted");
+    ).toMatchObject({
+      revision: 2,
+      rewritten: "Second",
+      phase: "awaiting-decision",
+    });
+    expect(gates.request(request("accept", gate.gateID, 2)).kind).toBe(
+      "accepted",
+    );
   });
 
   test("shutdown cancellation releases the waiter without accepting text", async () => {

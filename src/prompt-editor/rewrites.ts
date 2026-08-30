@@ -57,7 +57,8 @@ export function appendRewrite(file: string, record: RewriteRecord): void {
         }
       })
       .slice(-(REWRITES_MAX_ENTRIES - 1));
-    const content = kept.length > 0 || existing ? `${kept.join("\n")}\n${line}` : line;
+    const content =
+      kept.length > 0 || existing ? `${kept.join("\n")}\n${line}` : line;
     writeFileSync(file, content, { encoding: "utf8", mode: 0o600 });
   } catch {
     // Never block the message pipeline.
@@ -65,7 +66,10 @@ export function appendRewrite(file: string, record: RewriteRecord): void {
 }
 
 /** Read newest-first rewrite records (for the web bridge). */
-export function readRewrites(file: string, limit = REWRITES_MAX_ENTRIES): RewriteRecord[] {
+export function readRewrites(
+  file: string,
+  limit = REWRITES_MAX_ENTRIES,
+): RewriteRecord[] {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
@@ -78,7 +82,11 @@ export function readRewrites(file: string, limit = REWRITES_MAX_ENTRIES): Rewrit
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed) as RewriteRecord;
-      if (parsed && typeof parsed.rewritten === "string" && typeof parsed.original === "string") {
+      if (
+        parsed &&
+        typeof parsed.rewritten === "string" &&
+        typeof parsed.original === "string"
+      ) {
         out.push(parsed);
         if (out.length >= limit) break;
       }

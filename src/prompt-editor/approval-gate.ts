@@ -12,7 +12,12 @@ export interface ApprovalSnapshot extends ApprovalCandidate {
   messageID: string;
   gateID: string;
   revision: number;
-  phase: "awaiting-decision" | "re-evaluating" | "accepted" | "rejected" | "cancelled";
+  phase:
+    | "awaiting-decision"
+    | "re-evaluating"
+    | "accepted"
+    | "rejected"
+    | "cancelled";
 }
 
 export type ApprovalDecision =
@@ -63,12 +68,14 @@ export class ApprovalGateRegistry {
   }
 
   owns(request: PromptEditorRequest): boolean {
-    const current = this.pending.get(keyFor(request.sessionID, request.messageID));
+    const current = this.pending.get(
+      keyFor(request.sessionID, request.messageID),
+    );
     return Boolean(
       current &&
-        current.snapshot.gateID === request.gateID &&
-        current.snapshot.revision === request.revision &&
-        current.snapshot.phase === "awaiting-decision",
+      current.snapshot.gateID === request.gateID &&
+      current.snapshot.revision === request.revision &&
+      current.snapshot.phase === "awaiting-decision",
     );
   }
 
@@ -81,7 +88,9 @@ export class ApprovalGateRegistry {
   }
 
   request(request: PromptEditorRequest): ApprovalRequestResult {
-    const pending = this.pending.get(keyFor(request.sessionID, request.messageID));
+    const pending = this.pending.get(
+      keyFor(request.sessionID, request.messageID),
+    );
     if (!pending) return { kind: "missing" };
     const snapshot = pending.snapshot;
     if (
@@ -103,7 +112,8 @@ export class ApprovalGateRegistry {
 
     if (request.kind !== "accept" && request.kind !== "reject")
       return { kind: "stale" };
-    if (request.kind === "accept" && !snapshot.rewritten) return { kind: "busy" };
+    if (request.kind === "accept" && !snapshot.rewritten)
+      return { kind: "busy" };
 
     const phase = request.kind === "accept" ? "accepted" : "rejected";
     const terminal = { ...snapshot, phase } as ApprovalSnapshot;
@@ -140,7 +150,10 @@ export class ApprovalGateRegistry {
   cancel(sessionID: string, messageID: string): boolean {
     const pending = this.pending.get(keyFor(sessionID, messageID));
     if (!pending) return false;
-    if (pending.snapshot.phase === "accepted" || pending.snapshot.phase === "rejected")
+    if (
+      pending.snapshot.phase === "accepted" ||
+      pending.snapshot.phase === "rejected"
+    )
       return false;
     const cancelled = {
       ...pending.snapshot,

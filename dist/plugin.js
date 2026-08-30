@@ -3838,7 +3838,12 @@ async function registerEditorAgent(ctx, cfg, agentCfg) {
 import { existsSync as existsSync4, readFileSync as readFileSync6 } from "fs";
 import { homedir as homedir3 } from "os";
 import { join as join4 } from "path";
-var GOAL_ROLE_NAMES = new Set(["goal-planner", "goal-evaluator", "goal-skeptic", "goal-strategist"]);
+var GOAL_ROLE_NAMES = new Set([
+  "goal-planner",
+  "goal-evaluator",
+  "goal-skeptic",
+  "goal-strategist"
+]);
 function isHostIsolatedSession(sessionID) {
   try {
     const root = process.env.OC_GOAL_ROLE_REGISTRY_ROOT ?? homedir3();
