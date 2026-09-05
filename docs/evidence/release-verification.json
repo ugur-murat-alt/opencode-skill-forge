@@ -1,0 +1,10 @@
+{
+  "recorded_at": "2026-09-05T21:29:04.546324+00:00",
+  "command": "npm view @vaur94/opencode2-skill-forge@latest version dist.integrity --json --prefer-online --fetch-retries=0",
+  "version": "1.0.0",
+  "dist_tag": "latest",
+  "integrity": "sha512-AfIJG0KfgvN9CF/GYJe6DYNhpkhlIoQwGLeDwcgBR6Bu0oNczJvib7S4ViGnaGlo/gLE8wAMBUkvAIbLzJ9iTg==",
+  "matches_release_artifact": true,
+  "release_commit": "a840b07",
+  "github_release": "https://github.com/ugur-murat-alt/opencode-skill-forge/releases/tag/v1.0.0"
+}

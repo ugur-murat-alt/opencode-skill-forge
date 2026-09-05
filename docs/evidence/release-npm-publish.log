@@ -1,0 +1,57 @@
+npm notice
+npm notice 📦  @vaur94/opencode2-skill-forge@1.0.0
+npm notice Tarball Contents
+npm notice 1.1kB LICENSE
+npm notice 8.6kB README.md
+npm notice 7.6kB SPR_SKILL_AUTHORING.md
+npm notice 10.2kB dist/archive-worker.js
+npm notice 413.8kB dist/cli.js
+npm notice 338.0kB dist/index.js
+npm notice 741B dist/prompts/prompt-edit.md
+npm notice 1.5kB dist/prompts/skill-evolve.md
+npm notice 12.4kB dist/web/assets/index-Dp2Koay2.css
+npm notice 266.2kB dist/web/assets/index-eXlqqBs-.js
+npm notice 23.7kB dist/web/assets/inter-latin-400-normal-C38fXH4l.woff2
+npm notice 30.7kB dist/web/assets/inter-latin-400-normal-CyCys3Eg.woff
+npm notice 31.3kB dist/web/assets/inter-latin-500-normal-BL9OpVg8.woff
+npm notice 24.3kB dist/web/assets/inter-latin-500-normal-Cerq10X2.woff2
+npm notice 31.3kB dist/web/assets/inter-latin-600-normal-CiBQ2DWP.woff
+npm notice 24.5kB dist/web/assets/inter-latin-600-normal-LgqL8muc.woff2
+npm notice 47.6kB dist/web/assets/inter-latin-ext-400-normal-77YHD8bZ.woff
+npm notice 35.0kB dist/web/assets/inter-latin-ext-400-normal-C1nco2VV.woff2
+npm notice 48.5kB dist/web/assets/inter-latin-ext-500-normal-BxGbmqWO.woff
+npm notice 36.0kB dist/web/assets/inter-latin-ext-500-normal-CV4jyFjo.woff2
+npm notice 48.7kB dist/web/assets/inter-latin-ext-600-normal-CIVaiw4L.woff
+npm notice 36.3kB dist/web/assets/inter-latin-ext-600-normal-D2bJ5OIk.woff2
+npm notice 395B dist/web/index.html
+npm notice 16.1kB docs/tr/bakim-ve-paket-duzenleme.md
+npm notice 4.9kB docs/tr/container-sunucu.md
+npm notice 11.7kB docs/tr/eski-veri-kesfi.md
+npm notice 9.8kB docs/tr/katalog-benchmarki.md
+npm notice 1.9kB docs/tr/kilitli-bagimliliklar.md
+npm notice 4.5kB docs/tr/kullanicilar-ve-yetkiler.md
+npm notice 3.5kB docs/tr/mcp-cikti-ve-sayfalama.md
+npm notice 1.8kB docs/tr/ogrenme-gecmisi.md
+npm notice 3.7kB docs/tr/oidc-kabul.md
+npm notice 2.2kB docs/tr/oturum-tercihleri.md
+npm notice 2.6kB docs/tr/paket-butunlugu.md
+npm notice 5.0kB docs/tr/sunucu-veri-aktarimi.md
+npm notice 2.3kB docs/tr/surekli-dogrulama.md
+npm notice 2.9kB docs/tr/surum-notlari.md
+npm notice 2.0kB docs/tr/temiz-paket-kontrolu.md
+npm notice 2.5kB docs/tr/worker-kurtarma.md
+npm notice 6.4kB docs/tr/yedekleme.md
+npm notice 2.1kB package.json
+npm notice Tarball Details
+npm notice name: @vaur94/opencode2-skill-forge
+npm notice version: 1.0.0
+npm notice filename: vaur94-opencode2-skill-forge-1.0.0.tgz
+npm notice package size: 694.7 kB
+npm notice unpacked size: 1.6 MB
+npm notice shasum: 1ac85a87ca2af5890bc80749c76ce455a2e0a6fb
+npm notice integrity: sha512-AfIJG0KfgvN9C[...]UkvAIbLzJ9iTg==
+npm notice total files: 41
+npm notice
+npm notice Publishing to https://registry.npmjs.org/ with tag latest and public access
+npm notice Your package is being processed and may take a few minutes to become available.
++ @vaur94/opencode2-skill-forge@1.0.0
