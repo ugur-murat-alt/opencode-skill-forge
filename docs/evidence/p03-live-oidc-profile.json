@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "provider": "Keycloak 26.7.3",
+  "proxy": "Caddy 2.11.4",
+  "profile": "server",
+  "tls_verification": true,
+  "authorization_code_pkce": "passed",
+  "secure_session": "passed",
+  "error": "Bearer rejected: 500"
+}

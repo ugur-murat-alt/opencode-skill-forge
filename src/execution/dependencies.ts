@@ -300,6 +300,8 @@ export class DependencyCache {
       });
       await rm(staging, { recursive: true, force: true });
       if (cleanup.code !== 0 && !/no such container/i.test(cleanup.stderr))
+        // An unconfirmed container cleanup must prevent a successful install result.
+        // eslint-disable-next-line no-unsafe-finally
         throw new ForgeError(
           "dependency_cleanup_failed",
           "Bağımlılık container temizliği doğrulanamadı.",

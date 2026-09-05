@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { ApprovalGateRegistry } from "../../src/prompt-editor/approval-gate.js";
-import type { PromptEditorRequest } from "../../src/prompt-editor/live.js";
+import { ApprovalGateRegistry } from "../legacy-runtime/prompt-editor/approval-gate.js";
+import type { PromptEditorRequest } from "../legacy-runtime/prompt-editor/live.js";
 
 const request = (
   kind: PromptEditorRequest["kind"],

@@ -5,7 +5,13 @@ Oturum tercihi, transporttan çözülen kullanıcıya ve açık proje/istemci/ot
 `forge_prepare` isteğine isteğe bağlı kaynak eklenebilir:
 
 ```json
-{"project_ref":"proje-kimligi","original":"Özgün istek","idempotency_key":"istek-kimligi","source":{"client":"codex","session":"istemci-oturum-kimligi"},"wait_ms":10000}
+{
+  "project_ref": "proje-kimligi",
+  "original": "Özgün istek",
+  "idempotency_key": "istek-kimligi",
+  "source": { "client": "codex", "session": "istemci-oturum-kimligi" },
+  "wait_ms": 10000
+}
 ```
 
 Mevcut source'suz çağrılar proje/kişisel ayarları kullanmayı sürdürür. Codex ve Claude yerel hook'ları `session_id` varsa bu bilgiyi taşır. Kaynak, idempotency girdisinin parçasıdır; aynı anahtarla farklı oturum göndermek çakışma üretir.
@@ -16,7 +22,12 @@ Yetkili HTTP API:
 - `PUT /api/settings/session` aşağıdaki gövdeyi kabul eder. Cookie oturumunda mevcut CSRF başlığı da gereklidir.
 
 ```json
-{"project_ref":"proje-kimligi","source":{"client":"codex","session":"istemci-oturum-kimligi"},"base_revision":0,"values":{"promptEnabled":false,"autoApply":false}}
+{
+  "project_ref": "proje-kimligi",
+  "source": { "client": "codex", "session": "istemci-oturum-kimligi" },
+  "base_revision": 0,
+  "values": { "promptEnabled": false, "autoApply": false }
+}
 ```
 
 Yalnız `promptEnabled` ve `autoApply` oturum düzeyinde yazılabilir. Boş values, o oturumun özel değerlerini kaldırarak üst kapsamların geçerli değerlerine dönmeyi sağlar; revision artar. Stale revision 409 ile reddedilir. Kullanıcı başına en fazla 10.000 tercih saklanır.

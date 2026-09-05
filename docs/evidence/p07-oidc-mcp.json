@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "provider": "Keycloak 26.7.3",
+  "proxy": "Caddy 2.11.4",
+  "profile": "server",
+  "tls_verification": true,
+  "csrf_and_project_write": "passed",
+  "authorization_code_pkce": "passed",
+  "secure_session": "passed",
+  "authorization_denial": "401",
+  "access_claim_names": [
+    "aud",
+    "azp",
+    "exp",
+    "iat",
+    "iss",
+    "jti",
+    "scope",
+    "sid",
+    "sub",
+    "typ"
+  ],
+  "invalid_signature_and_foreign_tenant": "rejected",
+  "mcp": {
+    "tools": [
+      "forge_handoff",
+      "forge_load",
+      "forge_prepare",
+      "forge_report",
+      "forge_run",
+      "forge_search"
+    ],
+    "search_load": true,
+    "foreign_project_rejected": true
+  },
+  "bearer_jwks_audience_scope": "passed",
+  "tenant": "acceptance"
+}

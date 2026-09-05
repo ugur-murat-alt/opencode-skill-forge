@@ -40,7 +40,12 @@ const makeSkill = (root: string, name: string, body?: string) => {
 beforeAll(async () => {
   process.env.OC_SKILL_POWER_HOME = registryHome;
   process.env.XDG_STATE_HOME = serviceStateHome;
-  const sourcePath = join(import.meta.dir, "fixtures", "legacy", "skillforge-core.js");
+  const sourcePath = join(
+    import.meta.dir,
+    "fixtures",
+    "legacy",
+    "skillforge-core.js",
+  );
   const source = readFileSync(sourcePath, "utf8");
   const marker = "export {\n";
   const injected = `export {\n  validateFilePath as __validateFilePath,\n  findSkill as __findSkill,\n  readSupportFile as __readSupportFile,\n  writeSupportFile as __writeSupportFile,\n  removeSupportFile as __removeSupportFile,\n  SkillTransactionStore as __SkillTransactionStore,\n  treeHashOf as __treeHashOf,\n  copyTree as __copyTree,\n  validateSkillTree as __validateSkillTree,\n  LearningState as __LearningState,\n  SkillsSubsystem as __SkillsSubsystem,\n  skillManage as __skillManage,\n  skillView as __skillView,\n  skillFinalize as __skillFinalize,\n  evolutionGates as __evolutionGates,\n  endOfSessionEligible as __endOfSessionEligible,\n  normalizeEvent as __normalizeEvent,\n  classifyEvidence as __classifyEvidence,\n  PRODUCTION_BOOTSTRAP_READY as __PRODUCTION_BOOTSTRAP_READY,\n`;

@@ -174,12 +174,10 @@ export class MemberService {
             generation: (project?.generation ?? -1) + 1,
           })
           .onConflict((oc) =>
-            oc
-              .columns(["tenant_id", "project_id", "user_id"])
-              .doUpdateSet({
-                role: input.project_role!,
-                generation: (project?.generation ?? -1) + 1,
-              }),
+            oc.columns(["tenant_id", "project_id", "user_id"]).doUpdateSet({
+              role: input.project_role!,
+              generation: (project?.generation ?? -1) + 1,
+            }),
           )
           .execute();
       } else

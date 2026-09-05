@@ -1,0 +1,35 @@
+{
+  "captured_at": "2026-09-05T18:35:36.590Z",
+  "status": "failed",
+  "kind": "real-local-mcp-catalog-fixture-no-model",
+  "hardware": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.19.0",
+    "cpu": "AMD Ryzen 7 5700G with Radeon Graphics",
+    "logical_cpus": 16,
+    "available_parallelism": 16,
+    "memory_bytes": 46169206784,
+    "disk_media": "not_measured"
+  },
+  "dataset": {
+    "count": 10000,
+    "sha256": "6a996406a11c07565b2f47b812eb74ca61c7ccb57fe2a9c639ec5099808af7b4",
+    "seed_ms": 119877.912
+  },
+  "samples": [],
+  "startup_ms": 17.452890000000025,
+  "bundle_sha256": "2eaaf768c9db35aa318ee8df021d9b95d540ea5f9e1365a5676b1f41dfcf1a30",
+  "lock_sha256": "24f7404d62d0a59161ea1ae7101a0ba80918ef1d73d80011dde1893ae8ab9dbb",
+  "database": {
+    "backend": "sqlite",
+    "version": "3.53.4"
+  },
+  "integrity_scan_ms": 120031.271066,
+  "integrity": {
+    "status": "checking",
+    "checked": 8550,
+    "issues": 0
+  },
+  "error": "Error: Full integrity scan did not complete"
+}

@@ -5,7 +5,7 @@ import {
   type CoreContextEvent,
   type CoreRuntimeContext,
   type EditorSessionLookup,
-} from "../src/core-runtime.js";
+} from "./legacy-runtime/core-runtime.js";
 
 interface MockRuntime extends CoreRuntimeContext {
   events: unknown[];

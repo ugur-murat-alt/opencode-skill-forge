@@ -1,0 +1,26 @@
+bun test v1.3.14 (0d9b296a)
+
+test/package-root-anchor.test.ts:
+(pass) package root stays on its original inode across ancestor replacement and drains escaped reads [7.64ms]
+
+test/directory-readers.test.ts:
+(pass) overlapping roots share only live descriptor, isolate callback errors and reopen after release [3.53ms]
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [444.45ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [253.67ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [428.34ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [374.37ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [10.64ms]
+(pass) missing references and script packages without executable contracts are rejected [5.00ms]
+
+test/deletion.test.ts:
+(pass) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [577.35ms]
+(pass) permanent deletion postgres: references, real removal, partial replay and symlink confinement [358.94ms]
+
+ 10 pass
+ 0 fail
+ 133 expect() calls
+Ran 10 tests across 5 files. [2.63s]

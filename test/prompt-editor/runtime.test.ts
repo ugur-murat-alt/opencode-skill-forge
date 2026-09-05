@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import type { ContextHookController } from "../../src/prompt-editor/context-hook.js";
-import type { PromptEditorRequest } from "../../src/prompt-editor/live.js";
+import type { ContextHookController } from "../legacy-runtime/prompt-editor/context-hook.js";
+import type { PromptEditorRequest } from "../legacy-runtime/prompt-editor/live.js";
 import {
   beginPromptEditorActivation,
   PROMPT_EDITOR_RUNTIME_STATE,
-} from "../../src/prompt-editor/runtime.js";
+} from "../legacy-runtime/prompt-editor/runtime.js";
 
 function registerPromptEditorController(controller: ContextHookController) {
   const bootstrap = beginPromptEditorActivation();

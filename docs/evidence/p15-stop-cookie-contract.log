@@ -1,0 +1,22 @@
+bun test v1.3.14 (0d9b296a)
+
+test/daemon-stop.test.ts:
+58 |         })
+59 |       ).status,
+60 |     ).toBe(401);
+61 |     expect((await fetch(url + "/health", { headers })).ok).toBe(true);
+62 |     const pairing = await fetch(url + "/api/pairing", {method:"POST", headers}).then(r => r.json()) as {code:string};
+63 |     const paired = await fetch(url + "/auth/pair", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({code:pairing.code})});
+                              ^
+error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()
+  path: "http://127.0.0.1:39505/auth/pair",
+ errno: 0,
+  code: "ECONNRESET"
+
+      at async <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/daemon-stop.test.ts:63:26)
+(fail) Node daemon stop: owner-only shutdown, exit, idempotence, restart and retained data [907.84ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [930.00ms]

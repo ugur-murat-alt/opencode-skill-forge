@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectWorkspaceContext } from "../../src/prompt-editor/workspace-context.js";
-import type { PluginRuntime } from "../../src/prompt-editor/types.js";
+import { collectWorkspaceContext } from "../legacy-runtime/prompt-editor/workspace-context.js";
+import type { PluginRuntime } from "../legacy-runtime/prompt-editor/types.js";
 
 const sandboxes: string[] = [];
 

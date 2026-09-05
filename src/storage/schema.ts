@@ -93,6 +93,42 @@ export interface SkillRevision {
   created_at: number;
 }
 export interface DB {
+  package_deletions: {
+    tenant_id: string;
+    skill_id: string;
+    scope_key: string;
+    created_at: number;
+  };
+  package_gc: {
+    tenant_id: string;
+    skill_id: string;
+    revision: string;
+    package_path: string;
+    state: string;
+    updated_at: number;
+  };
+  revision_readers: {
+    tenant_id: string;
+    id: string;
+    skill_id: string;
+    revision: string;
+    created_at: number;
+  };
+  run_revision_pins: {
+    tenant_id: string;
+    run_id: string;
+    fence: number;
+    skill_id: string;
+    revision: string;
+    created_at: number;
+  };
+  execution_revision_pins: {
+    tenant_id: string;
+    execution_id: string;
+    skill_id: string;
+    revision: string;
+    created_at: number;
+  };
   session_preferences: {
     tenant_id: string;
     user_id: string;

@@ -6,23 +6,23 @@
 
 ```json
 {
-  "kind":"learning",
-  "project_ref":"yetkili-proje-kimligi",
-  "source_id":"kesif-manifestindeki-64-karakterlik-kaynak-kimligi",
-  "checksum":"ozgun-dosyanin-sha256-degeri",
-  "content_base64":"ozgun-dosya-bytelarinin-base64-degeri",
-  "enabled":false
+  "kind": "learning",
+  "project_ref": "yetkili-proje-kimligi",
+  "source_id": "kesif-manifestindeki-64-karakterlik-kaynak-kimligi",
+  "checksum": "ozgun-dosyanin-sha256-degeri",
+  "content_base64": "ozgun-dosya-bytelarinin-base64-degeri",
+  "enabled": false
 }
 ```
 
 Desteklenen türler:
 
-| kind | Ek alanlar | Gönderilen içerik |
-| --- | --- | --- |
-| package | scope: personal veya project; flags: managed/protected/pinned | Tek klasik skill kökü içeren ZIP, en fazla 5 MiB |
-| learning | enabled: boolean | Özgün learn.md, en fazla 16 MiB |
-| rewrites | Ek eşleme alanı yok | Özgün rewrites.jsonl, en fazla 16 MiB |
-| flags | sessions: eski-yeni oturum eşlemeleri | Özgün session-flags.json, en fazla 16 MiB |
+| kind     | Ek alanlar                                                    | Gönderilen içerik                                |
+| -------- | ------------------------------------------------------------- | ------------------------------------------------ |
+| package  | scope: personal veya project; flags: managed/protected/pinned | Tek klasik skill kökü içeren ZIP, en fazla 5 MiB |
+| learning | enabled: boolean                                              | Özgün learn.md, en fazla 16 MiB                  |
+| rewrites | Ek eşleme alanı yok                                           | Özgün rewrites.jsonl, en fazla 16 MiB            |
+| flags    | sessions: eski-yeni oturum eşlemeleri                         | Özgün session-flags.json, en fazla 16 MiB        |
 
 Özel belge türleri kullanıcıya özeldir. Paket scope ve üç bayrak açık verilmelidir. `source_id` keşif kaynağının metadata kimliğidir, dosya okuma yetkisi değildir. Belge checksum'u özgün byte SHA-256 değeridir. Paket checksum'u ZIP hash'i değil, keşif manifestindeki sıralı `{path,bytes,sha256}` dosya dizisinin JSON SHA-256 değeridir; böylece farklı ZIP sıkıştırması aynı paket içeriğini temsil eder.
 

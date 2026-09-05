@@ -1,0 +1,15 @@
+Skill Forge
+  serve   Yerel kimlikli HTTP/MCP servisi
+  worker  Ayrı süreçte kalıcı iş tüketicisi
+  mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)
+  install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu
+  login   Tek kullanımlık web giriş kodu
+  doctor  Servis kimliği/sürüm/sağlık kontrolü
+  migration-scan --project <dizin>  Eski veriyi salt okunur keşfet
+  migration-import --manifest <json> --mapping <json>  Seçilen paketleri aktar
+  migration-rollback --receipt <id>  Değişmemiş aktarımı geri al
+  migration-learning-export / migration-learning-rollback --receipt <id>  Özel öğrenme aktarımı
+  migration-rewrites-export / migration-rewrites-rollback --receipt <id>  Eski rewrite geçmişi
+  migration-flags-export / migration-flags-rollback --receipt <id>  Oturum bayrağı aktarımı
+  migration-upload --server-url <origin> --tenant-id <id> --manifest <json> --mapping <json>  Uzak aktarım
+  --data-dir <dizin> --port <port>

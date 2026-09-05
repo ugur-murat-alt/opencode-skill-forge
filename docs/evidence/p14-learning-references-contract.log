@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+test/learning-import.test.ts:
+(pass) legacy learning sqlite: exact source, long lessons, private access and guarded rollback [291.41ms]
+(pass) legacy learning postgres: exact source, long lessons, private access and guarded rollback [136.12ms]
+(pass) legacy learning sqlite: dependent cross-project import prevents destructive rollback [255.20ms]
+(pass) legacy learning postgres: dependent cross-project import prevents destructive rollback [96.23ms]
+
+ 4 pass
+ 0 fail
+ 54 expect() calls
+Ran 4 tests across 1 file. [906.00ms]

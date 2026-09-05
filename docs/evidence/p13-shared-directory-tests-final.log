@@ -1,0 +1,332 @@
+bun test v1.3.14 (0d9b296a)
+
+test/telemetry.test.ts:
+(pass) telemetry sqlite: bounded retention preserves live jobs, usage/dedup, private isolation and redacted support [364.92ms]
+(pass) telemetry postgres: bounded retention preserves live jobs, usage/dedup, private isolation and redacted support [196.65ms]
+
+test/mcp-script-chain.test.ts:
+(pass) real MCP search/load/reference/run pinned TypeScript package with immutable rollback and artifact ACL [4268.72ms]
+
+test/index.test.ts:
+(pass) variant-only SPR override is disposed with the wrapper [2.21ms]
+
+test/run-pins.test.ts:
+(pass) SPR pin sqlite: durable base, FK, stale select, fence-isolated disposal [373.98ms]
+(pass) SPR pin postgres: durable base, FK, stale select, fence-isolated disposal [199.80ms]
+
+test/egress.test.ts:
+(pass) real isolated egress: allowlisted HTTPS succeeds; other origins and direct sockets are blocked [1484.45ms]
+
+test/staging.test.ts:
+(pass) private SPR candidate enforces inventory, read-before-change, exact patch and fenced publication [307.69ms]
+
+test/backup.test.ts:
+(pass) Node SQLite backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [4134.96ms]
+
+test/benchmark-measure.test.ts:
+(pass) catalog measurement includes transport, tool and malformed response failures [0.66ms]
+(pass) catalog measurement preserves actual response and separates scheduling delay [0.14ms]
+
+test/benchmark-setup.test.ts:
+(pass) catalog setup rejects bad arguments and cleans a failed runtime copy [481.17ms]
+
+test/archive.test.ts:
+(pass) classic package ZIP roundtrip preserves references and binary assets [3.50ms]
+(pass) ZIP import rejects traversal, multiple roots, expansion limit and symlink metadata [76.49ms]
+
+test/mcp-schema-publication.test.ts:
+(pass) MCP publication preserves every schema and never shares mutable JSON [8.18ms]
+(pass) MCP publication keeps strict validation and Zod defaults [0.49ms]
+
+test/package-root-anchor.test.ts:
+(pass) package root stays on its original inode across ancestor replacement and drains escaped reads [4.50ms]
+
+test/learning-history.test.ts:
+(pass) learning history sqlite: stable dedup identity, CAS, disabled retrieval and private bounded revisions [401.16ms]
+(pass) learning history postgres: stable dedup identity, CAS, disabled retrieval and private bounded revisions [221.53ms]
+
+test/directory-readers.test.ts:
+(pass) overlapping roots share only live descriptor, isolate callback errors and reopen after release [5.14ms]
+
+test/mcp-output-bounds.test.ts:
+(pass) real script large JSON is an artifact, pages preserve UTF-8 and ledger replay, scope and inventory [1826.42ms]
+(pass) artifact metadata response stays bounded for long Unicode paths and large historical JSON [4.22ms]
+(pass) job lists omit private result bodies; chunk cursors reject changed result snapshots [284.62ms]
+
+test/profile-write-lock.test.ts:
+(pass) settings and provider writes sqlite: CAS, metadata audit and revocation lock [283.55ms]
+(pass) settings and provider writes postgres: CAS, metadata audit and revocation lock [110.06ms]
+
+test/inventory-bounds.test.ts:
+(pass) inventory bounds empty directories and rejects redirected ancestors [240.10ms]
+
+test/security-regressions.test.ts:
+(pass) support path confinement > rejects traversal, aliases, backslashes, and directory-only paths [0.18ms]
+(pass) support path confinement > findSkill rejects invalid names instead of traversing [0.37ms]
+(pass) support path confinement > rejects a project skills root redirected by symlink [0.35ms]
+(pass) support path confinement > rejects a global skills root redirected by symlink [0.21ms]
+(pass) support path confinement > support reads and writes reject symlinked files and directories [0.62ms]
+(pass) support path confinement > remove detects a concurrent replacement and preserves it [0.76ms]
+(pass) review session registry identity > pairs source sessions and attempts for concurrent reviews [2524.71ms]
+(pass) transaction isolation > rollback restores only the target skill [42.70ms]
+(pass) transaction isolation > commit rechecks the target after verification [33.00ms]
+(pass) transaction isolation > schema v1 create rollback keeps sibling skills [45.87ms]
+(pass) finalization consistency > no-change rejects an unrecorded disk mutation [12.75ms]
+(pass) finalization consistency > mutation-complete rejects journal and transaction path mismatch [27.47ms]
+(pass) graduation integrity > rejects orphan, missing, and symlinked resources [10.09ms]
+(pass) graduation integrity > validates managed frontmatter for support-only changes [0.65ms]
+(pass) background reviewer policy > requires reading an existing support file before overwrite [3.67ms]
+(pass) background reviewer policy > forbids background script mutations [1.35ms]
+(pass) background reviewer policy > rejects a support file changed after it was viewed [2.04ms]
+(pass) background reviewer policy > rejects a skill changed after it was viewed [0.97ms]
+(pass) background reviewer policy > rolls back when journal persistence fails after mutation [55.83ms]
+(pass) production launch and recovery > waits for review execution start and coalesces duplicate success [0.26ms]
+(pass) production launch and recovery > gates review terminal events through the execution lifecycle [0.56ms]
+(pass) production launch and recovery > uses quality-preserving review opportunity defaults [0.31ms]
+(pass) production launch and recovery > accepts custom trigger cadence [0.04ms]
+(pass) production launch and recovery > end-of-session launch gate requires launchReview + min steps + no blockers [0.15ms]
+(pass) production launch and recovery > keeps low-evidence and unresolved work out of review [0.73ms]
+(pass) production launch and recovery > admits verified tool-heavy work at the tuned threshold [0.10ms]
+(pass) production launch and recovery > normalizes idle events into execution success [0.11ms]
+(pass) production launch and recovery > enables only the configured production evolution modes [0.04ms]
+(pass) production launch and recovery > recovers an incomplete transaction when a workspace is discovered [39.26ms]
+(pass) production launch and recovery > recovers a crash after disk write but before mutation ledger [45.14ms]
+
+test/flag-import.test.ts:
+(pass) flags sqlite: explicit sessions, legacy fallback, monotonic rollback and source preservation [304.10ms]
+(pass) flags postgres: explicit sessions, legacy fallback, monotonic rollback and source preservation [137.19ms]
+
+test/worker-process.test.ts:
+(pass) independent Node CLI worker sqlite recovers a crashed lease owner and preserves fail-open result [1636.51ms]
+(pass) independent Node CLI worker postgres recovers a crashed lease owner and preserves fail-open result [2385.53ms]
+
+test/script-revocation.test.ts:
+(pass) real sandbox execution aborts on membership revocation and preserves its failed receipt [2443.57ms]
+
+test/prompt-service.test.ts:
+(pass) prompt invariant guards preserve Turkish negation, numbers, units, paths and versions [1.42ms]
+(pass) fixture provider over actual HTTP + Pi: one prompt call, autoApply, private reusable lesson, no SPR [555.69ms]
+
+test/package-integrity.test.ts:
+(pass) real service restart detects indexed package corruption without changing active revision [599.38ms]
+
+test/deletion-crash.test.ts:
+(pass) Node HTTP deletion survives SIGKILL during real file cleanup [2602.61ms]
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [351.21ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [182.49ms]
+
+test/core-runtime.test.ts:
+(pass) core runtime router > routes shared raw events to exactly one activation [2.06ms]
+(pass) core runtime router > routes a session only to the activation matching its directory [0.26ms]
+(pass) core runtime router > distinguishes workspaces that share the same directory [0.25ms]
+(pass) core runtime router > reassigns a routed session when it moves locations [0.41ms]
+(pass) core runtime router > routes events whose project location differs from the activation scope [0.25ms]
+(pass) core runtime router > stays fail-closed for unmatched locations across multiple activations [0.25ms]
+(pass) core runtime router > fails closed when a shared event has no resolvable project scope [0.26ms]
+(pass) core runtime router > keeps execution lifecycle events with their first owner [0.24ms]
+(pass) core runtime router > blocks a routed session after it switches to an SPR agent [0.32ms]
+(pass) core runtime router > blocks a routed session after it switches to a hidden agent [0.27ms]
+(pass) core runtime router > delivers a created SPR review context only to its creator [0.74ms]
+(pass) core runtime router > quarantines SPR context until its create response records ownership [0.40ms]
+(pass) core runtime router > recognizes the published omni-spr reviewer identity [0.26ms]
+(pass) core runtime router > skips unknown SPR context without changing its tools [0.21ms]
+(pass) core runtime router > skips parented, forked, hidden, and subagent contexts [0.28ms]
+(pass) core runtime router > routes new work after an owner cleanup and tolerates duplicate cleanup [0.35ms]
+(pass) core runtime router > fences an event lookup that finishes after cleanup [0.22ms]
+(pass) core runtime router > fences a context lookup that finishes after cleanup [0.18ms]
+(pass) core runtime router > delivers deletion once and tombstones late events [0.40ms]
+(pass) core runtime router > tombstones deletion before the consumer requests another event [0.34ms]
+(pass) core runtime router > claims a duplicate durable event ID only once [0.39ms]
+(pass) core runtime router > keeps reviews blocked after their owner activation cleans up [0.28ms]
+(pass) core runtime router > bounds review ownership with fail-closed eviction [2.56ms]
+(pass) core runtime router > cleanup removes only undelivered event claims [0.13ms]
+(pass) core runtime router > filters editor sessions for every activation [0.25ms]
+(pass) core runtime router > accepts an array-shaped agent list response [0.19ms]
+(pass) core runtime router > handoff-only mode does not observe normal owner sessions [0.60ms]
+(pass) core runtime router > handoff-only mode emits a bounded virtual source [0.78ms]
+(pass) core runtime router > handoff enqueue fails if its activation closes during capture [0.21ms]
+(pass) core runtime router > handoff-only mode hides owner tool results but keeps review tools [0.40ms]
+(pass) core runtime router > fails closed when another module generation owns an incompatible protocol [0.25ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [336.29ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [173.39ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.11ms]
+(pass) missing references and script packages without executable contracts are rejected [1.77ms]
+
+test/daemon-stop.test.ts:
+(pass) Node daemon stop: owner-only shutdown, exit, idempotence, restart and retained data [3716.11ms]
+
+test/package-rebase.test.ts:
+(pass) bounded package rebase sqlite: preserves independent edits, rejects conflicts and revalidates [570.64ms]
+(pass) bounded package rebase postgres: preserves independent edits, rejects conflicts and revalidates [348.42ms]
+
+test/learning-delete-lock.test.ts:
+(pass) learning deletion sqlite: revocation serializes before removal and preserves history [287.07ms]
+(pass) learning deletion postgres: revocation serializes before removal and preserves history [113.00ms]
+
+test/identity-http.test.ts:
+(pass) local browser login uses a one-use code, HttpOnly session, CSRF and logout revocation [384.82ms]
+(pass) scoped encrypted secrets and redacted metadata never expose another owner [7.73ms]
+
+test/installer.test.ts:
+(pass) codex parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [99.80ms]
+(pass) claude parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [90.52ms]
+(pass) hook commands quote literal shell metacharacters and Windows uses encoded argv [0.26ms]
+
+test/forge-runner.test.ts:
+(pass) Pi termination closes mixed batches and prevents writes after finalize without another call [1.27ms]
+(pass) call budget bounds non-terminating model loops [0.71ms]
+(pass) deadline cancels provider stream and reports unknown usage [20.39ms]
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [447.51ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [269.02ms]
+
+test/storage-contract.test.ts:
+(pass) storage contract: sqlite > migration, scope FK, ACL, one-use pairing, config CAS and persistence [295.32ms]
+(pass) storage contract: postgres > migration, scope FK, ACL, one-use pairing, config CAS and persistence [184.56ms]
+(pass) specific settings cannot broaden policy and cannot smuggle unknown permission keys [0.83ms]
+
+test/maintenance-lock.test.ts:
+(pass) maintenance sqlite archive: project revocation serializes before item writes [334.85ms]
+(pass) maintenance sqlite restore: project revocation serializes before item writes [360.96ms]
+(pass) maintenance postgres archive: project revocation serializes before item writes [199.27ms]
+(pass) maintenance postgres restore: project revocation serializes before item writes [336.87ms]
+
+test/benchmark-runtime.test.ts:
+(pass) Node benchmark diagnostics bound each window and release observers [168.84ms]
+
+test/spr-handoff.test.ts:
+(pass) SPR handoff > injects the final-step instruction only for configured agents [0.86ms]
+(pass) SPR handoff > queues one bounded handoff without copying session history [0.50ms]
+(pass) SPR handoff > atomically deduplicates concurrent calls from one model turn [0.15ms]
+(pass) SPR handoff > fails closed for disallowed agents and missing locations [0.13ms]
+(pass) SPR handoff > disposes partial registrations when setup fails [0.31ms]
+
+test/rewrite-import.test.ts:
+(pass) rewrite import sqlite: source truth, privacy, paging, replay and shared rollback [304.24ms]
+(pass) rewrite import postgres: source truth, privacy, paging, replay and shared rollback [218.12ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [633.53ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.33ms]
+
+test/session-preferences.test.ts:
+(pass) session preferences sqlite: scoped CAS and immutable source-aware acceptance [325.43ms]
+(pass) session preferences postgres: scoped CAS and immutable source-aware acceptance [602.24ms]
+
+test/core-options.test.ts:
+(pass) normalizeCoreOptions > replaces legacy transcript triggers with the bounded handoff trigger [0.13ms]
+(pass) normalizeCoreOptions > gives nested skills settings precedence over outer settings [0.04ms]
+(pass) normalizeCoreOptions > keeps outer core settings when skills is empty [0.06ms]
+(pass) normalizeCoreOptions > excludes wrapper options without mutating the input [0.07ms]
+(pass) normalizeCoreOptions > maps an explicit spr model onto the core reviewModel [0.07ms]
+(pass) normalizeCoreOptions > leaves options untouched without an spr block [0.03ms]
+(pass) normalizeCoreOptions > returns undefined for non-object and array inputs [0.06ms]
+
+test/migration-cli.test.ts:
+(pass) Node migration CLI: explicit personal mapping, per-item failure, replay and reversible receipt [4473.36ms]
+(pass) Node learning migration CLI preserves the source and exports exact bytes [2231.56ms]
+(pass) Node flag migration CLI maps one legacy session and preserves original bytes [2180.09ms]
+
+test/session-http.test.ts:
+(pass) session preference HTTP controls the real queued prompt handler [525.10ms]
+
+test/observation-batch.test.ts:
+(pass) observation group commit sqlite: isolation, idempotency, rollback and bounded admission [346.64ms]
+(pass) observation group commit postgres: isolation, idempotency, rollback and bounded admission [233.82ms]
+
+test/spr-authoring-policy.test.ts:
+(pass) legacy SPR skill-authoring characterization > root and packaged agent definitions stay byte-identical [0.04ms]
+(pass) legacy SPR skill-authoring characterization > encodes deterministic decision, scope, conflict, and evaluation gates [0.13ms]
+(pass) legacy SPR skill-authoring characterization > names only the lifecycle tools exposed by the preserved core [0.07ms]
+(pass) legacy SPR skill-authoring characterization > keeps the reviewer deny-first and skill-creator in-memory only [0.06ms]
+(pass) legacy SPR skill-authoring characterization > ships the maintainer handbook with the package [0.35ms]
+
+test/hook-session.test.ts:
+(pass) Codex and Claude hook HTTP payload carries its source session [8.56ms]
+
+test/migration-import.test.ts:
+(pass) migration sqlite: atomic receipt, replay, source guard and conservative rollback [326.84ms]
+(pass) migration postgres: atomic receipt, replay, source guard and conservative rollback [146.43ms]
+
+test/tenant-policy.test.ts:
+(pass) tenant policy: admin setup, operator ceilings, source labels and immutable accepted snapshot [284.00ms]
+
+test/execution-pins.test.ts:
+(pass) execution revision pin sqlite: real sandbox, FK protection, completion/failure and replay [3115.62ms]
+(pass) execution revision pin postgres: real sandbox, FK protection, completion/failure and replay [2949.73ms]
+
+test/execution.test.ts:
+(pass) real Docker node: JSON contract, artifact, validation and container cleanup [1000.20ms]
+(pass) real Docker python: JSON contract, artifact, validation and container cleanup [1173.17ms]
+(pass) real sandbox timeout kills the container and all descendants [540.56ms]
+
+test/evolution-policy.test.ts:
+(pass) MCP evolution policy > verified reusable evidence selects one deterministic decision [0.16ms]
+(pass) MCP evolution policy > script candidates require actual matching validation and isolated tests [0.07ms]
+(pass) MCP evolution policy > revocation and concurrent writers cannot publish stale candidates [0.02ms]
+(pass) MCP evolution policy > legacy characterization bytes remain pinned to the synchronization commit [1.84ms]
+(pass) MCP evolution policy > new profiles separate authority from untrusted content and preserve fail-open [0.06ms]
+
+test/agent-config.test.ts:
+(pass) legacy hidden-agent defaults > spr-agent.jsonc inherits OpenCode model resolution [0.29ms]
+(pass) legacy hidden-agent defaults > prompt-editor-agent.jsonc inherits OpenCode model resolution [0.04ms]
+(pass) legacy hidden-agent defaults > test/fixtures/legacy/spr-agent.jsonc inherits OpenCode model resolution [0.11ms]
+(pass) legacy hidden-agent defaults > test/fixtures/legacy/prompt-editor-agent.jsonc inherits OpenCode model resolution [0.04ms]
+
+test/deletion.test.ts:
+(pass) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [445.40ms]
+(pass) permanent deletion postgres: references, real removal, partial replay and symlink confinement [304.38ms]
+
+test/migration-upload.test.ts:
+(pass) Node migration upload sends four selected sources over actual HTTP without creating client state [2863.76ms]
+(pass) remote upload rejects insecure destinations and never forwards credentials through redirects [10.37ms]
+
+test/service.test.ts:
+(pass) independent service > concurrent initialization converges on one owner credential and endpoint [8.14ms]
+(pass) independent service > public probes reveal only readiness while detailed health remains private [388.13ms]
+(pass) independent service > health and MCP require owner identity and exact origin/host [383.99ms]
+(pass) independent service > official v2 HTTP client initializes and reconnects [416.22ms]
+(pass) independent service > provider configuration cannot use ambient credentials, paid fallback or arbitrary URLs [0.84ms]
+
+test/jobs-contract.test.ts:
+(pass) durable jobs: sqlite dedup, lease fencing, cancellation, reservation and real worker [433.71ms]
+(pass) durable jobs: postgres dedup, lease fencing, cancellation, reservation and real worker [870.17ms]
+
+test/dependencies.test.ts:
+(pass) real locked npm dependency: install scripts disabled, sandbox execution, verified cache reuse and corruption denial [1600.87ms]
+(pass) real hashed Python wheel installs, runs offline and rejects modified cache [3210.70ms]
+
+test/learning-import.test.ts:
+(pass) legacy learning sqlite: exact source, long lessons, private access and guarded rollback [299.72ms]
+(pass) legacy learning postgres: exact source, long lessons, private access and guarded rollback [131.94ms]
+(pass) legacy learning sqlite: dependent cross-project import prevents destructive rollback [288.94ms]
+(pass) legacy learning postgres: dependent cross-project import prevents destructive rollback [114.79ms]
+
+test/spr-options.test.ts:
+(pass) parseSprOptions > parses provider/model with optional variant [0.16ms]
+[skill-forge] spr.model "no-slash" is not a valid "provider/model" reference; ignoring
+[skill-forge] spr.model "/leading" is not a valid "provider/model" reference; ignoring
+[skill-forge] spr.allowedAgents must be an array of agent IDs; disabling SPR handoff
+(pass) parseSprOptions > ignores invalid or absent blocks instead of failing setup [0.09ms]
+
+test/benchmark-sql.test.ts:
+(pass) SQL diagnostics preserve real Node SQLite results, rollback, privacy and connection restoration [190.29ms]
+
+test/migration-discovery.test.ts:
+(pass) legacy discovery preserves bytes, reports malformed and duplicate data, and keeps home learning private [21.13ms]
+(pass) migration CLI does not initialize daemon data or write into legacy sources [1227.33ms]
+
+test/members.test.ts:
+(pass) members sqlite: revocation, stale update, project ceiling, protected owner and reenable [329.92ms]
+(pass) members postgres: revocation, stale update, project ceiling, protected owner and reenable [144.39ms]
+
+test/migration-http.test.ts:
+(pass) server migration HTTP sqlite: authenticated bytes, CSRF, private export and package receipt [613.81ms]
+(pass) server migration HTTP postgres: authenticated bytes, CSRF, private export and package receipt [557.03ms]
+
+test/backup-postgres.test.ts:

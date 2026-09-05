@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/deletion-crash.test.ts:
+(pass) Node HTTP deletion survives SIGKILL during real file cleanup [2564.34ms]
+
+ 1 pass
+ 0 fail
+ 11 expect() calls
+Ran 1 test across 1 file. [2.70s]

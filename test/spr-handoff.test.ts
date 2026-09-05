@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type {
   CoreActivation,
   CoreRuntimeContext,
-} from "../src/core-runtime.js";
+} from "./legacy-runtime/core-runtime.js";
 import {
   setupSprHandoff,
   SPR_HANDOFF_SYSTEM,
   SPR_HANDOFF_TOOL,
-} from "../src/spr-handoff.js";
+} from "./legacy-runtime/spr-handoff.js";
 
 function makeHarness() {
   let contextHook:

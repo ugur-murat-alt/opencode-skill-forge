@@ -3,7 +3,7 @@ import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseHandle } from "../storage/database.js";
 import { IdentityService, type Identity } from "../application/identity.js";
-import { sanitizePromptEditorText } from "../prompt-editor/context-snapshot.js";
+import { sanitizePromptEditorText } from "../prompt/sanitize.js";
 import { searchText } from "../skills/store.js";
 import { ForgeError } from "../domain/errors.js";
 import type { Run } from "../storage/schema.js";
@@ -293,23 +293,26 @@ export class LearningStore {
     });
   }
   async remove(identity: Identity, projectId: string, id: string) {
-    await new IdentityService(this.storage.db).authorize(
-      identity,
-      "write",
-      projectId,
-    );
-    const result = await this.storage.db
-      .deleteFrom("learning_entries")
-      .where("tenant_id", "=", identity.tenantId)
-      .where("user_id", "=", identity.userId)
-      .where("id", "=", id)
-      .where("scope_key", "in", [
-        `project:${projectId}`,
-        `personal:${identity.userId}`,
-      ])
-      .executeTakeFirst();
-    if (!Number(result.numDeletedRows))
-      throw new ForgeError("learning_unavailable", "Ders bulunamadı.", 404);
-    return { removed: id };
+    return this.storage.db.transaction().execute(async (tx) => {
+      await tx
+        .updateTable("tenants")
+        .set({ name: sql`name` })
+        .where("id", "=", identity.tenantId)
+        .execute();
+      await new IdentityService(tx).authorize(identity, "write", projectId);
+      const result = await tx
+        .deleteFrom("learning_entries")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("user_id", "=", identity.userId)
+        .where("id", "=", id)
+        .where("scope_key", "in", [
+          `project:${projectId}`,
+          `personal:${identity.userId}`,
+        ])
+        .executeTakeFirst();
+      if (!Number(result.numDeletedRows))
+        throw new ForgeError("learning_unavailable", "Ders bulunamadı.", 404);
+      return { removed: id };
+    });
   }
 }

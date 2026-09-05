@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test/benchmark-measure.test.ts:
+(pass) catalog measurement includes transport, tool and malformed response failures [1.07ms]
+(pass) catalog measurement preserves actual response and separates scheduling delay [0.16ms]
+
+test/benchmark-setup.test.ts:
+(pass) catalog setup rejects bad arguments and cleans a failed runtime copy [469.52ms]
+
+test/benchmark-runtime.test.ts:
+(pass) Node benchmark diagnostics bound each window and release observers [159.92ms]
+
+ 4 pass
+ 0 fail
+ 43 expect() calls
+Ran 4 tests across 3 files. [653.00ms]

@@ -1,5 +1,5 @@
 import * as oidc from "openid-client";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from "jose";
 import type { IdentityService } from "../application/identity.js";
 import { ForgeError } from "../domain/errors.js";
 export interface OidcOptions {
@@ -78,12 +78,31 @@ export class OidcIdentity {
         "Giriş isteğinin süresi doldu.",
         401,
       );
-    const tokens = await oidc.authorizationCodeGrant(this.config, url, {
-      pkceCodeVerifier: pending.verifier,
-      expectedState: pending.state,
-      expectedNonce: pending.nonce,
-      idTokenExpected: true,
-    });
+    const tokens = await oidc
+      .authorizationCodeGrant(this.config, url, {
+        pkceCodeVerifier: pending.verifier,
+        expectedState: pending.state,
+        expectedNonce: pending.nonce,
+        idTokenExpected: true,
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof oidc.AuthorizationResponseError ||
+          (error instanceof oidc.ClientError &&
+            [
+              "OAUTH_INVALID_RESPONSE",
+              "OAUTH_JWT_CLAIM_COMPARISON_FAILED",
+              "OAUTH_JWT_TIMESTAMP_CHECK_FAILED",
+              "OAUTH_JSON_ATTRIBUTE_COMPARISON_FAILED",
+            ].includes(error.code ?? ""))
+        )
+          throw new ForgeError(
+            "invalid_login_response",
+            "OIDC giriş yanıtı doğrulanamadı.",
+            401,
+          );
+        throw error;
+      });
     const claims = tokens.claims();
     if (!claims?.sub)
       throw new ForgeError(
@@ -99,6 +118,22 @@ export class OidcIdentity {
       audience: this.options.audience,
       requiredClaims: ["sub", "exp", "iat"],
       algorithms: ["RS256", "ES256", "PS256", "EdDSA"],
+    }).catch((error: unknown) => {
+      if (
+        error instanceof joseErrors.JWTClaimValidationFailed ||
+        error instanceof joseErrors.JWTExpired ||
+        error instanceof joseErrors.JWTInvalid ||
+        error instanceof joseErrors.JWSInvalid ||
+        error instanceof joseErrors.JWSSignatureVerificationFailed ||
+        error instanceof joseErrors.JWKSNoMatchingKey ||
+        error instanceof joseErrors.JOSEAlgNotAllowed
+      )
+        throw new ForgeError(
+          "invalid_bearer",
+          "Bearer kimliği doğrulanamadı.",
+          401,
+        );
+      throw error;
     });
     const scopes =
       typeof result.payload.scope === "string"

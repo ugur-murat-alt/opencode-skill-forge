@@ -6,8 +6,8 @@ import {
   REWRITES_MAX_ENTRIES,
   appendRewrite,
   readRewrites,
-} from "../../src/prompt-editor/rewrites.js";
-import type { RewriteRecord } from "../../src/prompt-editor/rewrites.js";
+} from "../legacy-runtime/prompt-editor/rewrites.js";
+import type { RewriteRecord } from "../legacy-runtime/prompt-editor/rewrites.js";
 
 function stub(over: Partial<RewriteRecord> = {}): RewriteRecord {
   return {

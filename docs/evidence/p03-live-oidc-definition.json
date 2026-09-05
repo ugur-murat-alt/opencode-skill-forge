@@ -1,0 +1,9 @@
+{
+  "files": {
+    "scripts/oidc-smoke.mjs": "23dd02d57c18381ff2a2d7b57f739ea7b871bc81bc385a9aca670fd89c056889",
+    "src/http/oidc.ts": "77c68748cc3fcd50a4bc02e2ad304ec52cd2d3fb22fe5bc7f2f45d612e8b6229",
+    ".github/workflows/verify.yml": "4a490a53db592b76ac2ed936c0c6f1520d7fc11bb57d8967e4defcc6b1eea0ec"
+  },
+  "keycloak_image": "quay.io/keycloak/keycloak@sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54",
+  "caddy_image": "caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
+}

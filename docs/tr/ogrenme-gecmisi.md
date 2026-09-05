@@ -5,7 +5,7 @@ Prompt Editor sayfasındaki dersler yalnız sahibi olan kullanıcı ve yetkili p
 - **Düzenle** metni ve ilgili sözcükleri değiştirir. Etkin/devre dışı durumu korunur. Başka bir işlem aynı dersi değiştirmişse eski formun kaydı 409 hatasıyla durur; güncel kaydı yükleyip yeniden düzenleyin.
 - **Devre dışı bırak** kaydı ve geçmişi korur; dersin sonraki prompt hazırlamalarında seçilmesini engeller. **Etkinleştir** yeniden seçilebilir yapar. Önceden kabul edilmiş bir işin immutable bağlamını değiştirmez.
 - **Geçmiş** en son 20 sürümü, metin, ilgili sözcükler ve etkinlik durumuyla gösterir. Daha eski sürümler saklama sınırında kaldırılır.
-- **Sil** dersi ve onun sürüm geçmişini kaldırır. Aynı içerik tekrar kaydedildiğinde mevcut kayıt varsa onun kimliği döner; otomatik yeni sürüm veya yeni kopya oluşturulmaz.
+- **Sil** dersi ve onun sürüm geçmişini kaldırır. Proje erişimi silmeden önce kaldırılmışsa işlem 403 ile durur; ders ve geçmiş korunur. Aynı içerik tekrar kaydedildiğinde mevcut kayıt varsa onun kimliği döner; otomatik yeni sürüm veya yeni kopya oluşturulmaz.
 
 Etkin ders metni en fazla 5.000, ilgili sözcükler en fazla 200 karakterdir. Sır ve host yolu içeren dersler reddedilir. Retrieval ilgili en fazla üç dersi seçer ve her birinden en fazla 500 karakter alır. Kaydetme/düzenleme sıradan API değişiklikleri olup gerçek model çağrısı gerektirmez.
 

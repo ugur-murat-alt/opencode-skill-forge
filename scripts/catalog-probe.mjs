@@ -1,3 +1,6 @@
+import { sqliteSampler } from "./benchmark-sql.mjs";
+import { measureCall } from "./benchmark-measure.mjs";
+import { runtimeSampler } from "./benchmark-runtime.mjs";
 import { createHash } from "node:crypto";
 import { sql } from "kysely";
 import { readFile, writeFile } from "node:fs/promises";
@@ -21,12 +24,19 @@ const port = socket.address().port;
 await new Promise((r) => socket.close(r));
 const config = await localConfig(input.dataDir, port),
   app = await createHttpServer(config);
+const sqlProfile = input.sql_profile
+  ? await sqliteSampler(app.forge.storage.db)
+  : null;
 const client = new Client({ name: "catalog-benchmark", version: "1" });
 const values = [];
 const report = {
   captured_at: new Date().toISOString(),
   status: "running",
   kind: "real-local-mcp-catalog-fixture-no-model",
+  cpu_profile: input.cpu_profile ?? null,
+  sql_profile: input.sql_profile
+    ? { acceptance: false, signature_limit: 256 }
+    : null,
   hardware: {
     platform: platform(),
     arch: arch(),
@@ -37,6 +47,18 @@ const report = {
     memory_bytes: totalmem(),
     disk_media: "not_measured",
   },
+  harness_sha256: createHash("sha256")
+    .update(await readFile(new URL(import.meta.url)))
+    .digest("hex"),
+  diagnostics_sha256: createHash("sha256")
+    .update(await readFile(new URL("./benchmark-runtime.mjs", import.meta.url)))
+    .digest("hex"),
+  measurement_sha256: createHash("sha256")
+    .update(await readFile(new URL("./benchmark-measure.mjs", import.meta.url)))
+    .digest("hex"),
+  sql_diagnostics_sha256: createHash("sha256")
+    .update(await readFile(new URL("./benchmark-sql.mjs", import.meta.url)))
+    .digest("hex"),
   dataset: {
     count: input.count,
     sha256: input.dataset_sha256,
@@ -46,22 +68,17 @@ const report = {
 };
 const extraClients = new Set();
 let soakSamples = [];
-const measure = async (tool, args, phase, sender = client) => {
-  const start = performance.now();
-  const response = await sender.callTool({ name: tool, arguments: args });
-  const elapsed = performance.now() - start;
-  if (response.isError) throw Error(JSON.stringify(response));
-  const value = JSON.parse(
-    response.content.find((c) => c.type === "text").text,
-  );
-  (phase === "soak" ? soakSamples : values).push({
+let runtime;
+const measure = (tool, args, phase, sender = client, scheduledAt) =>
+  measureCall(
+    sender,
     tool,
+    args,
     phase,
-    elapsed_ms: elapsed,
-    response_bytes: Buffer.byteLength(JSON.stringify(response)),
-  });
-  return value;
-};
+    (sample) => (phase === "soak" ? soakSamples : values).push(sample),
+    scheduledAt,
+  );
+
 try {
   const boot = performance.now();
   await app.listen({ host: config.host, port: config.port });
@@ -145,6 +162,54 @@ try {
     revision: input.sample.revision,
   };
   await measure("forge_load", load, "first_load_after_integrity_scan");
+  runtime = runtimeSampler();
+  const warmupStarted = performance.now(),
+    warmupPending = [];
+  for (let i = 0; i < 500; i++) {
+    const scheduledAt = warmupStarted + i * 10;
+    const delay = scheduledAt - performance.now();
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    warmupPending.push(
+      measure(
+        i % 2 ? "forge_load" : "forge_search",
+        i % 2
+          ? load
+          : { project_ref: input.project, query: "category", limit: 5 },
+        "warmup",
+        client,
+        scheduledAt,
+      ).then(
+        () => null,
+        (error) => String(error),
+      ),
+    );
+  }
+  const warmupFailures = (await Promise.all(warmupPending)).filter(Boolean);
+  report.warmup = {
+    requests: 500,
+    requested_rps: 100,
+    planned_duration_ms: 5000,
+    elapsed_ms: performance.now() - warmupStarted,
+    errors: warmupFailures.length,
+    sql: sqlProfile?.sample() ?? null,
+    runtime: runtime.sample(),
+    latency: Object.fromEntries(
+      ["forge_search", "forge_load"].map((tool) => {
+        const samples = values
+          .filter((v) => v.phase === "warmup" && v.tool === tool)
+          .map((v) => v.elapsed_ms)
+          .sort((a, b) => a - b);
+        return [
+          tool,
+          {
+            n: samples.length,
+            includes_failed_calls: true,
+            p95_ms: samples[Math.ceil(samples.length * 0.95) - 1] ?? null,
+          },
+        ];
+      }),
+    ),
+  };
   const started = performance.now(),
     count = 300,
     rate = 100,
@@ -159,6 +224,8 @@ try {
           ? load
           : { project_ref: input.project, query: "category", limit: 5 },
         "warm_100_rps",
+        client,
+        started + (i * 1000) / rate,
       ).then(
         () => null,
         (error) => String(error),
@@ -166,9 +233,11 @@ try {
     );
   }
   const outcomes = await Promise.all(pending);
-  const errors = outcomes.filter(Boolean);
+  const errors = [...warmupFailures, ...outcomes.filter(Boolean)];
   report.errors = errors;
   report.load = {
+    sql: sqlProfile?.sample() ?? null,
+    runtime: runtime.sample(),
     requested_rps: rate,
     requests: count,
     elapsed_ms: performance.now() - started,
@@ -259,11 +328,14 @@ try {
           .map((v) => v.elapsed_ms)
           .sort((a, b) => a - b);
         const percentile = (p) =>
-          samples[
-            Math.min(samples.length - 1, Math.ceil(samples.length * p) - 1)
-          ];
+          samples.length
+            ? samples[
+                Math.min(samples.length - 1, Math.ceil(samples.length * p) - 1)
+              ]
+            : null;
         latency[tool] = {
           n: samples.length,
+          includes_failed_calls: true,
           p50_ms: percentile(0.5),
           p95_ms: percentile(0.95),
           p99_ms: percentile(0.99),
@@ -297,6 +369,8 @@ try {
   }
 
   if (input.soak_minutes) {
+    report.soak_preparation_sql = sqlProfile?.sample() ?? null;
+    report.soak_preparation_runtime = runtime.sample();
     const soakStarted = performance.now();
     report.soak = {
       minutes: input.soak_minutes,
@@ -320,6 +394,8 @@ try {
               ? load
               : { project_ref: input.project, query: "category", limit: 5 },
             "soak",
+            client,
+            windowStart + i * 10,
           ).then(
             () => null,
             (error) => String(error),
@@ -336,11 +412,14 @@ try {
           .map((v) => v.elapsed_ms)
           .sort((a, b) => a - b);
         const percentile = (p) =>
-          samples[
-            Math.min(samples.length - 1, Math.ceil(samples.length * p) - 1)
-          ];
+          samples.length
+            ? samples[
+                Math.min(samples.length - 1, Math.ceil(samples.length * p) - 1)
+              ]
+            : null;
         latency[tool] = {
           n: samples.length,
+          includes_failed_calls: true,
           p50_ms: percentile(0.5),
           p95_ms: percentile(0.95),
           p99_ms: percentile(0.99),
@@ -352,6 +431,18 @@ try {
         errors: failures.length,
         elapsed_ms: performance.now() - windowStart,
         latency,
+        scheduler: {
+          max_delay_ms: Math.max(
+            0,
+            ...soakSamples.map((v) => v.scheduler_delay_ms),
+          ),
+          max_scheduled_to_complete_ms: Math.max(
+            0,
+            ...soakSamples.map((v) => v.scheduled_to_complete_ms),
+          ),
+        },
+        sql: sqlProfile?.sample() ?? null,
+        runtime: runtime.sample(),
         rss_bytes: process.memoryUsage().rss,
         heap_used_bytes: process.memoryUsage().heapUsed,
       };
@@ -399,21 +490,29 @@ try {
   report.error = String(error);
   process.exitCode = 1;
 } finally {
+  runtime?.close();
+  if (sqlProfile) {
+    report.sql_profile.totals = sqlProfile.totals();
+    sqlProfile.close();
+  }
   await Promise.allSettled([...extraClients].map((item) => item.close()));
   await client.close();
   await app.close();
   await writeFile(outputPath, JSON.stringify(report, null, 2) + "\n");
   await writeFile(
     outputPath.replace(/\.json$/, ".csv"),
-    "tool,phase,elapsed_ms,response_bytes\n" +
+    "tool,phase,outcome,elapsed_ms,scheduler_delay_ms,scheduled_to_complete_ms,response_bytes\n" +
       values
-        .map((v) => `${v.tool},${v.phase},${v.elapsed_ms},${v.response_bytes}`)
+        .map(
+          (v) =>
+            `${v.tool},${v.phase},${v.outcome},${v.elapsed_ms},${v.scheduler_delay_ms},${v.scheduled_to_complete_ms},${v.response_bytes}`,
+        )
         .join("\n") +
       "\n",
   );
   await writeFile(
     outputPath.replace(/\.json$/, ".md"),
-    `# Gerçek katalog ölçümü\n\nDurum: ${report.status}. Paket: ${input.count}. Node: ${process.version}.\n\n\`\`\`json\n${JSON.stringify({ context: report.context, load: report.load, latency: report.latency, client_matrix: report.client_matrix, soak: report.soak, target_met: report.engineering_target_met }, null, 2)}\n\`\`\`\n\n${(report.limitations ?? []).join("\n\n")}\n`,
+    `# Gerçek katalog ölçümü\n\nDurum: ${report.status}. Paket: ${input.count}. Node: ${process.version}.\n\n\`\`\`json\n${JSON.stringify({ context: report.context, warmup: report.warmup, load: report.load, latency: report.latency, client_matrix: report.client_matrix, soak: report.soak, target_met: report.engineering_target_met }, null, 2)}\n\`\`\`\n\n${(report.limitations ?? []).join("\n\n")}\n`,
   );
 }
 console.log(

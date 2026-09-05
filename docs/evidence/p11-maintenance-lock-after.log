@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [404.57ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [326.54ms]
+
+test/maintenance-lock.test.ts:
+(pass) maintenance sqlite archive: project revocation serializes before item writes [291.67ms]
+(pass) maintenance sqlite restore: project revocation serializes before item writes [287.34ms]
+(pass) maintenance postgres archive: project revocation serializes before item writes [179.63ms]
+(pass) maintenance postgres restore: project revocation serializes before item writes [148.47ms]
+
+ 6 pass
+ 0 fail
+ 84 expect() calls
+Ran 6 tests across 2 files. [1.85s]

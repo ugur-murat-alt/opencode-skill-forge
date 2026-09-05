@@ -2,13 +2,13 @@
 
 **Projeler ve ayarlar** ekranında çalışma alanı sahibi veya yöneticisi, kullanıcıları ve seçili projeye erişimi yönetir. Üyeler 50 kişilik sayfalarda gösterilir. Görüntüleyici/editör bu yönetim API'sini kullanamaz.
 
-| Çalışma alanı rolü | Erişim |
-|---|---|
-| Sahip | Bütün projelere ve yönetim işlemlerine erişir. Sahip üyeliği bu ekrandan kaldırılamaz veya düşürülemez. |
-| Yönetici | Bütün projelere ve yönetim işlemlerine erişir. |
-| Editör | Yalnız açık proje üyeliği olan projelere erişir. Proje rolü görüntüleyici ise yazamaz. |
-| Görüntüleyici | Yalnız açık proje üyeliği olan projeleri okur. Proje editör rolü çalışma alanı sınırını yükseltmez. |
-| Devre dışı | Rolü ne olursa olsun çalışma alanına erişemez. Mevcut oturum ve token aynı yetki kontrolünden geçer. |
+| Çalışma alanı rolü | Erişim                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| Sahip              | Bütün projelere ve yönetim işlemlerine erişir. Sahip üyeliği bu ekrandan kaldırılamaz veya düşürülemez. |
+| Yönetici           | Bütün projelere ve yönetim işlemlerine erişir.                                                          |
+| Editör             | Yalnız açık proje üyeliği olan projelere erişir. Proje rolü görüntüleyici ise yazamaz.                  |
+| Görüntüleyici      | Yalnız açık proje üyeliği olan projeleri okur. Proje editör rolü çalışma alanı sınırını yükseltmez.     |
+| Devre dışı         | Rolü ne olursa olsun çalışma alanına erişemez. Mevcut oturum ve token aynı yetki kontrolünden geçer.    |
 
 ## Kullanıcı tanımlama
 

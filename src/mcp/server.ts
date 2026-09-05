@@ -1,3 +1,4 @@
+import { publishedToolSchemas } from "./published-schemas.js";
 import type { ForgeService } from "../application/forge.js";
 import type { Identity } from "../application/identity.js";
 import { toolSchemas, toolDescriptions, type ToolName } from "./schemas.js";
@@ -29,7 +30,7 @@ export function createMcpServer(
                 },
               }
             : {}),
-          inputSchema: toolSchemas[name],
+          inputSchema: publishedToolSchemas[name],
           annotations: {
             readOnlyHint: [
               "forge_search",

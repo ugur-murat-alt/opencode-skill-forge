@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { sql } from "kysely";
 import { openDatabase } from "../src/storage/database.js";
 import { SecretVault } from "../src/storage/secrets.js";
-import { IdentityService, type Identity } from "../src/application/identity.js";
+import { IdentityService } from "../src/application/identity.js";
 import { MemberService } from "../src/application/members.js";
 import { ProviderService } from "../src/application/providers.js";
 import { SettingsService } from "../src/application/settings.js";

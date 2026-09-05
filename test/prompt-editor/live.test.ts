@@ -13,7 +13,7 @@ import {
   statesFile,
   requestsFile,
   cancelOrphanedManualStates,
-} from "../../src/prompt-editor/live.js";
+} from "../legacy-runtime/prompt-editor/live.js";
 import { enqueueRequest, writeSessionFlags } from "./helpers.js";
 
 let sandbox: string;

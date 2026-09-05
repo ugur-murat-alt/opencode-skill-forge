@@ -2,8 +2,122 @@
 import { createRequire } from "node:module";
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
-// src/migration/remote.ts
+// src/backup/pins.ts
+import { randomUUID } from "node:crypto";
+async function pinPostgres(client, revisions) {
+  const pins = revisions.map((row) => ({ ...row, id: randomUUID() }));
+  await client.query("BEGIN");
+  try {
+    for (const tenant of [
+      ...new Set(revisions.map((row) => row.tenant_id))
+    ].sort())
+      await client.query("UPDATE tenants SET name = name WHERE id = $1", [
+        tenant
+      ]);
+    for (let start = 0;start < pins.length; start += 250) {
+      const group = pins.slice(start, start + 250);
+      await client.query("INSERT INTO revision_readers (tenant_id, id, skill_id, revision, created_at) SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[])", [
+        group.map((r) => r.tenant_id),
+        group.map((r) => r.id),
+        group.map((r) => r.skill_id),
+        group.map((r) => r.revision),
+        group.map(() => Date.now())
+      ]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+  return async () => {
+    for (let start = 0;start < pins.length; start += 250) {
+      const group = pins.slice(start, start + 250);
+      await client.query("DELETE FROM revision_readers WHERE (tenant_id, id) IN (SELECT * FROM unnest($1::text[], $2::text[]))", [group.map((r) => r.tenant_id), group.map((r) => r.id)]);
+    }
+  };
+}
+
+// src/backup/postgres.ts
+import { Client } from "pg";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { chmod as chmod2, rm as rm2 } from "node:fs/promises";
+import { join as join5, resolve as resolve4 } from "node:path";
+import { randomBytes as randomBytes4 } from "node:crypto";
+
+// src/domain/settings.ts
 import { z } from "zod";
+var settingsSchema = z.object({
+  promptEnabled: z.boolean().optional(),
+  evolutionEnabled: z.boolean().optional(),
+  promptMode: z.enum(["when-needed", "always", "off"]).optional(),
+  autoApply: z.boolean().optional(),
+  learning: z.enum(["off", "reusable-only"]).optional(),
+  retentionDays: z.number().int().min(1).max(3650).optional(),
+  maxCalls: z.number().int().min(1).max(100).optional(),
+  maxTokens: z.number().int().min(64).max(1e6).optional(),
+  maxCostMicros: z.number().int().min(0).max(1e9).optional(),
+  concurrency: z.number().int().min(1).max(1000).optional(),
+  dependencyInstall: z.boolean().optional(),
+  scriptAllowedOrigins: z.array(z.url()).max(20).optional(),
+  allowedOrigins: z.array(z.url()).max(30).optional(),
+  allowPaid: z.boolean().optional()
+}).strict();
+var defaultSettings = {
+  promptEnabled: true,
+  evolutionEnabled: true,
+  promptMode: "when-needed",
+  autoApply: true,
+  learning: "reusable-only",
+  retentionDays: 30,
+  maxCalls: 6,
+  maxTokens: 16384,
+  maxCostMicros: 0,
+  concurrency: 2,
+  allowedOrigins: [],
+  allowPaid: false,
+  dependencyInstall: false,
+  scriptAllowedOrigins: []
+};
+function resolveSettings(policy, layers) {
+  const initial = { ...defaultSettings, ...settingsSchema.parse(policy) };
+  const result = {
+    values: initial,
+    sources: Object.fromEntries(Object.keys(initial).map((key) => [key, "system_policy"]))
+  };
+  for (const layer of layers) {
+    const parsed = settingsSchema.parse(layer.values);
+    for (const key of Object.keys(parsed)) {
+      const incoming = parsed[key];
+      if (incoming === undefined)
+        continue;
+      let next = incoming;
+      if ([
+        "maxCalls",
+        "maxTokens",
+        "maxCostMicros",
+        "concurrency",
+        "retentionDays"
+      ].includes(key))
+        next = Math.min(result.values[key], incoming);
+      if (key === "allowPaid" || key === "dependencyInstall")
+        next = result.values[key] && Boolean(incoming);
+      if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
+        next = result.values[key].filter((origin) => incoming.includes(origin));
+      if (JSON.stringify(next) !== JSON.stringify(result.values[key])) {
+        Object.assign(result.values, { [key]: next });
+        result.sources[key] = layer.source;
+      }
+    }
+  }
+  return result;
+}
+
+// src/cli/config.ts
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, open, readFile, lstat, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 // src/domain/errors.ts
 class ForgeError extends Error {
@@ -33,26 +147,839 @@ function errorEnvelope(error) {
   };
 }
 
+// src/cli/config.ts
+var PRODUCT_VERSION = "1.0.0";
+var PROTOCOL_VERSION = 1;
+function defaultDataDir(env = process.env) {
+  if (env.SKILL_FORGE_DATA_DIR)
+    return resolve(env.SKILL_FORGE_DATA_DIR);
+  if (process.platform === "win32")
+    return join(env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "SkillForge");
+  if (process.platform === "darwin")
+    return join(homedir(), "Library", "Application Support", "SkillForge");
+  return join(env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "skill-forge");
+}
+async function localConfig(dataDir = defaultDataDir(), requestedPort) {
+  dataDir = resolve(dataDir);
+  await mkdir(dataDir, { recursive: true, mode: 448 });
+  const stat = await lstat(dataDir);
+  if (stat.isSymbolicLink() || !stat.isDirectory() || process.platform !== "win32" && ((stat.mode & 63) !== 0 || stat.uid !== process.getuid?.()))
+    throw new ForgeError("insecure_data_dir", "Veri dizini sahip kullanıcıya ait ve yalnız ona açık (0700) olmalıdır.");
+  dataDir = await realpath(dataDir);
+  const tokenPath = join(dataDir, "owner-token");
+  try {
+    const fd = await open(tokenPath, "wx", 384);
+    try {
+      await fd.writeFile(randomBytes(32).toString("hex"));
+      await fd.sync();
+    } finally {
+      await fd.close();
+    }
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      throw error;
+  }
+  const tokenStat = await lstat(tokenPath);
+  if (!tokenStat.isFile() || tokenStat.isSymbolicLink() || tokenStat.nlink !== 1 || process.platform !== "win32" && ((tokenStat.mode & 63) !== 0 || tokenStat.uid !== process.getuid?.()))
+    throw new ForgeError("insecure_credential", "Yerel kimlik dosyasının izinleri güvenli değil.");
+  let token = "";
+  for (let i = 0;i < 50; i++) {
+    token = await readFile(tokenPath, "utf8");
+    if (/^[a-f0-9]{64}$/.test(token))
+      break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  if (!/^[a-f0-9]{64}$/.test(token))
+    throw new ForgeError("invalid_credential", "Yerel kimlik dosyası geçersiz.");
+  let policy = {};
+  try {
+    const policyPath = join(dataDir, "policy.json"), policyStat = await lstat(policyPath);
+    if (!policyStat.isFile() || policyStat.isSymbolicLink() || policyStat.nlink !== 1 || policyStat.size > 32768 || process.platform !== "win32" && ((policyStat.mode & 63) !== 0 || policyStat.uid !== process.getuid?.()))
+      throw new ForgeError("insecure_policy", "Sistem politika dosyası güvenli değil.");
+    policy = settingsSchema.parse(JSON.parse(await readFile(policyPath, "utf8")));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  }
+  const port = requestedPort ?? Number(process.env.SKILL_FORGE_PORT ?? 20000 + createHash("sha256").update(dataDir).digest().readUInt16BE(0) % 30000);
+  if (!Number.isInteger(port) || port < 0 || port > 65535)
+    throw new ForgeError("invalid_port", "Port geçersiz.");
+  if (process.env.SKILL_FORGE_PROFILE === "server") {
+    const postgresUrl = process.env.SKILL_FORGE_POSTGRES_URL;
+    const publicUrl = process.env.SKILL_FORGE_PUBLIC_URL;
+    const issuer = process.env.SKILL_FORGE_OIDC_ISSUER;
+    const clientId = process.env.SKILL_FORGE_OIDC_CLIENT_ID;
+    if (!postgresUrl || !publicUrl || !issuer || !clientId)
+      throw new ForgeError("server_config_missing", "Sunucu profili PostgreSQL, public URL ve OIDC ayarlarını gerektirir.");
+    return {
+      dataDir,
+      policy,
+      token,
+      port,
+      host: "0.0.0.0",
+      url: publicUrl,
+      profile: "server",
+      postgresUrl,
+      oidc: {
+        issuer,
+        clientId,
+        clientSecret: process.env.SKILL_FORGE_OIDC_CLIENT_SECRET,
+        audience: publicUrl,
+        publicUrl
+      }
+    };
+  }
+  return {
+    dataDir,
+    policy,
+    token,
+    port,
+    host: "127.0.0.1",
+    url: `http://127.0.0.1:${port}`,
+    profile: "local"
+  };
+}
+
+// src/skills/paths.ts
+import { constants } from "node:fs";
+import { lstat as lstat2, open as open2, opendir } from "node:fs/promises";
+import { join as join2, resolve as resolve2, dirname, basename } from "node:path";
+function validatePackagePath(path) {
+  if (!path || path.length > 500 || path !== path.normalize("NFC") || path.includes("\\") || path.startsWith("/") || /[\x00-\x1f\x7f<>:"|?*]/.test(path))
+    throw new ForgeError("unsafe_path", "Paket yolu geçersiz.");
+  for (const segment of path.split("/"))
+    if (!segment || segment === "." || segment === ".." || /[. ]$/.test(segment) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(segment) || segment.toLowerCase() === ".git")
+      throw new ForgeError("unsafe_path", "Paket yolu platformda güvenli değil.");
+  return path;
+}
+function validateInventory(paths) {
+  if (paths.length > 256)
+    throw new ForgeError("package_limit", "Paket en fazla 256 dosya içerebilir.");
+  const seen = new Set;
+  for (const path of paths) {
+    validatePackagePath(path);
+    const folded = path.normalize("NFKC").toLocaleLowerCase("en-US");
+    if (seen.has(folded))
+      throw new ForgeError("path_collision", "Unicode veya case çakışan paket yolu.");
+    seen.add(folded);
+    for (const other of paths)
+      if (other !== path && other.toLowerCase().startsWith(`${path.toLowerCase()}/`))
+        throw new ForgeError("path_collision", "Aynı yol hem dosya hem dizin olamaz.");
+  }
+}
+async function withPackageDirectory(root, callback) {
+  root = resolve2(root);
+  const roots = [];
+  const pending = new Set;
+  let closed = false;
+  try {
+    let tracked = function(run) {
+      if (closed)
+        return Promise.reject(new ForgeError("reader_closed", "Paket okuyucusu kapandı."));
+      const operation = run();
+      pending.add(operation);
+      operation.then(() => pending.delete(operation), () => pending.delete(operation));
+      return operation;
+    };
+    let anchor = root;
+    if (process.platform === "linux") {
+      anchor = "/";
+      for (const segment of ["", ...root.split("/").filter(Boolean)]) {
+        const handle = await open2(segment ? join2(anchor, segment) : anchor, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch((error) => {
+          if (error.code === "ENOTDIR" || error.code === "ELOOP")
+            throw new ForgeError("unsafe_path", "Paket kökü yönlendirilmiş veya dizin dışı olamaz.");
+          throw error;
+        });
+        roots.push(handle);
+        anchor = `/proc/self/fd/${handle.fd}`;
+        if (roots.length > 1) {
+          await roots[0].close();
+          roots.shift();
+        }
+      }
+    } else {
+      for (let ancestor = root;; ancestor = dirname(ancestor)) {
+        const info = await lstat2(ancestor);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new ForgeError("unsafe_path", "Paket kökü yönlendirilmiş olamaz.");
+        if (dirname(ancestor) === ancestor)
+          break;
+      }
+      roots.push(await open2(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
+    }
+    const reader = {
+      read: (path, maxBytes = 4 * 1024 * 1024) => tracked(() => readAnchored(anchor, path, maxBytes)),
+      inventory: () => tracked(() => inventoryAnchored(anchor))
+    };
+    return await callback(reader);
+  } catch (error) {
+    if (error instanceof ForgeError)
+      throw error;
+    throw new ForgeError("unsafe_or_missing_file", "Paket dizini güvenli biçimde okunamadı.", 422);
+  } finally {
+    closed = true;
+    await Promise.allSettled(pending);
+    await Promise.allSettled(roots.reverse().map((handle) => handle.close()));
+  }
+}
+async function readAnchored(root, path, maxBytes) {
+  validatePackagePath(path);
+  const handles = [];
+  let current = root;
+  try {
+    for (const segment of path.split("/").slice(0, -1)) {
+      const handle = await open2(join2(current, segment), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      handles.push(handle);
+      if (handles.length > 1) {
+        await handles[0].close();
+        handles.shift();
+      }
+      current = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : join2(current, segment);
+    }
+    const file = await open2(join2(current, basename(path)), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = await file.stat();
+      if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes)
+        throw new ForgeError("unsafe_file", "Dosya tipi/link sayısı/boyutu güvenli değil.");
+      const bytes = await file.readFile();
+      const after = await file.stat();
+      if (bytes.length > maxBytes || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
+        throw new ForgeError("file_changed", "Dosya okuma sırasında değişti.", 409);
+      return bytes;
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    if (error instanceof ForgeError)
+      throw error;
+    throw new ForgeError("unsafe_or_missing_file", "Paket dosyası güvenli biçimde okunamadı.", 422);
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()));
+  }
+}
+async function inventoryAnchored(root) {
+  const paths = [], relativeParts = [];
+  let entries = 0;
+  async function walk(anchor, depth) {
+    if (depth > 12)
+      throw new ForgeError("package_limit", "Dizin derinliği aşıldı.");
+    const directory = await opendir(anchor, { bufferSize: 32 });
+    for await (const entry of directory) {
+      if (++entries > 1280)
+        throw new ForgeError("package_limit", "Paket dizin/dosya sınırı aşıldı.");
+      const relative = [...relativeParts, entry.name].join("/");
+      validatePackagePath(relative);
+      const child = join2(anchor, entry.name), stat = await lstat2(child);
+      if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile() || stat.isFile() && stat.nlink !== 1)
+        throw new ForgeError("unsafe_file", "Paket link veya özel dosya içeremez.");
+      if (stat.isDirectory()) {
+        const handle = await open2(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        relativeParts.push(entry.name);
+        try {
+          await walk(process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : child, depth + 1);
+        } finally {
+          relativeParts.pop();
+          await handle.close();
+        }
+      } else {
+        if (stat.size > 4 * 1024 * 1024)
+          throw new ForgeError("package_limit", "Paket dosya boyutu aşıldı.");
+        paths.push(relative);
+        if (paths.length > 256)
+          throw new ForgeError("package_limit", "Paket dosya sınırı aşıldı.");
+      }
+    }
+  }
+  await walk(root, 0);
+  validateInventory(paths);
+  return paths.sort();
+}
+async function secureRead(root, relativePath, maxBytes = 4 * 1024 * 1024) {
+  validatePackagePath(relativePath);
+  return withPackageDirectory(root, (reader) => reader.read(relativePath, maxBytes));
+}
+async function packageInventory(root) {
+  return withPackageDirectory(root, (reader) => reader.inventory());
+}
+async function readPackageDirectory(root) {
+  return withPackageDirectory(root, async (reader) => {
+    const files = {};
+    let total = 0;
+    for (const path of await reader.inventory()) {
+      files[path] = await reader.read(path);
+      total += files[path].length;
+      if (total > 4 * 1024 * 1024)
+        throw new ForgeError("package_limit", "Paket boyut sınırı aşıldı.");
+    }
+    return files;
+  });
+}
+
+// src/backup/sqlite.ts
+import { createHash as createHash3, randomBytes as randomBytes3, randomUUID as randomUUID3 } from "node:crypto";
+import { mkdir as mkdir3, writeFile, rm, lstat as lstat4, readdir, chmod } from "node:fs/promises";
+import { dirname as dirname2, join as join4, resolve as resolve3, relative, isAbsolute, sep } from "node:path";
+
+// src/storage/secrets.ts
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes as randomBytes2,
+  createHash as createHash2,
+  randomUUID as randomUUID2
+} from "node:crypto";
+import { mkdir as mkdir2, open as open3, readFile as readFile2, lstat as lstat3 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+class SecretVault {
+  root;
+  key;
+  constructor(root, key) {
+    this.root = root;
+    this.key = key;
+  }
+  static async open(dataDir) {
+    const root = join3(dataDir, "secrets");
+    await mkdir2(root, { recursive: true, mode: 448 });
+    const stat = await lstat3(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || process.platform !== "win32" && stat.mode & 63)
+      throw new ForgeError("insecure_vault", "Secret dizini güvenli değil.");
+    const path = join3(root, "master.key");
+    try {
+      const fd = await open3(path, "wx", 384);
+      try {
+        await fd.writeFile(randomBytes2(32));
+        await fd.sync();
+      } finally {
+        await fd.close();
+      }
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+    }
+    const keyStat = await lstat3(path);
+    if (!keyStat.isFile() || keyStat.isSymbolicLink() || keyStat.nlink !== 1 || process.platform !== "win32" && keyStat.mode & 63)
+      throw new ForgeError("insecure_vault_key", "Secret anahtar dosyası güvenli değil.");
+    let key = Buffer.alloc(0);
+    for (let i = 0;i < 50; i++) {
+      key = await readFile2(path);
+      if (key.length === 32)
+        break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (key.length !== 32)
+      throw new ForgeError("invalid_vault_key", "Secret anahtarı eksik.");
+    return new SecretVault(root, key);
+  }
+  scope(tenant, user) {
+    return createHash2("sha256").update(JSON.stringify([tenant, user])).digest("hex");
+  }
+  async put(tenant, user, value) {
+    if (!value || value.length > 16384)
+      throw new ForgeError("invalid_secret", "Secret boyutu geçersiz.");
+    const ref = randomUUID2(), scope = this.scope(tenant, user);
+    const nonce = randomBytes2(12);
+    const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
+    cipher.setAAD(Buffer.from(`${scope}:${ref}`));
+    const encrypted = Buffer.concat([
+      cipher.update(value, "utf8"),
+      cipher.final()
+    ]);
+    const path = join3(this.root, `${scope}-${ref}.json`);
+    const fd = await open3(path, "wx", 384);
+    try {
+      await fd.writeFile(JSON.stringify({
+        version: 1,
+        nonce: nonce.toString("base64"),
+        tag: cipher.getAuthTag().toString("base64"),
+        ciphertext: encrypted.toString("base64")
+      }));
+      await fd.sync();
+    } finally {
+      await fd.close();
+    }
+    return ref;
+  }
+  async get(tenant, user, ref) {
+    if (!/^[a-f0-9-]{36}$/.test(ref))
+      throw new ForgeError("secret_unavailable", "Secret referansı geçersiz.", 404);
+    const scope = this.scope(tenant, user), path = join3(this.root, `${scope}-${ref}.json`);
+    try {
+      const stat = await lstat3(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 32768)
+        throw new Error("unsafe secret");
+      const value = JSON.parse(await readFile2(path, "utf8"));
+      const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(value.nonce, "base64"));
+      decipher.setAAD(Buffer.from(`${scope}:${ref}`));
+      decipher.setAuthTag(Buffer.from(value.tag, "base64"));
+      return Buffer.concat([
+        decipher.update(Buffer.from(value.ciphertext, "base64")),
+        decipher.final()
+      ]).toString("utf8");
+    } catch {
+      throw new ForgeError("secret_unavailable", "Bu kapsam için secret okunamadı.", 404);
+    }
+  }
+}
+
+// src/backup/sqlite.ts
+var hash = (data) => createHash3("sha256").update(data).digest("hex");
+var limit = 128 * 1024 * 1024;
+function fail(message) {
+  throw new ForgeError("backup_invalid", message);
+}
+async function native(path, readonly = true) {
+  if (typeof Bun !== "undefined")
+    fail("Backup/restore Node çalışma zamanı gerektirir.");
+  const { default: Database } = await import("better-sqlite3");
+  const info = await lstat4(path);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
+    fail("SQLite dosyası güvenli değil.");
+  let parent = dirname2(path);
+  while (true) {
+    const stat = await lstat4(parent);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      fail("Veri yolu symlink içeremez.");
+    const next = dirname2(parent);
+    if (next === parent)
+      break;
+    parent = next;
+  }
+  const database = new Database(path, { readonly, fileMustExist: true });
+  database.pragma("foreign_keys = ON");
+  database.pragma("busy_timeout = 5000");
+  return database;
+}
+async function references(root, query) {
+  const files = new Map;
+  for (const row of await query("SELECT revision, package_path, manifest_json FROM skill_revisions")) {
+    const manifest = JSON.parse(row.manifest_json);
+    if (manifest.hash !== row.revision || !Array.isArray(manifest.files) || manifest.files.length > 256)
+      fail("Revision manifest geçersiz.");
+    for (const file of manifest.files) {
+      const path = `${row.package_path}/${file.path}`;
+      validatePackagePath(path);
+      files.set(path, { bytes: file.bytes, hash: file.hash });
+    }
+  }
+  const secrets = await query("SELECT tenant_id, user_id, secret_ref FROM provider_profiles WHERE secret_ref IS NOT NULL");
+  if (secrets.length) {
+    await secureRead(root, "secrets/master.key", 32);
+    const vault = await SecretVault.open(root);
+    files.set("secrets/master.key", {});
+    for (const row of secrets) {
+      await vault.get(row.tenant_id, row.user_id, row.secret_ref);
+      const scope = createHash3("sha256").update(JSON.stringify([row.tenant_id, row.user_id])).digest("hex");
+      files.set(`secrets/${scope}-${row.secret_ref}.json`, {});
+    }
+  }
+  for (const row of await query("SELECT result_json FROM executions WHERE result_json IS NOT NULL")) {
+    const result = JSON.parse(row.result_json);
+    for (const artifact of result.artifacts ?? []) {
+      if (!result.sandbox_execution_id)
+        fail("Artifact execution kimliği eksik.");
+      const path = `execution/${result.sandbox_execution_id}/artifacts/${artifact.path}`;
+      validatePackagePath(path);
+      files.set(path, { bytes: artifact.bytes });
+    }
+    if (result.result_artifact_path) {
+      const path = `execution/${result.sandbox_execution_id}/artifacts/${result.result_artifact_path}`;
+      validatePackagePath(path);
+      files.set(path, { bytes: result.result_bytes });
+    }
+  }
+  return files;
+}
+async function fresh(path, source) {
+  const rel = relative(source, path);
+  if (!rel || rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+    fail("Hedef kaynak dizin içinde olamaz.");
+  let parent = dirname2(path);
+  while (true) {
+    const info = await lstat4(parent);
+    if (!info.isDirectory() || info.isSymbolicLink())
+      fail("Hedef üst dizini güvenli değil.");
+    const next = dirname2(parent);
+    if (next === parent)
+      break;
+    parent = next;
+  }
+  await mkdir3(path, { mode: 448 });
+}
+async function save(root, path, bytes) {
+  validatePackagePath(path);
+  await mkdir3(dirname2(join4(root, path)), { recursive: true, mode: 448 });
+  await writeFile(join4(root, path), bytes, { flag: "wx", mode: 384 });
+}
+async function backupSqlite(source, destination) {
+  source = resolve3(source);
+  destination = resolve3(destination);
+  const db = await native(join4(source, "local.sqlite"), false);
+  let created = false;
+  let unpin;
+  try {
+    await fresh(destination, source);
+    created = true;
+    await db.backup(join4(destination, "local.sqlite"));
+    await chmod(join4(destination, "local.sqlite"), 384);
+    const snapshot = await native(join4(destination, "local.sqlite"));
+    const files = [];
+    try {
+      const revisions = snapshot.prepare("SELECT tenant_id, skill_id, revision FROM skill_revisions LIMIT 100000").all();
+      if (revisions.length >= 1e5)
+        fail("Yedek revision sınırı aşıldı.");
+      const pins = revisions.map((row) => ({ ...row, id: randomUUID3() }));
+      db.transaction(() => {
+        const insert = db.prepare("INSERT INTO revision_readers (tenant_id, id, skill_id, revision, created_at) VALUES (?, ?, ?, ?, ?)");
+        for (const pin of pins)
+          insert.run(pin.tenant_id, pin.id, pin.skill_id, pin.revision, Date.now());
+      })();
+      unpin = () => db.transaction(() => {
+        const remove = db.prepare("DELETE FROM revision_readers WHERE tenant_id = ? AND id = ?");
+        for (const pin of pins)
+          remove.run(pin.tenant_id, pin.id);
+      })();
+      const refs = await sqliteReferences(source, snapshot);
+      files.push(...await copyReferences(source, destination, refs));
+    } finally {
+      snapshot.close();
+    }
+    const verification = await native(join4(destination, "local.sqlite"));
+    try {
+      await sqliteReferences(destination, verification);
+    } finally {
+      verification.close();
+    }
+    const bytes = await secureRead(destination, "local.sqlite", 1073741824);
+    files.push({
+      path: "local.sqlite",
+      bytes: bytes.length,
+      hash: hash(bytes)
+    });
+    unpin?.();
+    unpin = undefined;
+    const manifest = {
+      format: 1,
+      product: PRODUCT_VERSION,
+      backend: "sqlite",
+      created_at: new Date().toISOString(),
+      files
+    };
+    await save(destination, "backup.json", Buffer.from(JSON.stringify(manifest)));
+    return { status: "created", files: files.length, destination };
+  } catch (error) {
+    if (created)
+      await rm(destination, { recursive: true, force: true });
+    throw error;
+  } finally {
+    try {
+      unpin?.();
+    } finally {
+      db.close();
+    }
+  }
+}
+async function restoreSqlite(source, destination) {
+  source = resolve3(source);
+  destination = resolve3(destination);
+  const manifest = JSON.parse((await secureRead(source, "backup.json", 33554432)).toString());
+  if (manifest.format !== 1 || manifest.backend !== "sqlite" || manifest.product !== PRODUCT_VERSION || !Array.isArray(manifest.files) || manifest.files.length > 1e5)
+    fail("Yedek formatı veya ürün sürümü uyumsuz.");
+  let created = false;
+  try {
+    await fresh(destination, source);
+    created = true;
+    for (const entry of manifest.files) {
+      if (entry.path === "owner-token" || entry.path === "backup.json")
+        fail("Yedek envanteri geçersiz.");
+      const bytes = await secureRead(source, entry.path, entry.path === "local.sqlite" ? 1073741824 : limit);
+      if (bytes.length !== entry.bytes || hash(bytes) !== entry.hash)
+        fail("Yedek dosyası eksik veya hash uyuşmuyor.");
+      await save(destination, entry.path, bytes);
+    }
+    const db = await native(join4(destination, "local.sqlite"), false);
+    try {
+      const refs = await sqliteReferences(destination, db);
+      for (const [path, expected] of refs) {
+        const bytes = await secureRead(destination, path, limit);
+        if (expected.bytes !== undefined && bytes.length !== expected.bytes || expected.hash && hash(bytes) !== expected.hash)
+          fail("Restore revision doğrulaması başarısız.");
+      }
+      db.prepare("UPDATE auth_sessions SET revoked = 1").run();
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'revision_readers'").get())
+        db.prepare("DELETE FROM revision_readers").run();
+      db.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      db.close();
+    }
+    await save(destination, "owner-token", Buffer.from(randomBytes3(32).toString("hex")));
+    return { status: "restored", destination, sessions_revoked: true };
+  } catch (error) {
+    if (created)
+      await rm(destination, { recursive: true, force: true });
+    throw error;
+  }
+}
+async function sqliteReferences(root, db) {
+  if (db.pragma("integrity_check", { simple: true }) !== "ok" || db.pragma("foreign_key_check").length)
+    fail("Veritabanı bütünlüğü başarısız.");
+  return references(root, async (sql) => db.prepare(sql).all());
+}
+async function copyReferences(source, destination, refs) {
+  async function tree(path) {
+    let entries;
+    try {
+      entries = await readdir(join4(source, path), { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const child = `${path}/${entry.name}`;
+      validatePackagePath(child);
+      if (refs.size > 99999)
+        fail("Yedek dosya sınırı aşıldı.");
+      if (entry.isDirectory())
+        await tree(child);
+      else if (entry.isFile())
+        refs.set(child, {});
+      else
+        fail("Yedekte symlink/özel dosya kabul edilmez.");
+    }
+  }
+  await tree("installations");
+  try {
+    await lstat4(join4(source, "policy.json"));
+    refs.set("policy.json", {});
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  }
+  const files = [];
+  let total = 0;
+  for (const [path, expected] of refs) {
+    const bytes = await secureRead(source, path, limit);
+    total += bytes.length;
+    if (refs.size > 99999 || total > 10737418240)
+      fail("Yedek boyut sınırı aşıldı.");
+    const digest = hash(bytes);
+    if (expected.bytes !== undefined && expected.bytes !== bytes.length || expected.hash && expected.hash !== digest)
+      fail("Revision dosyası eksik veya bozuk.");
+    await save(destination, path, bytes);
+    files.push({ path, bytes: bytes.length, hash: digest });
+  }
+  return files;
+}
+
+// src/backup/postgres.ts
+var exec = promisify(execFile);
+async function connect(url) {
+  const client = new Client({
+    connectionString: url,
+    connectionTimeoutMillis: 1e4,
+    statement_timeout: 600000
+  });
+  await client.connect();
+  return client;
+}
+async function command(tool, url, args) {
+  const executable = process.env[tool === "pg_dump" ? "SKILL_FORGE_PG_DUMP" : "SKILL_FORGE_PG_RESTORE"] ?? tool;
+  const address = new URL(url);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PG")));
+  Object.assign(env, {
+    PGHOST: address.hostname,
+    PGPORT: address.port || "5432",
+    PGUSER: decodeURIComponent(address.username),
+    PGPASSWORD: decodeURIComponent(address.password),
+    PGDATABASE: decodeURIComponent(address.pathname.slice(1)),
+    PGCONNECT_TIMEOUT: "10"
+  });
+  const parameters = {
+    sslmode: "PGSSLMODE",
+    sslrootcert: "PGSSLROOTCERT",
+    sslcert: "PGSSLCERT",
+    sslkey: "PGSSLKEY",
+    channel_binding: "PGCHANNELBINDING",
+    application_name: "PGAPPNAME"
+  };
+  for (const [key, value] of address.searchParams) {
+    if (!parameters[key])
+      fail("PostgreSQL URL parametresi backup aracında desteklenmiyor.");
+    env[parameters[key]] = value;
+  }
+  try {
+    const result = await exec(executable, args, {
+      env,
+      timeout: 600000,
+      maxBuffer: 1024 * 1024
+    });
+    if (result.stderr.trim())
+      fail(`${tool} uyarı üretti; yedek kabul edilmedi.`);
+  } catch {
+    fail(`${tool} başarısız; bağlantı, araç/server sürümü ve yetkileri kontrol edin.`);
+  }
+}
+async function backupPostgres(source, destination, url) {
+  source = resolve4(source);
+  destination = resolve4(destination);
+  const db = await connect(url);
+  let pinClient;
+  let unpin;
+  let created = false;
+  try {
+    await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const snapshot = (await db.query("SELECT pg_export_snapshot() AS id")).rows[0].id;
+    const revisions = (await db.query("SELECT tenant_id, skill_id, revision FROM skill_revisions LIMIT 100000")).rows;
+    if (revisions.length >= 1e5)
+      fail("Yedek revision sınırı aşıldı.");
+    pinClient = await connect(url);
+    unpin = await pinPostgres(pinClient, revisions);
+    const refs = await references(source, async (sql) => (await db.query(sql)).rows);
+    await fresh(destination, source);
+    created = true;
+    await command("pg_dump", url, [
+      "--no-password",
+      "--format=custom",
+      `--snapshot=${snapshot}`,
+      "--file",
+      join5(destination, "postgres.dump")
+    ]);
+    await chmod2(join5(destination, "postgres.dump"), 384);
+    const files = await copyReferences(source, destination, refs);
+    await references(destination, async (sql) => (await db.query(sql)).rows);
+    const dump = await secureRead(destination, "postgres.dump", 1024 ** 3);
+    files.push({ path: "postgres.dump", bytes: dump.length, hash: hash(dump) });
+    await db.query("COMMIT");
+    await unpin();
+    unpin = undefined;
+    const manifest = {
+      format: 1,
+      backend: "postgres",
+      product: PRODUCT_VERSION,
+      created_at: new Date().toISOString(),
+      files
+    };
+    await save(destination, "backup.json", Buffer.from(JSON.stringify(manifest)));
+    return {
+      status: "created",
+      backend: "postgres",
+      files: files.length,
+      destination
+    };
+  } catch (error) {
+    if (created)
+      await rm2(destination, { recursive: true, force: true });
+    throw error;
+  } finally {
+    try {
+      await unpin?.();
+    } finally {
+      try {
+        await pinClient?.end();
+      } finally {
+        await db.end();
+      }
+    }
+  }
+}
+async function restorePostgres(source, destination, adminUrl, databaseName) {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName))
+    fail("Yeni DB adı küçük harf, rakam ve alt çizgi içermelidir.");
+  source = resolve4(source);
+  destination = resolve4(destination);
+  const manifest = JSON.parse((await secureRead(source, "backup.json", 32 * 1024 ** 2)).toString());
+  if (manifest.format !== 1 || manifest.backend !== "postgres" || manifest.product !== PRODUCT_VERSION || !Array.isArray(manifest.files) || manifest.files.length > 1e5)
+    fail("Yedek formatı/sürümü uyumsuz.");
+  const admin = await connect(adminUrl);
+  let created = false, databaseCreated = false, completed = false;
+  try {
+    if ((await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+      databaseName
+    ])).rowCount)
+      fail("Hedef DB zaten var; üzerine yazılmaz.");
+    await fresh(destination, source);
+    created = true;
+    let total = 0;
+    for (const entry of manifest.files) {
+      if (entry.path === "owner-token" || entry.path === "backup.json" || entry.path === "local.sqlite")
+        fail("Yedek envanteri geçersiz.");
+      const bytes = await secureRead(source, entry.path, entry.path === "postgres.dump" ? 1024 ** 3 : limit);
+      total += bytes.length;
+      if (total > 11 * 1024 ** 3 || bytes.length !== entry.bytes || hash(bytes) !== entry.hash)
+        fail("Yedek hash/boyut doğrulaması başarısız.");
+      await save(destination, entry.path, bytes);
+    }
+    await secureRead(destination, "postgres.dump", 1024 ** 3);
+    await admin.query(`CREATE DATABASE "${databaseName}" TEMPLATE template0`);
+    databaseCreated = true;
+    const target = new URL(adminUrl);
+    target.pathname = `/${databaseName}`;
+    await command("pg_restore", target.toString(), [
+      "--no-password",
+      "--dbname",
+      "",
+      "--single-transaction",
+      "--no-owner",
+      "--no-acl",
+      join5(destination, "postgres.dump")
+    ]);
+    const db = await connect(target.toString());
+    try {
+      const refs = await references(destination, async (sql) => (await db.query(sql)).rows);
+      for (const [path, expected] of refs) {
+        const bytes = await secureRead(destination, path, limit);
+        if (expected.bytes !== undefined && expected.bytes !== bytes.length || expected.hash && hash(bytes) !== expected.hash)
+          fail("Restore revision doğrulaması başarısız.");
+      }
+      await db.query("UPDATE auth_sessions SET revoked = 1");
+      if ((await db.query("SELECT to_regclass('public.revision_readers') AS present")).rows[0].present)
+        await db.query("DELETE FROM revision_readers");
+    } finally {
+      await db.end();
+    }
+    await save(destination, "owner-token", Buffer.from(randomBytes4(32).toString("hex")));
+    await rm2(join5(destination, "postgres.dump"));
+    completed = true;
+    return {
+      status: "restored",
+      backend: "postgres",
+      database: databaseName,
+      destination,
+      sessions_revoked: true
+    };
+  } finally {
+    try {
+      if (!completed && databaseCreated)
+        await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      if (!completed && created)
+        await rm2(destination, { recursive: true, force: true });
+    } finally {
+      await admin.end();
+    }
+  }
+}
+
 // src/migration/remote.ts
-var record = z.object({
-  line: z.number().optional(),
-  index: z.number().optional(),
-  status: z.string().max(50),
-  entry_id: z.string().max(100).optional(),
-  reason: z.string().max(100).optional(),
-  revision: z.number().optional()
+import { z as z2 } from "zod";
+var record = z2.object({
+  line: z2.number().optional(),
+  index: z2.number().optional(),
+  status: z2.string().max(50),
+  entry_id: z2.string().max(100).optional(),
+  reason: z2.string().max(100).optional(),
+  revision: z2.number().optional()
 });
-var resultSchema = z.object({
-  receipt_id: z.string().regex(/^[a-f0-9]{64}$/),
-  state: z.enum(["applied", "rolled_back"]),
-  replayed: z.boolean(),
-  skill_id: z.string().max(100).optional(),
-  revision: z.string().max(100).optional(),
-  decision: z.string().max(30).optional(),
-  review_required: z.number().int().nonnegative().optional(),
-  malformed: z.number().int().nonnegative().optional(),
-  unselected: z.number().int().nonnegative().optional(),
-  records: z.array(record).max(1e4).optional()
+var resultSchema = z2.object({
+  receipt_id: z2.string().regex(/^[a-f0-9]{64}$/),
+  state: z2.enum(["applied", "rolled_back"]),
+  replayed: z2.boolean(),
+  skill_id: z2.string().max(100).optional(),
+  revision: z2.string().max(100).optional(),
+  decision: z2.string().max(30).optional(),
+  review_required: z2.number().int().nonnegative().optional(),
+  malformed: z2.number().int().nonnegative().optional(),
+  unselected: z2.number().int().nonnegative().optional(),
+  records: z2.array(record).max(1e4).optional()
 });
 function remoteMigrationUpload(rawUrl, tenant, token) {
   let url;
@@ -108,8 +1035,8 @@ function remoteMigrationUpload(rawUrl, tenant, token) {
       throw new ForgeError("remote_response_invalid", "Sunucu JSON yanıtı geçersiz.", 502);
     }
     if (!response.ok) {
-      const code = z.object({
-        error: z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,99}$/) })
+      const code = z2.object({
+        error: z2.object({ code: z2.string().regex(/^[a-z][a-z0-9_]{0,99}$/) })
       }).safeParse(value);
       throw new ForgeError(code.success ? code.data.error.code : "remote_rejected", "Sunucu aktarımı reddetti; yetki, eşleme ve kaynak kontrolü gerekiyor.", response.status);
     }
@@ -121,12 +1048,12 @@ function remoteMigrationUpload(rawUrl, tenant, token) {
 }
 
 // src/migration/flags.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { sql as sql2 } from "kysely";
-import { z as z3 } from "zod";
+import { z as z4 } from "zod";
 
 // src/application/identity.ts
-import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { randomUUID as randomUUID4, randomBytes as randomBytes5, createHash as createHash4 } from "node:crypto";
 class IdentityService {
   db;
   constructor(db) {
@@ -183,7 +1110,7 @@ class IdentityService {
       throw new ForgeError("invalid_project", "Proje adı 1–200 karakter olmalıdır.");
     const project = {
       tenant_id: identity.tenantId,
-      id: randomUUID(),
+      id: randomUUID4(),
       name: name.trim(),
       created_at: Date.now()
     };
@@ -198,11 +1125,11 @@ class IdentityService {
     return query.orderBy("id").limit(100).execute();
   }
   async issueSession(userId, kind, ttlMs) {
-    const token = randomBytes(32).toString("base64url");
+    const token = randomBytes5(32).toString("base64url");
     await this.db.insertInto("auth_sessions").values({
-      id: randomUUID(),
+      id: randomUUID4(),
       user_id: userId,
-      token_hash: createHash("sha256").update(token).digest("hex"),
+      token_hash: createHash4("sha256").update(token).digest("hex"),
       expires_at: Date.now() + ttlMs,
       revoked: 0,
       kind,
@@ -211,7 +1138,7 @@ class IdentityService {
     return token;
   }
   async authenticate(token, tenantId, kind = "session") {
-    const session = await this.db.selectFrom("auth_sessions").select("user_id").where("token_hash", "=", createHash("sha256").update(token).digest("hex")).where("kind", "=", kind).where("revoked", "=", 0).where("expires_at", ">", Date.now()).executeTakeFirst();
+    const session = await this.db.selectFrom("auth_sessions").select("user_id").where("token_hash", "=", createHash4("sha256").update(token).digest("hex")).where("kind", "=", kind).where("revoked", "=", 0).where("expires_at", ">", Date.now()).executeTakeFirst();
     if (!session)
       throw new ForgeError("unauthorized", "Oturum geçersiz veya süresi doldu.", 401);
     const identity = { userId: session.user_id, tenantId };
@@ -220,28 +1147,28 @@ class IdentityService {
   }
   async redeemPairing(token) {
     return this.db.transaction().execute(async (tx) => {
-      const row = await tx.updateTable("auth_sessions").set({ revoked: 1 }).where("token_hash", "=", createHash("sha256").update(token).digest("hex")).where("kind", "=", "pairing").where("revoked", "=", 0).where("expires_at", ">", Date.now()).returning("user_id").executeTakeFirst();
+      const row = await tx.updateTable("auth_sessions").set({ revoked: 1 }).where("token_hash", "=", createHash4("sha256").update(token).digest("hex")).where("kind", "=", "pairing").where("revoked", "=", 0).where("expires_at", ">", Date.now()).returning("user_id").executeTakeFirst();
       if (!row)
         throw new ForgeError("pairing_invalid", "Eşleme kodu geçersiz, kullanılmış veya süresi dolmuş.", 401);
       return new IdentityService(tx).issueSession(row.user_id, "session", 12 * 60 * 60 * 1000);
     });
   }
   async revoke(token) {
-    await this.db.updateTable("auth_sessions").set({ revoked: 1 }).where("token_hash", "=", createHash("sha256").update(token).digest("hex")).execute();
+    await this.db.updateTable("auth_sessions").set({ revoked: 1 }).where("token_hash", "=", createHash4("sha256").update(token).digest("hex")).execute();
   }
 }
 
 // src/application/session-preferences.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { sql } from "kysely";
-import { z as z2 } from "zod";
-var sessionSourceSchema = z2.object({
-  client: z2.string().min(1).max(100),
-  session: z2.string().min(1).max(200)
+import { z as z3 } from "zod";
+var sessionSourceSchema = z3.object({
+  client: z3.string().min(1).max(100),
+  session: z3.string().min(1).max(200)
 }).strict();
-var sessionValuesSchema = z2.object({
-  promptEnabled: z2.boolean().optional(),
-  autoApply: z2.boolean().optional()
+var sessionValuesSchema = z3.object({
+  promptEnabled: z3.boolean().optional(),
+  autoApply: z3.boolean().optional()
 }).strict();
 
 class SessionPreferences {
@@ -251,7 +1178,7 @@ class SessionPreferences {
   }
   key(source) {
     const parsed = sessionSourceSchema.parse(source);
-    return createHash2("sha256").update(JSON.stringify([parsed.client, parsed.session])).digest("hex");
+    return createHash5("sha256").update(JSON.stringify([parsed.client, parsed.session])).digest("hex");
   }
   async get(actor, project, source) {
     await this.identity.authorize(actor, "read", project);
@@ -266,7 +1193,7 @@ class SessionPreferences {
   }
   async write(tx, actor, project, source, base, raw) {
     const values = sessionValuesSchema.parse(raw), key = this.key(source);
-    z2.number().int().nonnegative().parse(base);
+    z3.number().int().nonnegative().parse(base);
     await tx.updateTable("tenants").set({ name: sql`name` }).where("id", "=", actor.tenantId).execute();
     await new IdentityService(tx).authorize(actor, "write", project);
     const old = await tx.selectFrom("session_preferences").select("revision").where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", project).where("session_key", "=", key).executeTakeFirst();
@@ -296,12 +1223,12 @@ class SessionPreferences {
 }
 
 // src/migration/flags.ts
-var hash = (x) => createHash3("sha256").update(x).digest("hex");
-var flagMappingSchema = z3.array(z3.object({
-  legacy_session: z3.string().min(1).max(200),
+var hash2 = (x) => createHash6("sha256").update(x).digest("hex");
+var flagMappingSchema = z4.array(z4.object({
+  legacy_session: z4.string().min(1).max(200),
   target: sessionSourceSchema,
-  base_revision: z3.number().int().nonnegative(),
-  defaults: z3.object({ enabled: z3.boolean(), autoAccept: z3.boolean() }).strict()
+  base_revision: z4.number().int().nonnegative(),
+  defaults: z4.object({ enabled: z4.boolean(), autoAccept: z4.boolean() }).strict()
 }).strict()).min(1).max(1000);
 
 class FlagMigration {
@@ -313,9 +1240,9 @@ class FlagMigration {
     const mapping = flagMappingSchema.parse(rawMapping), prefs = new SessionPreferences(new IdentityService(this.storage.db));
     if (new Set(mapping.map((x) => prefs.key(x.target))).size !== mapping.length)
       throw new ForgeError("duplicate_target", "Aynı hedef oturum birden fazla eşlenemez.");
-    if (bytes.length > 16 * 1024 * 1024 || hash(bytes) !== checksum || !/^[a-f0-9]{64}$/.test(sourceId))
+    if (bytes.length > 16 * 1024 * 1024 || hash2(bytes) !== checksum || !/^[a-f0-9]{64}$/.test(sourceId))
       throw new ForgeError("source_changed", "Bayrak kaynağı checksum/boyut doğrulaması başarısız.", 409);
-    const id = hash(JSON.stringify([
+    const id = hash2(JSON.stringify([
       actor.tenantId,
       actor.userId,
       project,
@@ -430,7 +1357,7 @@ class FlagMigration {
       throw new ForgeError("migration_unavailable", "Bayrak aktarımı bulunamadı.", 404);
     await new IdentityService(this.storage.db).authorize(actor, "read", row.project_id);
     const bytes = Buffer.from(row.original_base64, "base64");
-    if (bytes.length !== row.original_bytes || hash(bytes) !== row.checksum)
+    if (bytes.length !== row.original_bytes || hash2(bytes) !== row.checksum)
       throw new ForgeError("migration_corrupt", "Bayrak arşivi checksum doğrulanamadı.", 409);
     return bytes;
   }
@@ -457,20 +1384,20 @@ class FlagMigration {
 }
 
 // src/migration/rewrites.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { sql as sql3 } from "kysely";
-import { z as z4 } from "zod";
-var hash2 = (x) => createHash4("sha256").update(x).digest("hex");
-var recordSchema = z4.object({
-  ts: z4.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  sessionID: z4.string().min(1).max(1000),
-  messageID: z4.string().min(1).max(1000),
-  outcome: z4.literal("rewritten"),
-  original: z4.string().max(1024 * 1024),
-  rewritten: z4.string().max(1024 * 1024),
-  model: z4.string().max(500).nullable().optional(),
-  durationMs: z4.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  applied: z4.boolean().optional()
+import { z as z5 } from "zod";
+var hash3 = (x) => createHash7("sha256").update(x).digest("hex");
+var recordSchema = z5.object({
+  ts: z5.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  sessionID: z5.string().min(1).max(1000),
+  messageID: z5.string().min(1).max(1000),
+  outcome: z5.literal("rewritten"),
+  original: z5.string().max(1024 * 1024),
+  rewritten: z5.string().max(1024 * 1024),
+  model: z5.string().max(500).nullable().optional(),
+  durationMs: z5.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  applied: z5.boolean().optional()
 }).passthrough();
 
 class RewriteMigration {
@@ -479,9 +1406,9 @@ class RewriteMigration {
     this.storage = storage;
   }
   async import(actor, project, sourceId, checksum, bytes) {
-    if (bytes.length > 16 * 1024 * 1024 || hash2(bytes) !== checksum || !/^[a-f0-9]{64}$/.test(sourceId))
+    if (bytes.length > 16 * 1024 * 1024 || hash3(bytes) !== checksum || !/^[a-f0-9]{64}$/.test(sourceId))
       throw new ForgeError("source_changed", "Rewrite kaynağı checksum/boyut doğrulaması başarısız.", 409);
-    const id = hash2(JSON.stringify([
+    const id = hash3(JSON.stringify([
       actor.tenantId,
       actor.userId,
       project,
@@ -543,7 +1470,7 @@ class RewriteMigration {
           });
           continue;
         }
-        const entryId = hash2(JSON.stringify([
+        const entryId = hash3(JSON.stringify([
           actor.tenantId,
           actor.userId,
           project,
@@ -631,7 +1558,7 @@ class RewriteMigration {
       throw new ForgeError("migration_unavailable", "Rewrite aktarımı bulunamadı.", 404);
     await new IdentityService(this.storage.db).authorize(actor, "read", row.project_id);
     const bytes = Buffer.from(row.original_base64, "base64");
-    if (bytes.length !== row.original_bytes || hash2(bytes) !== row.checksum)
+    if (bytes.length !== row.original_bytes || hash3(bytes) !== row.checksum)
       throw new ForgeError("migration_corrupt", "Arşiv checksum doğrulanamadı.", 409);
     return bytes;
   }
@@ -658,62 +1585,16 @@ class RewriteMigration {
 }
 
 // src/migration/learning.ts
-import { createHash as createHash9, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID9 } from "node:crypto";
 import { sql as sql8 } from "kysely";
 
 // src/prompt/learning.ts
 import { sql as sql7 } from "kysely";
 import { z as z7 } from "zod";
-import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID8 } from "node:crypto";
 
-// src/prompt-editor/config.ts
-var PROMPT_EDITOR_DEFAULTS = {
-  enabled: false,
-  model: null,
-  variant: null,
-  description: null,
-  maxSteps: 30,
-  timeoutMs: 30000,
-  directoryTimeoutMs: 5000,
-  cleanupTimeoutMs: 4000,
-  blocking: true,
-  defaultSessionEnabled: true,
-  defaultAutoAccept: true,
-  minChars: 1,
-  maxChars: 200000,
-  rewriteMode: "always",
-  detailLevel: "thorough",
-  correctWriting: true,
-  learningMode: "always",
-  contextUserMessages: 3,
-  contextAssistantMessages: 3,
-  contextToolCalls: 10,
-  contextUserMessageChars: 5000,
-  contextAssistantMessageChars: 5000,
-  contextToolCallChars: 3000,
-  contextMaxChars: 96 * 1024,
-  contextScanMessages: 512,
-  contextPartsPerMessage: 128,
-  contextInputChars: 256 * 1024,
-  contextIncludeToolInputs: true,
-  contextIncludeToolOutputs: true,
-  learnFile: null,
-  learnEntryMaxChars: 5000,
-  learnMaxBytes: 256 * 1024,
-  learnContextMaxChars: 64 * 1024,
-  tools: ["read", "grep", "glob"],
-  persist: true
-};
-var READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
-
-// src/prompt-editor/context-snapshot.ts
-var MAX_ASSISTANT_CONTEXT_CODE_UNITS = PROMPT_EDITOR_DEFAULTS.contextAssistantMessageChars;
-var MAX_TOOL_OUTPUT_CONTEXT_CODE_UNITS = PROMPT_EDITOR_DEFAULTS.contextToolCallChars;
-var MAX_SERIALIZED_CONTEXT_CODE_UNITS = PROMPT_EDITOR_DEFAULTS.contextMaxChars;
+// src/prompt/sanitize.ts
 var CONTEXT_TRUNCATION_MARKER = "[truncated]";
-var MAX_CONTEXT_MESSAGES = PROMPT_EDITOR_DEFAULTS.contextScanMessages;
-var MAX_CONTEXT_PARTS_PER_MESSAGE = PROMPT_EDITOR_DEFAULTS.contextPartsPerMessage;
-var MAX_CONTEXT_INPUT_CODE_UNITS = PROMPT_EDITOR_DEFAULTS.contextInputChars;
 var SANITIZER_LOOKAHEAD_CODE_UNITS = 512;
 function sanitizePromptEditorText(value, maxCodeUnits, sourceTruncated = false) {
   const scanLimit = maxCodeUnits + SANITIZER_LOOKAHEAD_CODE_UNITS;
@@ -745,89 +1626,56 @@ function truncateText(text, maxCodeUnits) {
   return `${text.slice(0, maxCodeUnits - CONTEXT_TRUNCATION_MARKER.length)}${CONTEXT_TRUNCATION_MARKER}`;
 }
 
+// src/skills/directory-readers.ts
+import { resolve as resolve5 } from "node:path";
+class DirectoryReaders {
+  entries = new Map;
+  async withDirectory(root, read) {
+    root = resolve5(root);
+    let entry = this.entries.get(root);
+    if (!entry) {
+      const ready = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      const done = withPackageDirectory(root, async (reader) => {
+        ready.resolve(reader);
+        await release.promise;
+      });
+      done.catch(ready.reject);
+      entry = {
+        count: 0,
+        ready: ready.promise,
+        done,
+        release: release.resolve
+      };
+      this.entries.set(root, entry);
+    }
+    entry.count++;
+    try {
+      return await read(await entry.ready);
+    } finally {
+      entry.count--;
+      if (entry.count === 0) {
+        this.entries.delete(root);
+        entry.release();
+        await entry.done;
+      }
+    }
+  }
+}
+
 // src/skills/store.ts
-import { randomUUID as randomUUID4, createHash as createHash7 } from "node:crypto";
-import { mkdir, open as open2, rename, lstat as lstat2 } from "node:fs/promises";
-import { dirname as dirname2, join as join2, relative, resolve as resolve2, isAbsolute } from "node:path";
+import { randomUUID as randomUUID7, createHash as createHash10 } from "node:crypto";
+import { mkdir as mkdir4, open as open4, rename, lstat as lstat5 } from "node:fs/promises";
+import { dirname as dirname3, join as join6, relative as relative2, resolve as resolve6, isAbsolute as isAbsolute2 } from "node:path";
 import { sql as sql6 } from "kysely";
 
 // src/jobs/queue.ts
-import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
+import { randomUUID as randomUUID6, createHash as createHash8 } from "node:crypto";
 import { sql as sql5 } from "kysely";
 
 // src/application/settings.ts
 import { sql as sql4 } from "kysely";
-import { randomUUID as randomUUID2 } from "node:crypto";
-
-// src/domain/settings.ts
-import { z as z5 } from "zod";
-var settingsSchema = z5.object({
-  promptEnabled: z5.boolean().optional(),
-  evolutionEnabled: z5.boolean().optional(),
-  promptMode: z5.enum(["when-needed", "always", "off"]).optional(),
-  autoApply: z5.boolean().optional(),
-  learning: z5.enum(["off", "reusable-only"]).optional(),
-  retentionDays: z5.number().int().min(1).max(3650).optional(),
-  maxCalls: z5.number().int().min(1).max(100).optional(),
-  maxTokens: z5.number().int().min(64).max(1e6).optional(),
-  maxCostMicros: z5.number().int().min(0).max(1e9).optional(),
-  concurrency: z5.number().int().min(1).max(1000).optional(),
-  dependencyInstall: z5.boolean().optional(),
-  scriptAllowedOrigins: z5.array(z5.url()).max(20).optional(),
-  allowedOrigins: z5.array(z5.url()).max(30).optional(),
-  allowPaid: z5.boolean().optional()
-}).strict();
-var defaultSettings = {
-  promptEnabled: true,
-  evolutionEnabled: true,
-  promptMode: "when-needed",
-  autoApply: true,
-  learning: "reusable-only",
-  retentionDays: 30,
-  maxCalls: 6,
-  maxTokens: 16384,
-  maxCostMicros: 0,
-  concurrency: 2,
-  allowedOrigins: [],
-  allowPaid: false,
-  dependencyInstall: false,
-  scriptAllowedOrigins: []
-};
-function resolveSettings(policy, layers) {
-  const initial = { ...defaultSettings, ...settingsSchema.parse(policy) };
-  const result = {
-    values: initial,
-    sources: Object.fromEntries(Object.keys(initial).map((key) => [key, "system_policy"]))
-  };
-  for (const layer of layers) {
-    const parsed = settingsSchema.parse(layer.values);
-    for (const key of Object.keys(parsed)) {
-      const incoming = parsed[key];
-      if (incoming === undefined)
-        continue;
-      let next = incoming;
-      if ([
-        "maxCalls",
-        "maxTokens",
-        "maxCostMicros",
-        "concurrency",
-        "retentionDays"
-      ].includes(key))
-        next = Math.min(result.values[key], incoming);
-      if (key === "allowPaid" || key === "dependencyInstall")
-        next = result.values[key] && Boolean(incoming);
-      if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
-        next = result.values[key].filter((origin) => incoming.includes(origin));
-      if (JSON.stringify(next) !== JSON.stringify(result.values[key])) {
-        Object.assign(result.values, { [key]: next });
-        result.sources[key] = layer.source;
-      }
-    }
-  }
-  return result;
-}
-
-// src/application/settings.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
 class SettingsService {
   identity;
   systemPolicy;
@@ -865,7 +1713,7 @@ class SettingsService {
         const current = await service.get(identity, scope);
         if (current.revision !== baseRevision)
           throw new ForgeError("revision_conflict", "Ayarlar başka işlemde değişti; güncel sürümü okuyun.", 409);
-        const id = randomUUID2();
+        const id = randomUUID5();
         await tx.insertInto("config_revisions").values({
           tenant_id: identity.tenantId,
           id,
@@ -877,7 +1725,7 @@ class SettingsService {
         }).execute();
         await tx.insertInto("audit_events").values({
           tenant_id: identity.tenantId,
-          id: randomUUID2(),
+          id: randomUUID5(),
           user_id: identity.userId,
           project_id: scope.startsWith("project:") ? scope.slice(8) : null,
           kind: "settings.updated",
@@ -947,7 +1795,7 @@ class JobQueue {
   async accept(identity, input) {
     if (!input.key || input.key.length > 200 || Buffer.byteLength(JSON.stringify(input.payload)) > 65536)
       throw new ForgeError("invalid_handoff", "İş kimliği veya girdi boyutu geçersiz.");
-    const inputJson = JSON.stringify(input.payload), inputHash = createHash5("sha256").update(inputJson).digest("hex");
+    const inputJson = JSON.stringify(input.payload), inputHash = createHash8("sha256").update(inputJson).digest("hex");
     return this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("memberships").set({ role: sql5`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const auth = new IdentityService(tx);
@@ -972,7 +1820,7 @@ class JobQueue {
       if (Number(pending.n) >= 100)
         throw new ForgeError("queue_full", "Bu kullanıcı için iş kuyruğu dolu.", 429, 5);
       const now = await this.now(tx);
-      const sessionId = randomUUID3(), runId = randomUUID3();
+      const sessionId = randomUUID6(), runId = randomUUID6();
       await tx.insertInto("forge_sessions").values({
         tenant_id: identity.tenantId,
         id: sessionId,
@@ -1023,7 +1871,7 @@ class JobQueue {
       if (this.storage.backend === "sqlite")
         await tx.updateTable("queue_fairness").set({ last_claimed: sql5`last_claimed` }).execute();
       const now = await this.now(tx);
-      let candidates = tx.selectFrom("runs as r").innerJoin("queue_fairness as f", (join) => join.onRef("f.tenant_id", "=", "r.tenant_id").onRef("f.user_id", "=", "r.user_id")).selectAll("r").where((eb) => eb.or([
+      let candidates = tx.selectFrom("runs as r").innerJoin("queue_fairness as f", (join6) => join6.onRef("f.tenant_id", "=", "r.tenant_id").onRef("f.user_id", "=", "r.user_id")).selectAll("r").where((eb) => eb.or([
         eb.and([
           eb("r.state", "in", ["queued", "retry_wait"]),
           eb("r.available_at", "<=", now)
@@ -1155,147 +2003,10 @@ class JobQueue {
 }
 
 // src/skills/validate.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 import { parse } from "yaml";
 import { z as z6 } from "zod";
 import { posix } from "node:path";
-
-// src/skills/paths.ts
-import { constants } from "node:fs";
-import { lstat, open, opendir } from "node:fs/promises";
-import { join, resolve, dirname, basename } from "node:path";
-function validatePackagePath(path) {
-  if (!path || path.length > 500 || path !== path.normalize("NFC") || path.includes("\\") || path.startsWith("/") || /[\x00-\x1f\x7f<>:"|?*]/.test(path))
-    throw new ForgeError("unsafe_path", "Paket yolu geçersiz.");
-  for (const segment of path.split("/"))
-    if (!segment || segment === "." || segment === ".." || /[. ]$/.test(segment) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(segment) || segment.toLowerCase() === ".git")
-      throw new ForgeError("unsafe_path", "Paket yolu platformda güvenli değil.");
-  return path;
-}
-function validateInventory(paths) {
-  if (paths.length > 256)
-    throw new ForgeError("package_limit", "Paket en fazla 256 dosya içerebilir.");
-  const seen = new Set;
-  for (const path of paths) {
-    validatePackagePath(path);
-    const folded = path.normalize("NFKC").toLocaleLowerCase("en-US");
-    if (seen.has(folded))
-      throw new ForgeError("path_collision", "Unicode veya case çakışan paket yolu.");
-    seen.add(folded);
-    for (const other of paths)
-      if (other !== path && other.toLowerCase().startsWith(`${path.toLowerCase()}/`))
-        throw new ForgeError("path_collision", "Aynı yol hem dosya hem dizin olamaz.");
-  }
-}
-async function secureRead(root, relativePath, maxBytes = 4 * 1024 * 1024) {
-  validatePackagePath(relativePath);
-  root = resolve(root);
-  const directoryHandles = [];
-  let current = root;
-  try {
-    let ancestor = root;
-    while (true) {
-      const info = await lstat(ancestor);
-      if (!info.isDirectory() || info.isSymbolicLink())
-        throw new ForgeError("unsafe_path", "Paket kökü symlink/dizin dışı hedef olamaz.");
-      const parent = dirname(ancestor);
-      if (parent === ancestor)
-        break;
-      ancestor = parent;
-    }
-    const segments = relativePath.split("/");
-    for (const segment of ["", ...segments.slice(0, -1)]) {
-      if (segment)
-        current = join(current, segment);
-      const handle = await open(current, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      directoryHandles.push(handle);
-      if (process.platform === "linux")
-        current = `/proc/self/fd/${handle.fd}`;
-    }
-    const file = await open(join(current, basename(relativePath)), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const before = await file.stat();
-      if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes)
-        throw new ForgeError("unsafe_file", "Dosya tipi/link sayısı/boyutu güvenli değil.");
-      const bytes = await file.readFile();
-      const after = await file.stat();
-      if (bytes.length > maxBytes || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
-        throw new ForgeError("file_changed", "Dosya okuma sırasında değişti.", 409);
-      return bytes;
-    } finally {
-      await file.close();
-    }
-  } catch (error) {
-    if (error instanceof ForgeError)
-      throw error;
-    throw new ForgeError("unsafe_or_missing_file", "Paket dosyası güvenli biçimde okunamadı.", 422);
-  } finally {
-    await Promise.allSettled(directoryHandles.map((handle) => handle.close()));
-  }
-}
-async function packageInventory(root) {
-  root = resolve(root);
-  for (let ancestor = root;; ancestor = dirname(ancestor)) {
-    const stat = await lstat(ancestor);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
-      throw new ForgeError("unsafe_path", "Paket kökü yönlendirilmiş olamaz.");
-    if (dirname(ancestor) === ancestor)
-      break;
-  }
-  const paths = [];
-  let entries = 0;
-  async function walk(path, depth) {
-    if (depth > 12)
-      throw new ForgeError("package_limit", "Dizin derinliği aşıldı.");
-    const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try {
-      const anchored = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : path;
-      const directory = await opendir(anchored, { bufferSize: 32 });
-      for await (const entry of directory) {
-        if (++entries > 1280)
-          throw new ForgeError("package_limit", "Paket dizin/dosya sınırı aşıldı.");
-        const relative = relativeParts.length ? `${relativeParts.join("/")}/${entry.name}` : entry.name;
-        validatePackagePath(relative);
-        const child = join(anchored, entry.name), stat = await lstat(child);
-        if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile() || stat.isFile() && stat.nlink !== 1)
-          throw new ForgeError("unsafe_file", "Paket link veya özel dosya içeremez.");
-        if (stat.isDirectory()) {
-          relativeParts.push(entry.name);
-          try {
-            await walk(child, depth + 1);
-          } finally {
-            relativeParts.pop();
-          }
-        } else {
-          if (stat.size > 4 * 1024 * 1024)
-            throw new ForgeError("package_limit", "Paket dosya boyutu aşıldı.");
-          paths.push(relative);
-          if (paths.length > 256)
-            throw new ForgeError("package_limit", "Paket dosya sınırı aşıldı.");
-        }
-      }
-    } finally {
-      await handle.close();
-    }
-  }
-  const relativeParts = [];
-  await walk(resolve(root), 0);
-  validateInventory(paths);
-  return paths.sort();
-}
-async function readPackageDirectory(root) {
-  const files = {};
-  let total = 0;
-  for (const path of await packageInventory(root)) {
-    files[path] = await secureRead(root, path);
-    total += files[path].length;
-    if (total > 4 * 1024 * 1024)
-      throw new ForgeError("package_limit", "Paket boyut sınırı aşıldı.");
-  }
-  return files;
-}
-
-// src/skills/validate.ts
 var entrySchema = z6.object({
   runtime: z6.enum(["node", "python", "typescript"]),
   path: z6.string(),
@@ -1351,7 +2062,7 @@ function validatePackage(name, files) {
     return {
       path,
       bytes: value.length,
-      hash: createHash6("sha256").update(value).digest("hex")
+      hash: createHash9("sha256").update(value).digest("hex")
     };
   });
   for (const [path, value] of Object.entries(files))
@@ -1389,7 +2100,7 @@ function validatePackage(name, files) {
     if (execution.dependencies) {
       const dependency = execution.dependencies;
       validatePackagePath(dependency.lockfile);
-      if (!files[dependency.lockfile] || createHash6("sha256").update(files[dependency.lockfile]).digest("hex") !== dependency.sha256)
+      if (!files[dependency.lockfile] || createHash9("sha256").update(files[dependency.lockfile]).digest("hex") !== dependency.sha256)
         throw new ForgeError("dependency_hash_mismatch", "Bağımlılık kilidi/hash uyuşmuyor.");
     }
   }
@@ -1398,7 +2109,7 @@ function validatePackage(name, files) {
   return {
     name,
     description: meta.description,
-    hash: createHash6("sha256").update(JSON.stringify(inventory)).digest("hex"),
+    hash: createHash9("sha256").update(JSON.stringify(inventory)).digest("hex"),
     files: inventory,
     execution
   };
@@ -1413,6 +2124,8 @@ class PackageStore {
   storage;
   dataDir;
   validateScripts;
+  directories = new DirectoryReaders;
+  readers = new Map;
   constructor(storage, dataDir, validateScripts) {
     this.storage = storage;
     this.dataDir = dataDir;
@@ -1431,32 +2144,79 @@ class PackageStore {
     return skill;
   }
   canonicalPath(path) {
-    const root = resolve2(this.dataDir), result = resolve2(root, path), rel = relative(root, result);
-    if (!rel || rel.startsWith("..") || isAbsolute(rel))
+    const root = resolve6(this.dataDir), result = resolve6(root, path), rel = relative2(root, result);
+    if (!rel || rel.startsWith("..") || isAbsolute2(rel))
       throw new ForgeError("unsafe_package_path", "Paket yolu veri deposu dışında.");
     return result;
   }
-  async files(identity, skillId, revision, selectedPaths) {
-    const skill = await this.authorizedSkill(identity, skillId);
-    const row = await this.storage.db.selectFrom("skill_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
-    if (!row)
-      throw new ForgeError("revision_unavailable", "Paket sürümü bulunamadı.", 404);
-    const manifest = JSON.parse(row.manifest_json), files = {};
-    const inventory = await packageInventory(this.canonicalPath(row.package_path));
-    if (JSON.stringify(inventory) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
-      throw new ForgeError("revision_corrupt", "Paket dosya envanteri değişti.", 409);
-    for (const file of manifest.files.filter((file2) => !selectedPaths || selectedPaths.includes(file2.path))) {
-      const bytes = await secureRead(this.canonicalPath(row.package_path), file.path);
-      if (bytes.length !== file.bytes || createHash7("sha256").update(bytes).digest("hex") !== file.hash)
-        throw new ForgeError("revision_corrupt", "Değişmez paket sürümü hash kontrolünden geçmedi.", 409);
-      files[file.path] = bytes;
+  async withRevision(identity, skillId, revision, read, audit = false) {
+    const key = JSON.stringify([
+      identity.tenantId,
+      identity.userId,
+      skillId,
+      revision,
+      audit
+    ]);
+    let entry = this.readers.get(key);
+    if (!entry) {
+      const id = randomUUID7();
+      const ready = this.storage.db.transaction().execute(async (tx) => {
+        await tx.updateTable("tenants").set({ name: sql6`name` }).where("id", "=", identity.tenantId).execute();
+        const skill = await tx.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).executeTakeFirst();
+        if (!skill || !audit && skill.scope_key.startsWith("personal:") && skill.owner_id !== identity.userId)
+          throw new ForgeError("skill_unavailable", "Paket bulunamadı veya yetkiniz yok.", 404);
+        await new IdentityService(tx).authorize(identity, audit ? "admin" : "read", audit ? undefined : skill.project_id ?? undefined);
+        const row = await tx.selectFrom("skill_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
+        if (!row)
+          throw new ForgeError("revision_unavailable", "Paket sürümü bulunamadı.", 404);
+        await tx.insertInto("revision_readers").values({
+          tenant_id: identity.tenantId,
+          id,
+          skill_id: skillId,
+          revision,
+          created_at: Date.now()
+        }).execute();
+        return { skill, row };
+      });
+      entry = { id, count: 0, ready };
+      this.readers.set(key, entry);
     }
-    return {
-      skill,
-      manifest,
-      files,
-      path: this.canonicalPath(row.package_path)
-    };
+    entry.count++;
+    try {
+      const snapshot = await entry.ready;
+      await new IdentityService(this.storage.db).authorize(identity, audit ? "admin" : "read", audit ? undefined : snapshot.skill.project_id ?? undefined);
+      return await read(snapshot.skill, snapshot.row);
+    } finally {
+      entry.count--;
+      if (entry.count === 0) {
+        this.readers.delete(key);
+        await entry.ready.then(async () => {
+          await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "=", entry.id).execute();
+        }, () => {
+          return;
+        });
+      }
+    }
+  }
+  async files(identity, skillId, revision, selectedPaths) {
+    return this.withRevision(identity, skillId, revision, async (skill, row) => this.directories.withDirectory(this.canonicalPath(row.package_path), async (reader) => {
+      const manifest = JSON.parse(row.manifest_json), files = {};
+      const inventory = await reader.inventory();
+      if (JSON.stringify(inventory) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
+        throw new ForgeError("revision_corrupt", "Paket dosya envanteri değişti.", 409);
+      for (const file of manifest.files.filter((file2) => !selectedPaths || selectedPaths.includes(file2.path))) {
+        const bytes = await reader.read(file.path);
+        if (bytes.length !== file.bytes || createHash10("sha256").update(bytes).digest("hex") !== file.hash)
+          throw new ForgeError("revision_corrupt", "Değişmez paket sürümü hash kontrolünden geçmedi.", 409);
+        files[file.path] = bytes;
+      }
+      return {
+        skill,
+        manifest,
+        files,
+        path: this.canonicalPath(row.package_path)
+      };
+    }));
   }
   async publishRebased(identity, input) {
     try {
@@ -1509,14 +2269,14 @@ class PackageStore {
         revision: manifest.hash,
         decision: "no-op"
       };
-    const id = existing?.id ?? randomUUID4();
-    const stagingRoot = this.canonicalPath(join2("tenants", createHash7("sha256").update(identity.tenantId).digest("hex"), "staging", randomUUID4()));
-    const candidate = join2(stagingRoot, input.name);
-    await mkdir(candidate, { recursive: true, mode: 448 });
+    const id = existing?.id ?? randomUUID7();
+    const stagingRoot = this.canonicalPath(join6("tenants", createHash10("sha256").update(identity.tenantId).digest("hex"), "staging", randomUUID7()));
+    const candidate = join6(stagingRoot, input.name);
+    await mkdir4(candidate, { recursive: true, mode: 448 });
     for (const [path, bytes] of Object.entries(input.files)) {
-      const target = join2(candidate, path);
-      await mkdir(dirname2(target), { recursive: true, mode: 448 });
-      const fd = await open2(target, "wx", 384);
+      const target = join6(candidate, path);
+      await mkdir4(dirname3(target), { recursive: true, mode: 448 });
+      const fd = await open4(target, "wx", 384);
       try {
         await fd.writeFile(bytes);
         await fd.sync();
@@ -1535,22 +2295,22 @@ class PackageStore {
     if (JSON.stringify(await packageInventory(candidate)) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
       throw new ForgeError("candidate_changed", "Test sırasında aday dosya envanteri değişti.", 409);
     for (const file of manifest.files)
-      if (createHash7("sha256").update(await secureRead(candidate, file.path)).digest("hex") !== file.hash)
+      if (createHash10("sha256").update(await secureRead(candidate, file.path)).digest("hex") !== file.hash)
         throw new ForgeError("candidate_changed", "Test sırasında aday paketi değişti.", 409);
-    const packageRelative = join2("tenants", createHash7("sha256").update(identity.tenantId).digest("hex"), "packages", createHash7("sha256").update(scope).digest("hex").slice(0, 20), id, "revisions", manifest.hash, input.name);
+    const packageRelative = join6("tenants", createHash10("sha256").update(identity.tenantId).digest("hex"), "packages", createHash10("sha256").update(scope).digest("hex").slice(0, 20), id, "revisions", manifest.hash, input.name);
     const destination = this.canonicalPath(packageRelative);
-    await mkdir(dirname2(destination), { recursive: true, mode: 448 });
+    await mkdir4(dirname3(destination), { recursive: true, mode: 448 });
     try {
       await rename(candidate, destination);
     } catch (error) {
       if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
         throw error;
       for (const file of manifest.files)
-        if (createHash7("sha256").update(await secureRead(destination, file.path)).digest("hex") !== file.hash)
+        if (createHash10("sha256").update(await secureRead(destination, file.path)).digest("hex") !== file.hash)
           throw new ForgeError("revision_corrupt", "Mevcut immutable dizin değişmiş.", 409);
     }
     if (process.platform !== "win32") {
-      const fd = await open2(dirname2(destination), "r");
+      const fd = await open4(dirname3(destination), "r");
       try {
         await fd.sync();
       } finally {
@@ -1608,7 +2368,7 @@ class PackageStore {
           throw new ForgeError("revision_conflict", "Paket eşzamanlı değişti veya korumaya alındı.", 409);
         await tx.insertInto("audit_events").values({
           tenant_id: identity.tenantId,
-          id: randomUUID4(),
+          id: randomUUID7(),
           user_id: identity.userId,
           project_id: input.projectId ?? null,
           kind: "skill.published",
@@ -1664,15 +2424,15 @@ class PackageStore {
       `personal:${identity.userId}`,
       `project:${input.projectId}`
     ];
-    const limit = Math.max(1, Math.min(20, input.limit ?? 5));
+    const limit2 = Math.max(1, Math.min(20, input.limit ?? 5));
     let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("scope_key", "in", scopes).where("archived", "=", 0).where("active_revision", "is not", null);
     for (const term of searchText(input.query ?? "").split(/\s+/).filter(Boolean).slice(0, 10))
       query = query.where(sql6`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`);
     if (input.after)
       query = query.where("id", ">", input.after);
-    const rows = await query.orderBy("id").limit(limit + 1).execute();
+    const rows = await query.orderBy("id").limit(limit2 + 1).execute();
     return {
-      items: rows.slice(0, limit).map((skill) => ({
+      items: rows.slice(0, limit2).map((skill) => ({
         skill_id: skill.id,
         name: skill.name,
         description: skill.description,
@@ -1684,45 +2444,67 @@ class PackageStore {
         protected: Boolean(skill.protected),
         reason: input.query ? "metadata_match" : "inventory"
       })),
-      next: rows.length > limit ? rows[limit - 1].id : null
+      next: rows.length > limit2 ? rows[limit2 - 1].id : null
     };
   }
   async reconcile(identity, after) {
     await new IdentityService(this.storage.db).authorize(identity, "admin");
-    let query = this.storage.db.selectFrom("skill_revisions").select(["skill_id", "revision", "package_path", "manifest_json"]).where("tenant_id", "=", identity.tenantId);
-    if (after)
-      query = query.where((eb) => eb.or([
-        eb("skill_id", ">", after.skill_id),
-        eb.and([
-          eb("skill_id", "=", after.skill_id),
-          eb("revision", ">", after.revision)
-        ])
-      ]));
-    const rows = await query.orderBy("skill_id").orderBy("revision").limit(26).execute();
+    const { rows, pins } = await this.storage.db.transaction().execute(async (tx) => {
+      await tx.updateTable("tenants").set({ name: sql6`name` }).where("id", "=", identity.tenantId).execute();
+      await new IdentityService(tx).authorize(identity, "admin");
+      let query = tx.selectFrom("skill_revisions").select(["skill_id", "revision", "package_path", "manifest_json"]).where("tenant_id", "=", identity.tenantId);
+      if (after)
+        query = query.where((eb) => eb.or([
+          eb("skill_id", ">", after.skill_id),
+          eb.and([
+            eb("skill_id", "=", after.skill_id),
+            eb("revision", ">", after.revision)
+          ])
+        ]));
+      const rows2 = await query.orderBy("skill_id").orderBy("revision").limit(26).execute();
+      const pins2 = rows2.slice(0, 25).map((row) => ({
+        tenant_id: identity.tenantId,
+        id: randomUUID7(),
+        skill_id: row.skill_id,
+        revision: row.revision,
+        created_at: Date.now()
+      }));
+      if (pins2.length)
+        await tx.insertInto("revision_readers").values(pins2).execute();
+      return { rows: rows2, pins: pins2 };
+    });
     const issues = [];
-    for (const row of rows.slice(0, 25)) {
-      try {
-        const manifest = JSON.parse(row.manifest_json);
-        if (manifest.hash !== row.revision || !Array.isArray(manifest.files) || manifest.files.length > 256)
-          throw Error("manifest");
-        const root = this.canonicalPath(row.package_path), stat = await lstat2(root);
-        if (!stat.isDirectory() || stat.isSymbolicLink())
-          throw Error("directory");
-        if (JSON.stringify(await packageInventory(root)) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
-          throw Error("inventory");
-        for (const file of manifest.files) {
-          const bytes = await secureRead(root, file.path);
-          if (bytes.length !== file.bytes || createHash7("sha256").update(bytes).digest("hex") !== file.hash)
-            throw Error("hash");
+    try {
+      for (const row of rows.slice(0, 25)) {
+        try {
+          const manifest = JSON.parse(row.manifest_json);
+          if (manifest.hash !== row.revision || !Array.isArray(manifest.files) || manifest.files.length > 256)
+            throw Error("manifest");
+          const root = this.canonicalPath(row.package_path), stat = await lstat5(root);
+          if (!stat.isDirectory() || stat.isSymbolicLink())
+            throw Error("directory");
+          if (JSON.stringify(await packageInventory(root)) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
+            throw Error("inventory");
+          for (const file of manifest.files) {
+            const bytes = await secureRead(root, file.path);
+            if (bytes.length !== file.bytes || createHash10("sha256").update(bytes).digest("hex") !== file.hash)
+              throw Error("hash");
+          }
+        } catch (error) {
+          if (error instanceof ForgeError && error.status === 403)
+            throw error;
+          issues.push({
+            skill_id: row.skill_id,
+            revision: row.revision,
+            reason: "missing_or_corrupt"
+          });
         }
-      } catch {
-        issues.push({
-          skill_id: row.skill_id,
-          revision: row.revision,
-          reason: "missing_or_corrupt"
-        });
       }
+    } finally {
+      if (pins.length)
+        await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "in", pins.map((pin) => pin.id)).execute();
     }
+    await new IdentityService(this.storage.db).authorize(identity, "admin");
     return {
       checked: Math.min(rows.length, 25),
       issues,
@@ -1765,8 +2547,8 @@ class LearningStore {
       await new IdentityService(tx).authorize(identity, "write", projectId);
       if (run)
         await new JobQueue(this.storage).assertLease(tx, run);
-      const scope = input.personal ? `personal:${identity.userId}` : `project:${projectId}`, hash3 = createHash8("sha256").update(content).digest("hex");
-      const id = randomUUID5();
+      const scope = input.personal ? `personal:${identity.userId}` : `project:${projectId}`, hash4 = createHash11("sha256").update(content).digest("hex");
+      const id = randomUUID8();
       await tx.insertInto("learning_entries").values({
         tenant_id: identity.tenantId,
         id,
@@ -1774,14 +2556,14 @@ class LearningStore {
         project_id: projectId,
         scope_key: scope,
         content,
-        content_hash: hash3,
+        content_hash: hash4,
         trigger_text: triggers,
         run_id: run?.id ?? null,
         revision: 1,
         disabled: 0,
         created_at: Date.now()
       }).onConflict((oc) => oc.columns(["tenant_id", "user_id", "scope_key", "content_hash"]).doNothing()).execute();
-      const stored = await tx.selectFrom("learning_entries").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_key", "=", scope).where("content_hash", "=", hash3).executeTakeFirstOrThrow();
+      const stored = await tx.selectFrom("learning_entries").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_key", "=", scope).where("content_hash", "=", hash4).executeTakeFirstOrThrow();
       if (stored.id === id)
         await tx.insertInto("learning_history").values({
           tenant_id: identity.tenantId,
@@ -1820,7 +2602,7 @@ class LearningStore {
       triggers: z7.string(),
       disabled: z7.boolean()
     }).strict().parse(raw);
-    const { content, triggers } = this.validate(input), hash3 = createHash8("sha256").update(content).digest("hex");
+    const { content, triggers } = this.validate(input), hash4 = createHash11("sha256").update(content).digest("hex");
     return this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("tenants").set({ name: sql7`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "write", projectId);
@@ -1834,14 +2616,14 @@ class LearningStore {
         throw new ForgeError("revision_conflict", "Ders başka bir işlemde değişti; güncel kaydı yükleyin.", 409);
       if (entry.content === content && entry.trigger_text === triggers && entry.disabled === Number(input.disabled))
         return { id, revision: entry.revision, changed: false };
-      const duplicate = await tx.selectFrom("learning_entries").select("id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_key", "=", entry.scope_key).where("content_hash", "=", hash3).where("id", "!=", id).executeTakeFirst();
+      const duplicate = await tx.selectFrom("learning_entries").select("id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_key", "=", entry.scope_key).where("content_hash", "=", hash4).where("id", "!=", id).executeTakeFirst();
       if (duplicate)
         throw new ForgeError("learning_duplicate", "Aynı kapsamda bu ders zaten mevcut.", 409);
       const revision = entry.revision + 1;
       const changed = await tx.updateTable("learning_entries").set({
         content,
         trigger_text: triggers,
-        content_hash: hash3,
+        content_hash: hash4,
         disabled: Number(input.disabled),
         revision
       }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).where("revision", "=", entry.revision).executeTakeFirst();
@@ -1861,19 +2643,22 @@ class LearningStore {
     });
   }
   async remove(identity, projectId, id) {
-    await new IdentityService(this.storage.db).authorize(identity, "write", projectId);
-    const result = await this.storage.db.deleteFrom("learning_entries").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", id).where("scope_key", "in", [
-      `project:${projectId}`,
-      `personal:${identity.userId}`
-    ]).executeTakeFirst();
-    if (!Number(result.numDeletedRows))
-      throw new ForgeError("learning_unavailable", "Ders bulunamadı.", 404);
-    return { removed: id };
+    return this.storage.db.transaction().execute(async (tx) => {
+      await tx.updateTable("tenants").set({ name: sql7`name` }).where("id", "=", identity.tenantId).execute();
+      await new IdentityService(tx).authorize(identity, "write", projectId);
+      const result = await tx.deleteFrom("learning_entries").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", id).where("scope_key", "in", [
+        `project:${projectId}`,
+        `personal:${identity.userId}`
+      ]).executeTakeFirst();
+      if (!Number(result.numDeletedRows))
+        throw new ForgeError("learning_unavailable", "Ders bulunamadı.", 404);
+      return { removed: id };
+    });
   }
 }
 
 // src/migration/learning.ts
-var hash3 = (x) => createHash9("sha256").update(x).digest("hex");
+var hash4 = (x) => createHash12("sha256").update(x).digest("hex");
 function parseLegacyLessons(bytes) {
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes), matches = [...text.matchAll(/^## \[(\d{10,13})\][ \t]*\r?$/gm)];
   if (matches.length > 1e4)
@@ -1895,9 +2680,9 @@ class LearningMigration {
     this.storage = storage;
   }
   async import(actor, project, sourceId, checksum, bytes, enabled) {
-    if (bytes.length > 16 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(sourceId) || hash3(bytes) !== checksum)
+    if (bytes.length > 16 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(sourceId) || hash4(bytes) !== checksum)
       throw new ForgeError("source_changed", "Öğrenme kaynağı checksum/boyut doğrulaması başarısız.", 409);
-    const id = hash3(JSON.stringify([
+    const id = hash4(JSON.stringify([
       actor.tenantId,
       actor.userId,
       project,
@@ -1942,7 +2727,7 @@ class LearningMigration {
           });
           continue;
         }
-        const contentHash = hash3(lesson.content), duplicate = await tx.selectFrom("learning_entries").select("id").where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("scope_key", "=", scope).where("content_hash", "=", contentHash).executeTakeFirst();
+        const contentHash = hash4(lesson.content), duplicate = await tx.selectFrom("learning_entries").select("id").where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("scope_key", "=", scope).where("content_hash", "=", contentHash).executeTakeFirst();
         if (duplicate) {
           results.push({ index, status: "duplicate", entry_id: duplicate.id });
           continue;
@@ -1955,7 +2740,7 @@ class LearningMigration {
           });
           continue;
         }
-        const entryId = randomUUID6(), now = Date.now();
+        const entryId = randomUUID9(), now = Date.now();
         await tx.insertInto("learning_entries").values({
           tenant_id: actor.tenantId,
           id: entryId,
@@ -2009,7 +2794,7 @@ class LearningMigration {
       throw new ForgeError("migration_unavailable", "Öğrenme aktarımı bulunamadı.", 404);
     await new IdentityService(this.storage.db).authorize(actor, "read", row.project_id);
     const bytes = Buffer.from(row.original_base64, "base64");
-    if (bytes.length !== row.original_bytes || hash3(bytes) !== row.checksum)
+    if (bytes.length !== row.original_bytes || hash4(bytes) !== row.checksum)
       throw new ForgeError("migration_corrupt", "Özgün aktarım kaydı checksum doğrulamasından geçmedi.", 409);
     return bytes;
   }
@@ -2023,6 +2808,19 @@ class LearningMigration {
       if (row.state === "rolled_back")
         return { receipt_id: id, state: row.state, replayed: true };
       const report = JSON.parse(row.report_json);
+      const createdIds = new Set(report.records.filter((record2) => record2.status === "created").map((record2) => record2.entry_id));
+      let cursor = "";
+      while (createdIds.size) {
+        const receipts = await tx.selectFrom("learning_imports").select(["id", "report_json"]).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("state", "=", "applied").where("id", "!=", id).where("id", ">", cursor).orderBy("id").limit(25).execute();
+        for (const receipt of receipts) {
+          const references2 = JSON.parse(receipt.report_json);
+          if (references2.records.some((record2) => record2.entry_id && createdIds.has(record2.entry_id)))
+            throw new ForgeError("migration_target_referenced", "Ders başka etkin aktarımda kullanılıyor; önce bağımlı aktarımı geri alın.", 409);
+        }
+        if (receipts.length < 25)
+          break;
+        cursor = receipts.at(-1).id;
+      }
       for (const record2 of report.records.filter((x) => x.status === "created")) {
         const entry = await tx.selectFrom("learning_entries").select("revision").where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("id", "=", record2.entry_id).executeTakeFirst();
         if (entry && entry.revision !== 1)
@@ -2054,8 +2852,15 @@ async function importPackageBounded(archive) {
   try {
     const { Worker } = await import("node:worker_threads"), { existsSync } = await import("node:fs"), { fileURLToPath } = await import("node:url");
     const built = new URL("./archive-worker.js", import.meta.url), source = new URL("./archive-worker.ts", import.meta.url);
-    const worker = new Worker(existsSync(fileURLToPath(built)) ? built : source, { workerData: archive, resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8, stackSizeMb: 2 } });
-    return await new Promise((resolve3, reject) => {
+    const worker = new Worker(existsSync(fileURLToPath(built)) ? built : source, {
+      workerData: archive,
+      resourceLimits: {
+        maxOldGenerationSizeMb: 32,
+        maxYoungGenerationSizeMb: 8,
+        stackSizeMb: 2
+      }
+    });
+    return await new Promise((resolve7, reject) => {
       let completed = false;
       const finish = (error, value) => {
         if (completed)
@@ -2066,14 +2871,20 @@ async function importPackageBounded(archive) {
         if (error)
           reject(error);
         else
-          resolve3(value);
+          resolve7(value);
       };
       const timer = setTimeout(() => finish(new ForgeError("archive_timeout", "ZIP açma CPU/süre sınırını aştı.", 422)), 3000);
       worker.once("message", (value) => {
         if (!value.ok)
           finish(new ForgeError(value.code, value.message));
         else
-          finish(undefined, { name: value.name, files: Object.fromEntries(Object.entries(value.files).map(([path, bytes]) => [path, Buffer.from(bytes)])) });
+          finish(undefined, {
+            name: value.name,
+            files: Object.fromEntries(Object.entries(value.files).map(([path, bytes]) => [
+              path,
+              Buffer.from(bytes)
+            ]))
+          });
       });
       worker.once("error", () => finish(new ForgeError("archive_worker_failed", "İzole arşiv işçisi başarısız.", 422)));
       worker.once("exit", () => {
@@ -2087,14 +2898,14 @@ async function importPackageBounded(archive) {
 }
 
 // src/migration/batch.ts
-import { createHash as createHash10 } from "node:crypto";
-import { resolve as resolve3, dirname as dirname3, basename as basename2 } from "node:path";
+import { createHash as createHash13 } from "node:crypto";
+import { resolve as resolve7, dirname as dirname4, basename as basename2 } from "node:path";
 import { z as z8 } from "zod";
-var digest = (text) => createHash10("sha256").update(text).digest("hex");
+var digest = (text) => createHash13("sha256").update(text).digest("hex");
 var sha = z8.string().regex(/^[a-f0-9]{64}$/);
 async function readMigrationJson(path) {
-  const absolute = resolve3(path);
-  return JSON.parse((await secureRead(dirname3(absolute), basename2(absolute), 16 * 1024 * 1024)).toString("utf8"));
+  const absolute = resolve7(path);
+  return JSON.parse((await secureRead(dirname4(absolute), basename2(absolute), 16 * 1024 * 1024)).toString("utf8"));
 }
 async function importDiscovery(importer, actor, rawManifest, rawMapping, upload) {
   if (!upload && (!importer || !actor))
@@ -2158,7 +2969,7 @@ async function importDiscovery(importer, actor, rawManifest, rawMapping, upload)
       if (!item || !item.checksum || item.status === "unreadable")
         throw new ForgeError("package_not_importable", "Kaynak okunabilir paket değil.");
       const root = roots.get(item.source);
-      if (!root || digest(`${resolve3(root)}\x00${item.path}`) !== item.source_id)
+      if (!root || digest(`${resolve7(root)}\x00${item.path}`) !== item.source_id)
         throw new ForgeError("source_mapping_invalid", "Kaynak kök/kimlik eşlemesi geçersiz.");
       const document = async (kind, bytes, extra) => {
         if (digest(bytes) !== item.checksum)
@@ -2223,7 +3034,7 @@ async function importDiscovery(importer, actor, rawManifest, rawMapping, upload)
         throw new ForgeError("source_collision", "Kaynak ad çakışması çözülmeli.");
       let result;
       if (upload) {
-        const files = await readPackageDirectory(resolve3(root, item.path));
+        const files = await readPackageDirectory(resolve7(root, item.path));
         const manifest2 = Object.keys(files).sort().map((path) => ({
           path,
           bytes: files[path].length,
@@ -2275,11 +3086,11 @@ async function importDiscovery(importer, actor, rawManifest, rawMapping, upload)
 }
 
 // src/migration/importer.ts
-import { randomUUID as randomUUID7, createHash as createHash11 } from "node:crypto";
-import { resolve as resolve4 } from "node:path";
+import { randomUUID as randomUUID10, createHash as createHash14 } from "node:crypto";
+import { resolve as resolve8 } from "node:path";
 import { sql as sql9 } from "kysely";
 import { z as z9 } from "zod";
-var hash4 = (value) => createHash11("sha256").update(value).digest("hex");
+var hash5 = (value) => createHash14("sha256").update(value).digest("hex");
 var flagsSchema = z9.object({ managed: z9.boolean(), protected: z9.boolean(), pinned: z9.boolean() }).strict();
 
 class MigrationImporter {
@@ -2299,15 +3110,15 @@ class MigrationImporter {
     validatePackagePath(input.path);
     if (input.path.includes("/"))
       throw new ForgeError("invalid_package_root", "Kaynak paket kökü tek dizin olmalıdır.");
-    const root = resolve4(input.source_root);
+    const root = resolve8(input.source_root);
     return this.importSnapshot(actor, {
       path: input.path,
       checksum: input.checksum,
       scope: input.scope,
       project_ref: input.project_ref,
       flags: input.flags,
-      source_id: hash4(`${root}\x00${input.path}`)
-    }, () => readPackageDirectory(resolve4(root, input.path)));
+      source_id: hash5(`${root}\x00${input.path}`)
+    }, () => readPackageDirectory(resolve8(root, input.path)));
   }
   async importArchive(actor, raw, archive) {
     const input = z9.object({
@@ -2323,7 +3134,7 @@ class MigrationImporter {
   }
   async importSnapshot(actor, input, load) {
     await new IdentityService(this.store.storage.db).authorize(actor, "write", input.project_ref);
-    const sourceId = input.source_id, id = hash4(JSON.stringify([
+    const sourceId = input.source_id, id = hash5(JSON.stringify([
       actor.tenantId,
       actor.userId,
       input.project_ref,
@@ -2345,9 +3156,9 @@ class MigrationImporter {
     const manifest = Object.keys(files).sort().map((path) => ({
       path,
       bytes: files[path].length,
-      sha256: hash4(files[path])
+      sha256: hash5(files[path])
     }));
-    if (hash4(JSON.stringify(manifest)) !== input.checksum)
+    if (hash5(JSON.stringify(manifest)) !== input.checksum)
       throw new ForgeError("source_changed", "Kaynak checksum değişti; yeni keşif gerekiyor.", 409);
     try {
       const result = await this.store.publish(actor, {
@@ -2393,7 +3204,7 @@ class MigrationImporter {
       await tx.updateTable("migration_receipts").set({ state: "rolled_back", updated_at: Date.now() }).where("tenant_id", "=", actor.tenantId).where("id", "=", id).execute();
       await tx.insertInto("audit_events").values({
         tenant_id: actor.tenantId,
-        id: randomUUID7(),
+        id: randomUUID10(),
         user_id: actor.userId,
         project_id: receipt.project_id,
         kind: "migration.rolled_back",
@@ -2410,8 +3221,8 @@ class MigrationImporter {
 }
 
 // src/execution/egress.ts
-import { writeFile, mkdir as mkdir2 } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { writeFile as writeFile2, mkdir as mkdir5 } from "node:fs/promises";
+import { join as join7 } from "node:path";
 var PROXY_SOURCE = String.raw`
 const http=require('node:http'),net=require('node:net'),dns=require('node:dns').promises;
 const allowed=new Set(JSON.parse(process.env.FORGE_EGRESS_ORIGINS));
@@ -2455,14 +3266,14 @@ class EgressNetwork {
         throw new ForgeError("network_policy_denied", "Script hedefi yönetici/proje ağ izin listesinde değil.", 403);
       return value;
     });
-    const dir = join3(this.root, "proxy");
-    await mkdir2(dir, { recursive: true, mode: 493 });
-    await writeFile(join3(dir, "proxy.cjs"), PROXY_SOURCE, { mode: 420 });
+    const dir = join7(this.root, "proxy");
+    await mkdir5(dir, { recursive: true, mode: 493 });
+    await writeFile2(join7(dir, "proxy.cjs"), PROXY_SOURCE, { mode: 420 });
     try {
-      const network = await command("docker", ["network", "create", "--internal", this.network], { timeoutMs: 5000, signal });
+      const network = await command2("docker", ["network", "create", "--internal", this.network], { timeoutMs: 5000, signal });
       if (network.code !== 0)
         throw new ForgeError("sandbox_network_unavailable", "İzole script ağı kurulamadı.", 503);
-      const proxy = await command("docker", [
+      const proxy = await command2("docker", [
         "run",
         "--detach",
         "--rm",
@@ -2493,7 +3304,7 @@ class EgressNetwork {
       ], { timeoutMs: 1e4, signal });
       if (proxy.code !== 0)
         throw new ForgeError("sandbox_network_unavailable", "Kısıtlı egress proxy başlatılamadı.", 503);
-      const connect = await command("docker", [
+      const connect2 = await command2("docker", [
         "network",
         "connect",
         "--alias",
@@ -2501,7 +3312,7 @@ class EgressNetwork {
         this.network,
         this.proxy
       ], { timeoutMs: 5000, signal });
-      if (connect.code !== 0)
+      if (connect2.code !== 0)
         throw new ForgeError("sandbox_network_unavailable", "Proxy izole ağa bağlanamadı.", 503);
       return [
         "--network",
@@ -2519,11 +3330,11 @@ class EgressNetwork {
     }
   }
   async close() {
-    await command("docker", ["rm", "--force", this.proxy], {
+    await command2("docker", ["rm", "--force", this.proxy], {
       timeoutMs: 5000,
       maxBytes: 4096
     });
-    await command("docker", ["network", "rm", this.network], {
+    await command2("docker", ["network", "rm", this.network], {
       timeoutMs: 5000,
       maxBytes: 4096
     });
@@ -2531,18 +3342,18 @@ class EgressNetwork {
 }
 
 // src/execution/dependencies.ts
-import { createHash as createHash12, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID11 } from "node:crypto";
 import {
-  mkdir as mkdir3,
-  readFile,
+  mkdir as mkdir6,
+  readFile as readFile3,
   rename as rename2,
-  writeFile as writeFile2,
-  readdir,
-  lstat as lstat3,
-  realpath,
-  rm
+  writeFile as writeFile3,
+  readdir as readdir2,
+  lstat as lstat6,
+  realpath as realpath2,
+  rm as rm3
 } from "node:fs/promises";
-import { join as join4, relative as relative2, resolve as resolve5 } from "node:path";
+import { join as join8, relative as relative3, resolve as resolve9 } from "node:path";
 function checkCancelled(signal) {
   if (signal?.aborted)
     throw new ForgeError("dependency_cancelled", "Bağımlılık hazırlama iptal edildi.", 499);
@@ -2550,20 +3361,20 @@ function checkCancelled(signal) {
 async function treeDigest(root, signal) {
   const records = [];
   async function walk(dir) {
-    for (const name of (await readdir(dir)).sort()) {
+    for (const name of (await readdir2(dir)).sort()) {
       checkCancelled(signal);
-      const path = join4(dir, name), stat = await lstat3(path), rel = relative2(root, path);
+      const path = join8(dir, name), stat = await lstat6(path), rel = relative3(root, path);
       if (rel === ".forge-cache.json")
         continue;
       if (stat.isSymbolicLink()) {
-        const actual = await realpath(path);
-        if (!actual.startsWith(`${resolve5(root)}/`))
+        const actual = await realpath2(path);
+        if (!actual.startsWith(`${resolve9(root)}/`))
           throw new ForgeError("unsafe_dependency", "Bağımlılık symlink'i cache dışına çıkıyor.");
-        records.push(`${rel}:link:${relative2(root, actual)}`);
+        records.push(`${rel}:link:${relative3(root, actual)}`);
       } else if (stat.isDirectory())
         await walk(path);
       else if (stat.isFile() && stat.nlink === 1)
-        records.push(`${rel}:${createHash12("sha256").update(await readFile(path)).digest("hex")}`);
+        records.push(`${rel}:${createHash15("sha256").update(await readFile3(path)).digest("hex")}`);
       else
         throw new ForgeError("unsafe_dependency", "Bağımlılık özel dosya/link içeriyor.");
       if (records.length > 30000)
@@ -2571,7 +3382,7 @@ async function treeDigest(root, signal) {
     }
   }
   await walk(root);
-  return createHash12("sha256").update(records.join(`
+  return createHash15("sha256").update(records.join(`
 `)).digest("hex");
 }
 
@@ -2586,8 +3397,8 @@ class DependencyCache {
   }
   async prepare(snapshot, dependency, signal) {
     checkCancelled(signal);
-    const lock = await readFile(join4(snapshot, dependency.lockfile));
-    if (createHash12("sha256").update(lock).digest("hex") !== dependency.sha256)
+    const lock = await readFile3(join8(snapshot, dependency.lockfile));
+    if (createHash15("sha256").update(lock).digest("hex") !== dependency.sha256)
       throw new ForgeError("dependency_hash_mismatch", "Kilitli bağımlılık hash'i değişti.");
     const image = SANDBOX_IMAGES[dependency.runtime];
     if (dependency.runtime === "node") {
@@ -2606,14 +3417,14 @@ class DependencyCache {
       if (!lines.length || lines.some((line) => !/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.+!-]+\s+--hash=sha256:[a-f0-9]{64}(?:\s+--hash=sha256:[a-f0-9]{64})*$/.test(line)))
         throw new ForgeError("unsupported_lockfile", "Python bağımlılıkları exact sürüm ve SHA-256 hash listesi gerektirir.");
     }
-    const key = createHash12("sha256").update(JSON.stringify([
+    const key = createHash15("sha256").update(JSON.stringify([
       this.trustScope,
       dependency.sha256,
       image,
       process.arch
-    ])).digest("hex"), destination = resolve5(this.dataDir, "dependency-cache", key);
+    ])).digest("hex"), destination = resolve9(this.dataDir, "dependency-cache", key);
     try {
-      const marker = JSON.parse(await readFile(join4(destination, ".forge-cache.json"), "utf8"));
+      const marker = JSON.parse(await readFile3(join8(destination, ".forge-cache.json"), "utf8"));
       if (marker.digest === await treeDigest(destination, signal)) {
         checkCancelled(signal);
         return destination;
@@ -2625,16 +3436,16 @@ class DependencyCache {
     }
     if (!this.allowInstall)
       throw new ForgeError("dependency_network_disabled", "Kilitli bağımlılık kurulumu yönetici profilinde kapalı.", 403);
-    const staging = resolve5(this.dataDir, "dependency-cache", `.staging-${randomUUID8()}`);
-    await mkdir3(staging, { recursive: true, mode: 493 });
-    const name = `forge-deps-${randomUUID8()}`;
+    const staging = resolve9(this.dataDir, "dependency-cache", `.staging-${randomUUID11()}`);
+    await mkdir6(staging, { recursive: true, mode: 493 });
+    const name = `forge-deps-${randomUUID11()}`;
     try {
       const args = [
         "create",
         "--name",
         name,
         "--label",
-        `skill-forge.dependency-scope=${createHash12("sha256").update(this.trustScope).digest("hex")}`,
+        `skill-forge.dependency-scope=${createHash15("sha256").update(this.trustScope).digest("hex")}`,
         "--read-only",
         "--cap-drop",
         "ALL",
@@ -2662,8 +3473,8 @@ class DependencyCache {
       ];
       let installer;
       if (dependency.runtime === "node") {
-        await writeFile2(join4(staging, "package.json"), await readFile(join4(snapshot, "package.json")));
-        await writeFile2(join4(staging, "package-lock.json"), lock);
+        await writeFile3(join8(staging, "package.json"), await readFile3(join8(snapshot, "package.json")));
+        await writeFile3(join8(staging, "package-lock.json"), lock);
         installer = [
           "npm",
           "ci",
@@ -2689,14 +3500,14 @@ class DependencyCache {
           `/package/${dependency.lockfile}`
         ];
       checkCancelled(signal);
-      const created = await command("docker", [...args, ...installer], {
+      const created = await command2("docker", [...args, ...installer], {
         timeoutMs: 1e4,
         maxBytes: 4096
       });
       if (created.code !== 0)
         throw new ForgeError("dependency_create_failed", "Bağımlılık container'ı oluşturulamadı.", 503);
       checkCancelled(signal);
-      const run = await command("docker", ["start", "--attach", name], {
+      const run = await command2("docker", ["start", "--attach", name], {
         timeoutMs: 120000,
         maxBytes: 65536,
         signal
@@ -2705,12 +3516,12 @@ class DependencyCache {
       if (run.code !== 0)
         throw new ForgeError("dependency_install_failed", "Kilitli bağımlılık kurulumu başarısız.", 422);
       if (dependency.runtime === "node")
-        await mkdir3(join4(staging, "node_modules"), {
+        await mkdir6(join8(staging, "node_modules"), {
           recursive: true,
           mode: 493
         });
       const digest2 = await treeDigest(staging, signal);
-      await writeFile2(join4(staging, ".forge-cache.json"), JSON.stringify({
+      await writeFile3(join8(staging, ".forge-cache.json"), JSON.stringify({
         digest: digest2,
         lock: dependency.sha256,
         image,
@@ -2722,17 +3533,17 @@ class DependencyCache {
       } catch (error) {
         if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
           throw error;
-        const marker = JSON.parse(await readFile(join4(destination, ".forge-cache.json"), "utf8"));
+        const marker = JSON.parse(await readFile3(join8(destination, ".forge-cache.json"), "utf8"));
         if (marker.digest !== await treeDigest(destination, signal))
           throw new ForgeError("dependency_cache_corrupt", "Eşzamanlı cache kurulumu doğrulanamadı.");
       }
       return destination;
     } finally {
-      const cleanup = await command("docker", ["rm", "--force", name], {
+      const cleanup = await command2("docker", ["rm", "--force", name], {
         timeoutMs: 5000,
         maxBytes: 4096
       });
-      await rm(staging, { recursive: true, force: true });
+      await rm3(staging, { recursive: true, force: true });
       if (cleanup.code !== 0 && !/no such container/i.test(cleanup.stderr))
         throw new ForgeError("dependency_cleanup_failed", "Bağımlılık container temizliği doğrulanamadı.", 503);
     }
@@ -2760,16 +3571,16 @@ print(json.dumps(out))`;
 
 // src/execution/docker.ts
 import { spawn } from "node:child_process";
-import { randomUUID as randomUUID9 } from "node:crypto";
-import { mkdir as mkdir4, writeFile as writeFile3, chmod } from "node:fs/promises";
-import { join as join5, dirname as dirname4, resolve as resolve6 } from "node:path";
+import { randomUUID as randomUUID12 } from "node:crypto";
+import { mkdir as mkdir7, writeFile as writeFile4, chmod as chmod3 } from "node:fs/promises";
+import { join as join9, dirname as dirname5, resolve as resolve10 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import Ajv from "ajv";
 var SANDBOX_IMAGES = {
   node: "node@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e",
   python: "python@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e"
 };
-async function command(binary, argv, options) {
+async function command2(binary, argv, options) {
   return new Promise((resolveResult) => {
     const child = spawn(binary, argv, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -2855,8 +3666,8 @@ class DockerExecutor {
     this.policy = policy;
   }
   async probe() {
-    const info = await command("docker", ["info", "--format", "{{.ServerVersion}}"], { timeoutMs: 3000 });
-    const images = await Promise.all(Object.values(SANDBOX_IMAGES).map((image) => command("docker", ["image", "inspect", image, "--format", "{{.Id}}"], {
+    const info = await command2("docker", ["info", "--format", "{{.ServerVersion}}"], { timeoutMs: 3000 });
+    const images = await Promise.all(Object.values(SANDBOX_IMAGES).map((image) => command2("docker", ["image", "inspect", image, "--format", "{{.Id}}"], {
       timeoutMs: 3000
     })));
     return {
@@ -2881,25 +3692,25 @@ class DockerExecutor {
     if (checked.hash !== manifest.hash)
       throw new ForgeError("revision_corrupt", "Script paketi sürüm hash'i uyuşmuyor.", 409);
     const runtime = entry.runtime === "python" ? "python" : "node", image = SANDBOX_IMAGES[runtime];
-    const available = await command("docker", ["image", "inspect", image, "--format", "{{.Id}}"], { timeoutMs: 3000 });
+    const available = await command2("docker", ["image", "inspect", image, "--format", "{{.Id}}"], { timeoutMs: 3000 });
     if (available.code !== 0)
       throw new ForgeError("sandbox_unavailable", "Sabitlenmiş sandbox image'i bulunamadı; doctor ile kontrol edin.", 503);
-    const executionId = randomUUID9(), name = `forge-${executionId}`;
-    const root = resolve6(this.dataDir, "execution", executionId), snapshot = join5(root, "package"), artifacts = join5(root, "artifacts");
-    await mkdir4(snapshot, { recursive: true, mode: 493 });
-    await mkdir4(artifacts, { recursive: true, mode: 448 });
+    const executionId = randomUUID12(), name = `forge-${executionId}`;
+    const root = resolve10(this.dataDir, "execution", executionId), snapshot = join9(root, "package"), artifacts = join9(root, "artifacts");
+    await mkdir7(snapshot, { recursive: true, mode: 493 });
+    await mkdir7(artifacts, { recursive: true, mode: 448 });
     for (const [path, bytes] of Object.entries(files)) {
-      await mkdir4(dirname4(join5(snapshot, path)), {
+      await mkdir7(dirname5(join9(snapshot, path)), {
         recursive: true,
         mode: 493
       });
-      await writeFile3(join5(snapshot, path), bytes, { mode: 420, flag: "wx" });
+      await writeFile4(join9(snapshot, path), bytes, { mode: 420, flag: "wx" });
     }
-    await chmod(snapshot, 493);
+    await chmod3(snapshot, 493);
     const dependency = manifest.execution?.dependencies;
     const cache = dependency ? await new DependencyCache(this.dataDir, this.policy.trustScope, this.policy.allowDependencyInstall).prepare(snapshot, dependency, signal) : null;
     if (cache && dependency?.runtime === "node")
-      await mkdir4(join5(snapshot, "node_modules"), {
+      await mkdir7(join9(snapshot, "node_modules"), {
         recursive: true,
         mode: 493
       });
@@ -2907,16 +3718,16 @@ class DockerExecutor {
     const networkArgs = egress ? await egress.start(entry.network, this.policy.allowedOrigins ?? [], signal) : ["--network", "none"];
     const mounts = cache && dependency ? dependency.runtime === "node" ? [
       "--mount",
-      `type=bind,src=${join5(cache, "node_modules")},dst=/package/node_modules,readonly`
+      `type=bind,src=${join9(cache, "node_modules")},dst=/package/node_modules,readonly`
     ] : [
       "--mount",
-      `type=bind,src=${join5(cache, "python")},dst=/deps,readonly`,
+      `type=bind,src=${join9(cache, "python")},dst=/deps,readonly`,
       "--env",
       "PYTHONPATH=/deps"
     ] : [];
     const started = performance.now();
     try {
-      const launch = await command("docker", [
+      const launch = await command2("docker", [
         "run",
         "--detach",
         "--rm",
@@ -2957,7 +3768,7 @@ class DockerExecutor {
       ], { timeoutMs: 15000, signal });
       if (launch.code !== 0)
         throw new ForgeError("sandbox_unavailable", "İzole container başlatılamadı.", 503);
-      const run = await command("docker", [
+      const run = await command2("docker", [
         "exec",
         "--interactive",
         name,
@@ -2984,7 +3795,7 @@ class DockerExecutor {
       }
       if (!validateOutput(result))
         throw new ForgeError("script_output_invalid", "Script çıktısı şemayla uyuşmuyor.", 422);
-      const collected = await command("docker", [
+      const collected = await command2("docker", [
         "exec",
         name,
         runtime,
@@ -3006,11 +3817,11 @@ class DockerExecutor {
         outputBytes += bytes.length;
         if (outputBytes > 4 * 1024 * 1024)
           throw new ForgeError("artifact_limit", "Artifact boyut sınırı aşıldı.");
-        await mkdir4(dirname4(join5(artifacts, path)), {
+        await mkdir7(dirname5(join9(artifacts, path)), {
           recursive: true,
           mode: 448
         });
-        await writeFile3(join5(artifacts, path), bytes, {
+        await writeFile4(join9(artifacts, path), bytes, {
           flag: "wx",
           mode: 384
         });
@@ -3031,7 +3842,7 @@ class DockerExecutor {
         sandbox: image
       };
     } finally {
-      await command("docker", ["rm", "--force", name], {
+      await command2("docker", ["rm", "--force", name], {
         timeoutMs: 5000,
         maxBytes: 4096
       });
@@ -3061,50 +3872,50 @@ class DockerExecutor {
 }
 
 // src/migration/discover.ts
-import { createHash as createHash13 } from "node:crypto";
-import { lstat as lstat4, opendir as opendir2 } from "node:fs/promises";
-import { join as join6, resolve as resolve7, dirname as dirname5 } from "node:path";
-import { homedir } from "node:os";
-var digest2 = (value) => createHash13("sha256").update(value).digest("hex");
+import { createHash as createHash16 } from "node:crypto";
+import { lstat as lstat7, opendir as opendir2 } from "node:fs/promises";
+import { join as join10, resolve as resolve11, dirname as dirname6 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+var digest2 = (value) => createHash16("sha256").update(value).digest("hex");
 async function discoverLegacy(input) {
   const maxEntries = input.maxEntries ?? 4096;
   if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 1e5)
     throw Error("scan_limit must be 1–100000");
-  const project = resolve7(input.projectRoot), home = resolve7(input.home ?? homedir());
+  const project = resolve11(input.projectRoot), home = resolve11(input.home ?? homedir2());
   const sources = [
     {
       id: "project-skills",
-      path: join6(project, ".opencode", "skills"),
+      path: join10(project, ".opencode", "skills"),
       kind: "package",
       scope: "project"
     },
     {
       id: "home-config-skills",
-      path: join6(home, ".config", "opencode", "skills"),
+      path: join10(home, ".config", "opencode", "skills"),
       kind: "package",
       scope: "personal"
     },
     {
       id: "home-skills",
-      path: join6(home, ".opencode", "skills"),
+      path: join10(home, ".opencode", "skills"),
       kind: "package",
       scope: "personal"
     },
     {
       id: "project-state",
-      path: join6(project, ".opencode", ".skill-power"),
+      path: join10(project, ".opencode", ".skill-power"),
       kind: "state",
       scope: "project"
     },
     {
       id: "home-state",
-      path: join6(home, ".opencode", ".skill-power"),
+      path: join10(home, ".opencode", ".skill-power"),
       kind: "state",
       scope: "personal"
     },
     {
       id: "home-config-state",
-      path: join6(home, ".config", "opencode", ".skill-power"),
+      path: join10(home, ".config", "opencode", ".skill-power"),
       kind: "state",
       scope: "personal"
     }
@@ -3123,14 +3934,14 @@ async function discoverLegacy(input) {
       continue;
     }
     try {
-      for (let ancestor = resolve7(source.path);; ancestor = dirname5(ancestor)) {
-        const info = await lstat4(ancestor);
+      for (let ancestor = resolve11(source.path);; ancestor = dirname6(ancestor)) {
+        const info = await lstat7(ancestor);
         if (!info.isDirectory() || info.isSymbolicLink())
           throw Error("unsafe_root");
-        if (dirname5(ancestor) === ancestor)
+        if (dirname6(ancestor) === ancestor)
           break;
       }
-      const stat = await lstat4(source.path);
+      const stat = await lstat7(source.path);
       if (!stat.isDirectory() || stat.isSymbolicLink()) {
         roots.push({ id: source.id, path: source.path, status: "unsafe_root" });
         continue;
@@ -3145,12 +3956,12 @@ async function discoverLegacy(input) {
     }
     roots.push({ id: source.id, path: source.path, status: "scanned" });
     const names = new Set;
-    async function walk(relative3, depth) {
+    async function walk(relative4, depth) {
       if (depth > 12) {
         truncated = true;
         return;
       }
-      const directory = await opendir2(join6(source.path, relative3), {
+      const directory = await opendir2(join10(source.path, relative4), {
         bufferSize: 32
       });
       for await (const entry of directory) {
@@ -3158,7 +3969,7 @@ async function discoverLegacy(input) {
           truncated = true;
           return;
         }
-        const path = relative3 ? `${relative3}/${entry.name}` : entry.name;
+        const path = relative4 ? `${relative4}/${entry.name}` : entry.name;
         const item = {
           source_id: digest2(`${source.path}\x00${path}`),
           source: source.id,
@@ -3181,7 +3992,7 @@ async function discoverLegacy(input) {
             const folded = entry.name.normalize("NFKC").toLowerCase();
             const collision = names.has(folded);
             names.add(folded);
-            const files = await readPackageDirectory(join6(source.path, path));
+            const files = await readPackageDirectory(join10(source.path, path));
             item.files = Object.keys(files).sort().map((path2) => ({
               path: path2,
               bytes: files[path2].length,
@@ -3275,14 +4086,14 @@ async function discoverLegacy(input) {
 }
 
 // src/cli/main.ts
-import { writeFile as writeFile4, realpath as realpath3 } from "node:fs/promises";
+import { writeFile as writeFile5, realpath as realpath3 } from "node:fs/promises";
 
 // src/clients/installer.ts
 import { parse as parseToml } from "@iarna/toml";
 import { parse as parse2, modify, applyEdits } from "jsonc-parser";
-import { readFile as readFile2, mkdir as mkdir5, lstat as lstat5, open as open3, rename as rename3, unlink } from "node:fs/promises";
-import { join as join7, dirname as dirname6, resolve as resolve8, relative as relative3 } from "node:path";
-import { randomUUID as randomUUID10, createHash as createHash14 } from "node:crypto";
+import { readFile as readFile4, mkdir as mkdir8, lstat as lstat8, open as open5, rename as rename3, unlink } from "node:fs/promises";
+import { join as join11, dirname as dirname7, resolve as resolve12, relative as relative4 } from "node:path";
+import { randomUUID as randomUUID13, createHash as createHash17 } from "node:crypto";
 var START = "<!-- skill-forge:managed:start -->";
 var END = "<!-- skill-forge:managed:end -->";
 var CLIENT_INSTRUCTIONS = `${START}
@@ -3303,10 +4114,10 @@ function edit(text, path, value) {
 }
 async function read(path) {
   try {
-    const stat = await lstat5(path);
+    const stat = await lstat8(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024)
       throw new ForgeError("unsafe_client_config", "İstemci yapılandırması normal, sınırlı dosya olmalı.");
-    return await readFile2(path, "utf8");
+    return await readFile4(path, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return "";
@@ -3314,17 +4125,17 @@ async function read(path) {
   }
 }
 async function safeParents(path, root) {
-  const rel = relative3(root, path);
+  const rel = relative4(root, path);
   if (rel.startsWith("..") || rel.startsWith("/"))
     throw new ForgeError("unsafe_client_path", "İstemci yolu kapsam dışında.");
   let current = root;
   for (const segment of [
     "",
-    ...relative3(root, dirname6(path)).split("/").filter(Boolean)
+    ...relative4(root, dirname7(path)).split("/").filter(Boolean)
   ]) {
-    current = segment ? join7(current, segment) : current;
+    current = segment ? join11(current, segment) : current;
     try {
-      const stat = await lstat5(current);
+      const stat = await lstat8(current);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new ForgeError("unsafe_client_path", "İstemci üst dizini symlink veya özel dosya.");
     } catch (error) {
@@ -3334,9 +4145,9 @@ async function safeParents(path, root) {
   }
 }
 async function atomic(path, text) {
-  await mkdir5(dirname6(path), { recursive: true, mode: 448 });
-  const tmp = `${path}.forge-${randomUUID10()}`;
-  const fd = await open3(tmp, "wx", 384);
+  await mkdir8(dirname7(path), { recursive: true, mode: 448 });
+  const tmp = `${path}.forge-${randomUUID13()}`;
+  const fd = await open5(tmp, "wx", 384);
   try {
     await fd.writeFile(text);
     await fd.sync();
@@ -3357,12 +4168,12 @@ function hookCommand(entry, args, platform = process.platform) {
   return argv.map(shellArg).join(" ");
 }
 async function installClient(input) {
-  const project = resolve8(input.projectRoot), clientDir = join7(project, input.client === "codex" ? ".codex" : ".claude"), privateDir = join7(input.dataDir, "installations", installationFingerprint([input.client, project])), manifestPath = join7(privateDir, "manifest.json");
+  const project = resolve12(input.projectRoot), clientDir = join11(project, input.client === "codex" ? ".codex" : ".claude"), privateDir = join11(input.dataDir, "installations", installationFingerprint([input.client, project])), manifestPath = join11(privateDir, "manifest.json");
   const oldManifestText = await read(manifestPath), oldManifest = oldManifestText ? JSON.parse(oldManifestText) : null;
-  const entry = resolve8(input.entry), args = ["mcp", "--data-dir", input.dataDir, "--port", String(input.port)];
-  const mcpPath = input.client === "codex" ? join7(clientDir, "config.toml") : join7(project, ".mcp.json");
-  const hookPath = join7(clientDir, input.client === "codex" ? "hooks.json" : "settings.json");
-  const instructionsPath = join7(project, input.client === "codex" ? "AGENTS.md" : "CLAUDE.md");
+  const entry = resolve12(input.entry), args = ["mcp", "--data-dir", input.dataDir, "--port", String(input.port)];
+  const mcpPath = input.client === "codex" ? join11(clientDir, "config.toml") : join11(project, ".mcp.json");
+  const hookPath = join11(clientDir, input.client === "codex" ? "hooks.json" : "settings.json");
+  const instructionsPath = join11(project, input.client === "codex" ? "AGENTS.md" : "CLAUDE.md");
   for (const target of [mcpPath, hookPath, instructionsPath])
     await safeParents(target, project);
   const changes = [];
@@ -3411,13 +4222,13 @@ tool_timeout_sec = 150
     "--port",
     String(input.port)
   ];
-  const command2 = hookCommand(entry, hookArgs);
+  const command3 = hookCommand(entry, hookArgs);
   for (const event of ["UserPromptSubmit", "Stop"]) {
     const doc = json(hookAfter), groups = doc.hooks?.[event] ?? [];
     if (!Array.isArray(groups))
       throw new ForgeError("invalid_client_hooks", "Hook listesi geçersiz.");
-    if (!groups.some((group) => group.hooks?.some((hook) => hook.command === command2)))
-      hookAfter = edit(hookAfter, ["hooks", event], [...groups, { hooks: [{ type: "command", command: command2, timeout: 20 }] }]);
+    if (!groups.some((group) => group.hooks?.some((hook) => hook.command === command3)))
+      hookAfter = edit(hookAfter, ["hooks", event], [...groups, { hooks: [{ type: "command", command: command3, timeout: 20 }] }]);
   }
   add(hookPath, hookBefore, hookAfter);
   const instructionsBefore = await read(instructionsPath);
@@ -3439,11 +4250,11 @@ ${CLIENT_INSTRUCTIONS}
       hook_trust: "client_review_required",
       manifest: manifestPath
     };
-  await mkdir5(privateDir, { recursive: true, mode: 448 });
+  await mkdir8(privateDir, { recursive: true, mode: 448 });
   const lockPath = `${manifestPath}.lock`;
   let lock;
   try {
-    lock = await open3(lockPath, "wx", 384);
+    lock = await open5(lockPath, "wx", 384);
   } catch {
     throw new ForgeError("installation_busy", "İstemci kurulumu başka işlemde çalışıyor.", 409);
   }
@@ -3459,7 +4270,7 @@ ${CLIENT_INSTRUCTIONS}
       if (await read(change.path) !== change.before)
         throw new ForgeError("client_config_changed", "Kurulum sırasında istemci dosyası değişti.", 409);
     for (const change of changes) {
-      const backup = join7(privateDir, "backups", `${Date.now()}-${randomUUID10()}.txt`);
+      const backup = join11(privateDir, "backups", `${Date.now()}-${randomUUID13()}.txt`);
       await atomic(backup, change.before);
       await atomic(change.path, change.after);
       const saved = manifest.files.find((file) => file.path === change.path);
@@ -3483,18 +4294,18 @@ ${CLIENT_INSTRUCTIONS}
   }
 }
 async function uninstallClient(client, projectRoot, dataDir) {
-  const project = resolve8(projectRoot), path = join7(dataDir, "installations", installationFingerprint([client, project]), "manifest.json"), raw = await read(path);
+  const project = resolve12(projectRoot), path = join11(dataDir, "installations", installationFingerprint([client, project]), "manifest.json"), raw = await read(path);
   if (!raw)
     return { status: "unchanged" };
   const manifest = JSON.parse(raw), removed = [], conflicts = [];
   const allowed = new Set(client === "codex" ? [
-    join7(project, ".codex", "config.toml"),
-    join7(project, ".codex", "hooks.json"),
-    join7(project, "AGENTS.md")
+    join11(project, ".codex", "config.toml"),
+    join11(project, ".codex", "hooks.json"),
+    join11(project, "AGENTS.md")
   ] : [
-    join7(project, ".mcp.json"),
-    join7(project, ".claude", "settings.json"),
-    join7(project, "CLAUDE.md")
+    join11(project, ".mcp.json"),
+    join11(project, ".claude", "settings.json"),
+    join11(project, "CLAUDE.md")
   ]);
   for (const file of manifest.files) {
     if (!allowed.has(file.path))
@@ -3561,115 +4372,16 @@ async function uninstallClient(client, projectRoot, dataDir) {
   };
 }
 function installationFingerprint(value) {
-  return createHash14("sha256").update(JSON.stringify(value)).digest("hex");
+  return createHash17("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 // src/clients/hook.ts
-import { createHash as createHash16 } from "node:crypto";
+import { createHash as createHash18 } from "node:crypto";
 
 // src/cli/daemon.ts
 import { spawn as spawn2 } from "node:child_process";
-import { open as open5 } from "node:fs/promises";
-import { join as join9 } from "node:path";
-
-// src/cli/config.ts
-import { createHash as createHash15, randomBytes as randomBytes2 } from "node:crypto";
-import { mkdir as mkdir6, open as open4, readFile as readFile3, lstat as lstat6, realpath as realpath2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import { join as join8, resolve as resolve9 } from "node:path";
-var PRODUCT_VERSION = "0.5.6";
-var PROTOCOL_VERSION = 1;
-function defaultDataDir(env = process.env) {
-  if (env.SKILL_FORGE_DATA_DIR)
-    return resolve9(env.SKILL_FORGE_DATA_DIR);
-  if (process.platform === "win32")
-    return join8(env.LOCALAPPDATA ?? join8(homedir2(), "AppData", "Local"), "SkillForge");
-  if (process.platform === "darwin")
-    return join8(homedir2(), "Library", "Application Support", "SkillForge");
-  return join8(env.XDG_DATA_HOME ?? join8(homedir2(), ".local", "share"), "skill-forge");
-}
-async function localConfig(dataDir = defaultDataDir(), requestedPort) {
-  dataDir = resolve9(dataDir);
-  await mkdir6(dataDir, { recursive: true, mode: 448 });
-  const stat = await lstat6(dataDir);
-  if (stat.isSymbolicLink() || !stat.isDirectory() || process.platform !== "win32" && ((stat.mode & 63) !== 0 || stat.uid !== process.getuid?.()))
-    throw new ForgeError("insecure_data_dir", "Veri dizini sahip kullanıcıya ait ve yalnız ona açık (0700) olmalıdır.");
-  dataDir = await realpath2(dataDir);
-  const tokenPath = join8(dataDir, "owner-token");
-  try {
-    const fd = await open4(tokenPath, "wx", 384);
-    try {
-      await fd.writeFile(randomBytes2(32).toString("hex"));
-      await fd.sync();
-    } finally {
-      await fd.close();
-    }
-  } catch (error) {
-    if (error.code !== "EEXIST")
-      throw error;
-  }
-  const tokenStat = await lstat6(tokenPath);
-  if (!tokenStat.isFile() || tokenStat.isSymbolicLink() || tokenStat.nlink !== 1 || process.platform !== "win32" && ((tokenStat.mode & 63) !== 0 || tokenStat.uid !== process.getuid?.()))
-    throw new ForgeError("insecure_credential", "Yerel kimlik dosyasının izinleri güvenli değil.");
-  let token = "";
-  for (let i = 0;i < 50; i++) {
-    token = await readFile3(tokenPath, "utf8");
-    if (/^[a-f0-9]{64}$/.test(token))
-      break;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  if (!/^[a-f0-9]{64}$/.test(token))
-    throw new ForgeError("invalid_credential", "Yerel kimlik dosyası geçersiz.");
-  let policy = {};
-  try {
-    const policyPath = join8(dataDir, "policy.json"), policyStat = await lstat6(policyPath);
-    if (!policyStat.isFile() || policyStat.isSymbolicLink() || policyStat.nlink !== 1 || policyStat.size > 32768 || process.platform !== "win32" && ((policyStat.mode & 63) !== 0 || policyStat.uid !== process.getuid?.()))
-      throw new ForgeError("insecure_policy", "Sistem politika dosyası güvenli değil.");
-    policy = settingsSchema.parse(JSON.parse(await readFile3(policyPath, "utf8")));
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-  }
-  const port = requestedPort ?? Number(process.env.SKILL_FORGE_PORT ?? 20000 + createHash15("sha256").update(dataDir).digest().readUInt16BE(0) % 30000);
-  if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new ForgeError("invalid_port", "Port geçersiz.");
-  if (process.env.SKILL_FORGE_PROFILE === "server") {
-    const postgresUrl = process.env.SKILL_FORGE_POSTGRES_URL;
-    const publicUrl = process.env.SKILL_FORGE_PUBLIC_URL;
-    const issuer = process.env.SKILL_FORGE_OIDC_ISSUER;
-    const clientId = process.env.SKILL_FORGE_OIDC_CLIENT_ID;
-    if (!postgresUrl || !publicUrl || !issuer || !clientId)
-      throw new ForgeError("server_config_missing", "Sunucu profili PostgreSQL, public URL ve OIDC ayarlarını gerektirir.");
-    return {
-      dataDir,
-      policy,
-      token,
-      port,
-      host: "0.0.0.0",
-      url: publicUrl,
-      profile: "server",
-      postgresUrl,
-      oidc: {
-        issuer,
-        clientId,
-        clientSecret: process.env.SKILL_FORGE_OIDC_CLIENT_SECRET,
-        audience: publicUrl,
-        publicUrl
-      }
-    };
-  }
-  return {
-    dataDir,
-    policy,
-    token,
-    port,
-    host: "127.0.0.1",
-    url: `http://127.0.0.1:${port}`,
-    profile: "local"
-  };
-}
-
-// src/cli/daemon.ts
+import { open as open6 } from "node:fs/promises";
+import { join as join12 } from "node:path";
 async function daemonHealth(config) {
   try {
     const response = await fetch(`${config.url}/health`, {
@@ -3691,7 +4403,7 @@ async function daemonHealth(config) {
 async function ensureDaemon(config, entry) {
   if (await daemonHealth(config))
     return;
-  const log = await open5(join9(config.dataDir, "daemon.log"), "a", 384);
+  const log = await open6(join12(config.dataDir, "daemon.log"), "a", 384);
   try {
     const child = spawn2(process.execPath, [
       entry,
@@ -3710,9 +4422,44 @@ async function ensureDaemon(config, entry) {
   while (Date.now() < deadline) {
     if (await daemonHealth(config))
       return;
-    await new Promise((resolve10) => setTimeout(resolve10, 100));
+    await new Promise((resolve13) => setTimeout(resolve13, 100));
   }
   throw new ForgeError("daemon_start_failed", "Servis başlatılamadı; veri dizinindeki daemon.log kaydını inceleyin.", 503);
+}
+async function stopDaemon(config) {
+  if (config.profile === "server")
+    throw new ForgeError("stop_denied", "Ortak sunucuyu işletim sistemi veya container yöneticisiyle durdurun.", 403);
+  await daemonHealth(config);
+  let response;
+  try {
+    response = await fetch(`${config.url}/api/service/stop`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.token}` },
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+  } catch (error) {
+    if (error.cause?.code === "ECONNREFUSED")
+      return { status: "already_stopped" };
+    throw new ForgeError("stop_unavailable", "Servise ulaşılamadı; durmuş olduğu doğrulanamadı.", 503);
+  }
+  if (response.status !== 202)
+    throw new ForgeError("stop_denied", "Servis durdurma isteğini reddetti; kimlik ve profili kontrol edin.", response.status === 401 || response.status === 403 ? response.status : 409);
+  const result = await response.json();
+  if (result.service !== "skill-forge" || result.version !== PRODUCT_VERSION || result.protocol !== PROTOCOL_VERSION || !Number.isSafeInteger(result.pid) || result.pid <= 0 || result.pid === process.pid)
+    throw new ForgeError("daemon_identity_mismatch", "Durdurma yanıtı servis kimliğiyle uyuşmuyor.", 409);
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(result.pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH")
+        return { status: "stopped", pid: result.pid };
+      throw new ForgeError("stop_unverified", "Süreç çıkışı doğrulanamadı.", 503);
+    }
+    await new Promise((resolve13) => setTimeout(resolve13, 100));
+  }
+  throw new ForgeError("stop_timeout", "Kapanış istendi ancak süreç çıkışı zamanında doğrulanamadı.", 503);
 }
 
 // src/clients/hook.ts
@@ -3745,7 +4492,7 @@ async function clientHook(config, entry, client, projectRef, input) {
       const original = typeof input.prompt === "string" ? input.prompt : "";
       if (!original || original.length > 32000 || /^\s*\//.test(original))
         return {};
-      const hash5 = createHash16("sha256").update(original).digest("hex");
+      const hash6 = createHash18("sha256").update(original).digest("hex");
       const response = await fetch(`${config.url}/api/tools/forge_prepare`, {
         method: "POST",
         headers: {
@@ -3756,7 +4503,7 @@ async function clientHook(config, entry, client, projectRef, input) {
           project_ref: projectRef,
           original,
           ...session ? { source: { client, session } } : {},
-          idempotency_key: createHash16("sha256").update(JSON.stringify([client, session, turn, hash5])).digest("hex"),
+          idempotency_key: createHash18("sha256").update(JSON.stringify([client, session, turn, hash6])).digest("hex"),
           wait_ms: 3000
         }),
         signal: AbortSignal.timeout(4000)
@@ -3764,7 +4511,7 @@ async function clientHook(config, entry, client, projectRef, input) {
       if (!response.ok)
         return {};
       const prepared = await response.json();
-      if (prepared.status !== "improved" || !prepared.auto_applied || prepared.original_hash !== hash5 || !prepared.effective)
+      if (prepared.status !== "improved" || !prepared.auto_applied || prepared.original_hash !== hash6 || !prepared.effective)
         return {
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
@@ -3791,7 +4538,7 @@ ${prepared.effective}`
       body: JSON.stringify({
         project_ref: projectRef,
         summary,
-        idempotency_key: createHash16("sha256").update(JSON.stringify([client, session, turn, summary])).digest("hex"),
+        idempotency_key: createHash18("sha256").update(JSON.stringify([client, session, turn, summary])).digest("hex"),
         source: { client: `${client}-stop-hook`, session },
         evidence: [
           {
@@ -3821,6 +4568,45 @@ async function readHookInput(stream) {
     return {};
   }
 }
+
+// src/storage/deletion-migration.ts
+var deletionMigration = {
+  up: async (db) => {
+    await db.schema.createTable("package_deletions").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addColumn("scope_key", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("package_deletion_pk", ["tenant_id", "skill_id"]).execute();
+    await db.schema.createTable("package_gc").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addColumn("revision", "text", (c) => c.notNull()).addColumn("package_path", "text", (c) => c.notNull()).addColumn("state", "text", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("package_gc_pk", [
+      "tenant_id",
+      "skill_id",
+      "revision"
+    ]).execute();
+  }
+};
+
+// src/storage/reader-migration.ts
+var readerMigration = {
+  up: async (db) => {
+    await db.schema.createTable("revision_readers").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addColumn("revision", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("revision_reader_pk", ["tenant_id", "id"]).addForeignKeyConstraint("revision_reader_target", ["tenant_id", "skill_id", "revision"], "skill_revisions", ["tenant_id", "skill_id", "revision"]).execute();
+    await db.schema.createIndex("revision_reader_reference").on("revision_readers").columns(["tenant_id", "skill_id", "revision"]).execute();
+  }
+};
+
+// src/storage/run-pin-migration.ts
+var runPinMigration = {
+  up: async (db) => {
+    await db.schema.createTable("run_revision_pins").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("run_id", "text", (c) => c.notNull()).addColumn("fence", "integer", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addColumn("revision", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("run_pin_pk", ["tenant_id", "run_id", "fence"]).addForeignKeyConstraint("run_pin_owner", ["tenant_id", "run_id"], "runs", ["tenant_id", "id"]).addForeignKeyConstraint("run_pin_revision", ["tenant_id", "skill_id", "revision"], "skill_revisions", ["tenant_id", "skill_id", "revision"]).execute();
+    await db.schema.createIndex("run_pin_reference").on("run_revision_pins").columns(["tenant_id", "skill_id", "revision"]).execute();
+  }
+};
+
+// src/storage/execution-pin-migration.ts
+var executionPinMigration = {
+  up: async (db) => {
+    await db.schema.createTable("execution_revision_pins").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("execution_id", "text", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addColumn("revision", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("execution_pin_pk", [
+      "tenant_id",
+      "execution_id"
+    ]).addForeignKeyConstraint("execution_pin_owner", ["tenant_id", "execution_id"], "executions", ["tenant_id", "id"]).addForeignKeyConstraint("execution_pin_revision", ["tenant_id", "skill_id", "revision"], "skill_revisions", ["tenant_id", "skill_id", "revision"]).execute();
+    await db.schema.createIndex("execution_pin_reference").on("execution_revision_pins").columns(["tenant_id", "skill_id", "revision"]).execute();
+  }
+};
 
 // src/storage/flag-import-migration.ts
 var flagImportMigration = {
@@ -4027,7 +4813,7 @@ import {
   sql as sql12
 } from "kysely";
 import { Pool, types } from "pg";
-import { join as join10 } from "node:path";
+import { join as join13 } from "node:path";
 async function openDatabase(options) {
   let dialect;
   const backend = options.postgresUrl ? "postgres" : "sqlite";
@@ -4042,16 +4828,16 @@ async function openDatabase(options) {
       })
     });
   } else {
-    const path = join10(options.dataDir, "local.sqlite");
+    const path = join13(options.dataDir, "local.sqlite");
     let sqlite;
     if (process.versions.bun) {
       const { Database } = await import("bun:sqlite");
-      const native = new Database(path, { create: true });
-      native.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
+      const native2 = new Database(path, { create: true });
+      native2.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
       sqlite = {
-        close: () => native.close(),
+        close: () => native2.close(),
         prepare: (query) => {
-          const stmt = native.prepare(query);
+          const stmt = native2.prepare(query);
           return {
             reader: stmt.columnNames.length > 0,
             all: (params) => stmt.all(...params),
@@ -4062,17 +4848,21 @@ async function openDatabase(options) {
       };
     } else {
       const { default: Database } = await import("better-sqlite3");
-      const native = new Database(path);
-      native.pragma("journal_mode = WAL");
-      native.pragma("foreign_keys = ON");
-      native.pragma("busy_timeout = 5000");
-      native.pragma("synchronous = FULL");
-      sqlite = native;
+      const native2 = new Database(path);
+      native2.pragma("journal_mode = WAL");
+      native2.pragma("foreign_keys = ON");
+      native2.pragma("busy_timeout = 5000");
+      native2.pragma("synchronous = FULL");
+      sqlite = native2;
     }
     dialect = new SqliteDialect({ database: sqlite });
   }
   const db = new Kysely({ dialect });
   const migrations = {
+    "019_package_deletion": deletionMigration,
+    "018_revision_readers": readerMigration,
+    "017_run_pins": runPinMigration,
+    "016_execution_pins": executionPinMigration,
     "015_flag_import": flagImportMigration,
     "014_session_preferences": sessionPreferenceMigration,
     "013_rewrite_import": rewriteImportMigration,
@@ -4136,115 +4926,14 @@ async function openDatabase(options) {
   };
 }
 
-// src/storage/secrets.ts
-import {
-  createCipheriv,
-  createDecipheriv,
-  randomBytes as randomBytes3,
-  createHash as createHash17,
-  randomUUID as randomUUID11
-} from "node:crypto";
-import { mkdir as mkdir7, open as open6, readFile as readFile4, lstat as lstat7 } from "node:fs/promises";
-import { join as join11 } from "node:path";
-class SecretVault {
-  root;
-  key;
-  constructor(root, key) {
-    this.root = root;
-    this.key = key;
-  }
-  static async open(dataDir) {
-    const root = join11(dataDir, "secrets");
-    await mkdir7(root, { recursive: true, mode: 448 });
-    const stat = await lstat7(root);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || process.platform !== "win32" && stat.mode & 63)
-      throw new ForgeError("insecure_vault", "Secret dizini güvenli değil.");
-    const path = join11(root, "master.key");
-    try {
-      const fd = await open6(path, "wx", 384);
-      try {
-        await fd.writeFile(randomBytes3(32));
-        await fd.sync();
-      } finally {
-        await fd.close();
-      }
-    } catch (error) {
-      if (error.code !== "EEXIST")
-        throw error;
-    }
-    const keyStat = await lstat7(path);
-    if (!keyStat.isFile() || keyStat.isSymbolicLink() || keyStat.nlink !== 1 || process.platform !== "win32" && keyStat.mode & 63)
-      throw new ForgeError("insecure_vault_key", "Secret anahtar dosyası güvenli değil.");
-    let key = Buffer.alloc(0);
-    for (let i = 0;i < 50; i++) {
-      key = await readFile4(path);
-      if (key.length === 32)
-        break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    if (key.length !== 32)
-      throw new ForgeError("invalid_vault_key", "Secret anahtarı eksik.");
-    return new SecretVault(root, key);
-  }
-  scope(tenant, user) {
-    return createHash17("sha256").update(JSON.stringify([tenant, user])).digest("hex");
-  }
-  async put(tenant, user, value) {
-    if (!value || value.length > 16384)
-      throw new ForgeError("invalid_secret", "Secret boyutu geçersiz.");
-    const ref = randomUUID11(), scope = this.scope(tenant, user);
-    const nonce = randomBytes3(12);
-    const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
-    cipher.setAAD(Buffer.from(`${scope}:${ref}`));
-    const encrypted = Buffer.concat([
-      cipher.update(value, "utf8"),
-      cipher.final()
-    ]);
-    const path = join11(this.root, `${scope}-${ref}.json`);
-    const fd = await open6(path, "wx", 384);
-    try {
-      await fd.writeFile(JSON.stringify({
-        version: 1,
-        nonce: nonce.toString("base64"),
-        tag: cipher.getAuthTag().toString("base64"),
-        ciphertext: encrypted.toString("base64")
-      }));
-      await fd.sync();
-    } finally {
-      await fd.close();
-    }
-    return ref;
-  }
-  async get(tenant, user, ref) {
-    if (!/^[a-f0-9-]{36}$/.test(ref))
-      throw new ForgeError("secret_unavailable", "Secret referansı geçersiz.", 404);
-    const scope = this.scope(tenant, user), path = join11(this.root, `${scope}-${ref}.json`);
-    try {
-      const stat = await lstat7(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 32768)
-        throw new Error("unsafe secret");
-      const value = JSON.parse(await readFile4(path, "utf8"));
-      const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(value.nonce, "base64"));
-      decipher.setAAD(Buffer.from(`${scope}:${ref}`));
-      decipher.setAuthTag(Buffer.from(value.tag, "base64"));
-      return Buffer.concat([
-        decipher.update(Buffer.from(value.ciphertext, "base64")),
-        decipher.final()
-      ]).toString("utf8");
-    } catch {
-      throw new ForgeError("secret_unavailable", "Bu kapsam için secret okunamadı.", 404);
-    }
-  }
-}
-
 // src/jobs/worker.ts
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID14 } from "node:crypto";
 import { PgBoss } from "pg-boss";
 class ForgeWorker {
   queue;
   handler;
   options;
-  id = randomUUID12();
+  id = randomUUID14();
   stopping = false;
   boss;
   loops = [];
@@ -4294,7 +4983,7 @@ class ForgeWorker {
       this.loops.push(this.localLoop("prompt_edit"), this.localLoop("skill_evolve"));
   }
   async pause() {
-    await new Promise((resolve10) => setTimeout(resolve10, this.options.pollMs ?? 100));
+    await new Promise((resolve13) => setTimeout(resolve13, this.options.pollMs ?? 100));
   }
   async localLoop(kind) {
     while (!this.stopping) {
@@ -4326,7 +5015,7 @@ class ForgeWorker {
           ])
         ]));
         await this.queue.storage.db.updateTable("outbox").set({ delivered: 0 }).where("run_id", "in", stranded).execute();
-        const pending = await this.queue.storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join12) => join12.onRef("r.tenant_id", "=", "o.tenant_id").onRef("r.id", "=", "o.run_id")).select([
+        const pending = await this.queue.storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "o.tenant_id").onRef("r.id", "=", "o.run_id")).select([
           "r.tenant_id",
           "r.id",
           "r.user_id",
@@ -4390,13 +5079,13 @@ class ForgeWorker {
 // src/runner/handler.ts
 import { readFile as readFile5 } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { resolve as resolve10 } from "node:path";
+import { resolve as resolve13 } from "node:path";
 import { existsSync } from "node:fs";
 import { Type as Type2, createAssistantMessageEventStream as createAssistantMessageEventStream2 } from "@earendil-works/pi-ai";
 
 // src/application/providers.ts
 import { sql as sql13 } from "kysely";
-import { randomUUID as randomUUID13 } from "node:crypto";
+import { randomUUID as randomUUID15 } from "node:crypto";
 import { z as z10 } from "zod";
 var providerProfileSchema = z10.object({
   provider: z10.enum(["openai", "anthropic", "openrouter", "ollama"]),
@@ -4450,7 +5139,7 @@ class ProviderService {
         await tx.insertInto("provider_profiles").values({
           tenant_id: identity.tenantId,
           user_id: identity.userId,
-          id: randomUUID13(),
+          id: randomUUID15(),
           role: body.role,
           revision: body.base_revision + 1,
           profile_json: JSON.stringify(body.profile),
@@ -4459,7 +5148,7 @@ class ProviderService {
         }).execute();
         await tx.insertInto("audit_events").values({
           tenant_id: identity.tenantId,
-          id: randomUUID13(),
+          id: randomUUID15(),
           user_id: identity.userId,
           project_id: null,
           kind: "provider.updated",
@@ -4764,10 +5453,13 @@ async function resolveProvider(profile, secret, policy) {
 
 // src/runner/staging.ts
 import { Type } from "@earendil-works/pi-ai";
+import { sql as sql15 } from "kysely";
 class EvolutionStaging {
   store;
   identity;
   run;
+  pinned = false;
+  operations = new Set;
   files = {};
   readFiles = new Set;
   searched = false;
@@ -4778,6 +5470,14 @@ class EvolutionStaging {
     this.store = store;
     this.identity = identity;
     this.run = run;
+  }
+  async dispose() {
+    this.closed = true;
+    await Promise.allSettled(this.operations);
+    if (!this.pinned)
+      return;
+    await this.store.storage.db.deleteFrom("run_revision_pins").where("tenant_id", "=", this.run.tenant_id).where("run_id", "=", this.run.id).where("fence", "=", this.run.fence).execute();
+    this.pinned = false;
   }
   check() {
     if (this.closed)
@@ -4791,11 +5491,17 @@ class EvolutionStaging {
       parameters,
       execute: async (_id, args) => {
         this.check();
-        const result = await action(args);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          details: {}
-        };
+        const operation = action(args);
+        this.operations.add(operation);
+        try {
+          const result = await operation;
+          return {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+            details: {}
+          };
+        } finally {
+          this.operations.delete(operation);
+        }
       }
     };
   }
@@ -4823,13 +5529,27 @@ class EvolutionStaging {
       }), async (args) => {
         if (!this.searched)
           throw new ForgeError("inventory_required", "Önce kanonik sahip envanterini inceleyin.");
-        if (this.selected)
+        if (this.selected || this.pinned)
           throw new ForgeError("candidate_already_selected", "Bir iş tek kanonik paketi değiştirir.");
         if (args.skill_id) {
           const skill = await this.store.authorizedSkill(this.identity, args.skill_id, true);
           const expected = args.scope === "workspace" ? "workspace" : args.scope === "personal" ? `personal:${this.identity.userId}` : `project:${this.run.project_id}`;
           if (skill.scope_key !== expected || skill.name !== args.name || !skill.active_revision)
             throw new ForgeError("owner_mismatch", "Kanonik ad/kapsam/sürüm eşleşmiyor.");
+          await this.store.storage.db.transaction().execute(async (tx) => {
+            await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", this.identity.tenantId).execute();
+            await new JobQueue(this.store.storage).assertLease(tx, this.run);
+            await new IdentityService(tx).authorize(this.identity, skill.scope_key === "workspace" ? "admin" : "write", skill.project_id ?? undefined);
+            await tx.insertInto("run_revision_pins").values({
+              tenant_id: this.run.tenant_id,
+              run_id: this.run.id,
+              fence: this.run.fence,
+              skill_id: skill.id,
+              revision: skill.active_revision,
+              created_at: Date.now()
+            }).execute();
+          });
+          this.pinned = true;
           const loaded = await this.store.files(this.identity, skill.id, skill.active_revision);
           this.files = Object.fromEntries(Object.entries(loaded.files).map(([path, bytes]) => [
             path,
@@ -4991,7 +5711,7 @@ function skipPrompt(original, mode) {
 // src/runner/handler.ts
 async function prompt(name) {
   const bundled = fileURLToPath(new URL(`./prompts/${name}.md`, import.meta.url));
-  return readFile5(existsSync(bundled) ? bundled : resolve10("prompts", `${name}.md`), "utf8");
+  return readFile5(existsSync(bundled) ? bundled : resolve13("prompts", `${name}.md`), "utf8");
 }
 function productionHandler(storage, dataDir, vault, local) {
   return async (run, signal) => {
@@ -5049,188 +5769,464 @@ function productionHandler(storage, dataDir, vault, local) {
     });
     const store = new PackageStore(storage, dataDir, (path, manifest) => executor.validate(path, manifest));
     const staging = new EvolutionStaging(store, identity, run);
-    let edited = null;
-    const learning = new LearningStore(storage);
-    const lessons = run.kind === "prompt_edit" && snapshot.values.learning !== "off" ? await learning.retrieve(identity, run.project_id, original) : [];
-    const tools = run.kind === "skill_evolve" ? staging.tools() : [
-      {
-        name: "finalize",
-        label: "Finalize",
-        description: "Return one intent-preserving candidate or unchanged/needs_clarification. Never solve the task.",
-        parameters: Type2.Object({
-          status: Type2.Union([
-            Type2.Literal("improved"),
-            Type2.Literal("unchanged"),
-            Type2.Literal("needs_clarification")
-          ]),
-          text: Type2.String({ maxLength: 65536 }),
-          reason: Type2.String({ maxLength: 800 }),
-          lesson: Type2.Optional(Type2.Object({
-            content: Type2.String({ maxLength: 1000 }),
-            triggers: Type2.String({ maxLength: 200 })
-          }))
-        }),
-        execute: async (_id, args) => {
-          if (args.status === "improved" && !preservedConstraints(original, args.text))
-            throw new ForgeError("constraint_guard_failed", "Özgün sayı, yol, sürüm ve olumsuzlukları koruyarak yalnız bir kez onarın.");
-          edited = args;
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Candidate received for manager checks."
-              }
-            ],
-            details: {}
-          };
+    try {
+      let edited = null;
+      const learning = new LearningStore(storage);
+      const lessons = run.kind === "prompt_edit" && snapshot.values.learning !== "off" ? await learning.retrieve(identity, run.project_id, original) : [];
+      const tools = run.kind === "skill_evolve" ? staging.tools() : [
+        {
+          name: "finalize",
+          label: "Finalize",
+          description: "Return one intent-preserving candidate or unchanged/needs_clarification. Never solve the task.",
+          parameters: Type2.Object({
+            status: Type2.Union([
+              Type2.Literal("improved"),
+              Type2.Literal("unchanged"),
+              Type2.Literal("needs_clarification")
+            ]),
+            text: Type2.String({ maxLength: 65536 }),
+            reason: Type2.String({ maxLength: 800 }),
+            lesson: Type2.Optional(Type2.Object({
+              content: Type2.String({ maxLength: 1000 }),
+              triggers: Type2.String({ maxLength: 200 })
+            }))
+          }),
+          execute: async (_id, args) => {
+            if (args.status === "improved" && !preservedConstraints(original, args.text))
+              throw new ForgeError("constraint_guard_failed", "Özgün sayı, yol, sürüm ve olumsuzlukları koruyarak yalnız bir kez onarın.");
+            edited = args;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "Candidate received for manager checks."
+                }
+              ],
+              details: {}
+            };
+          }
         }
-      }
-    ];
-    const budget = new BudgetService(storage);
-    await storage.db.insertInto("budget_accounts").values({
-      tenant_id: identity.tenantId,
-      user_id: identity.userId,
-      limit_micros: snapshot.values.maxCostMicros,
-      reserved_micros: 0,
-      spent_micros: 0
-    }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing()).execute();
-    let call = 0;
-    const stream = async (model, context, options) => {
-      await storage.db.transaction().execute((tx) => new JobQueue(storage).assertLease(tx, run));
-      const id = `${run.id}:${run.fence}:${++call}`;
-      const estimate = Math.ceil(model.contextWindow * Math.max(model.cost.input, model.cost.cacheRead, model.cost.cacheWrite) + (options?.maxTokens ?? model.maxTokens) * model.cost.output);
-      await budget.reserve(identity, run.id, id, estimate);
-      const result2 = createAssistantMessageEventStream2();
-      (async () => {
-        let terminal = false;
-        const fail = () => result2.push({
-          type: "error",
-          reason: "error",
-          error: {
-            role: "assistant",
-            api: model.api,
-            provider: model.provider,
-            model: model.id,
-            content: [],
-            timestamp: Date.now(),
-            stopReason: "error",
-            errorMessage: "provider_or_usage_error",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 0,
-              cost: {
+      ];
+      const budget = new BudgetService(storage);
+      await storage.db.insertInto("budget_accounts").values({
+        tenant_id: identity.tenantId,
+        user_id: identity.userId,
+        limit_micros: snapshot.values.maxCostMicros,
+        reserved_micros: 0,
+        spent_micros: 0
+      }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing()).execute();
+      let call = 0;
+      const stream = async (model, context, options) => {
+        await storage.db.transaction().execute((tx) => new JobQueue(storage).assertLease(tx, run));
+        const id = `${run.id}:${run.fence}:${++call}`;
+        const estimate = Math.ceil(model.contextWindow * Math.max(model.cost.input, model.cost.cacheRead, model.cost.cacheWrite) + (options?.maxTokens ?? model.maxTokens) * model.cost.output);
+        await budget.reserve(identity, run.id, id, estimate);
+        const result2 = createAssistantMessageEventStream2();
+        (async () => {
+          let terminal = false;
+          const fail2 = () => result2.push({
+            type: "error",
+            reason: "error",
+            error: {
+              role: "assistant",
+              api: model.api,
+              provider: model.provider,
+              model: model.id,
+              content: [],
+              timestamp: Date.now(),
+              stopReason: "error",
+              errorMessage: "provider_or_usage_error",
+              usage: {
                 input: 0,
                 output: 0,
                 cacheRead: 0,
                 cacheWrite: 0,
-                total: 0
+                totalTokens: 0,
+                cost: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  total: 0
+                }
               }
             }
-          }
-        });
-        try {
-          for await (const event of resolved.models.streamSimple(model, context, options)) {
-            if (event.type === "done" || event.type === "error")
-              terminal = true;
-            if (event.type === "done")
-              await budget.settle(identity, id, Math.ceil(event.message.usage.cost.total * 1e6));
-            else if (event.type === "error")
-              await budget.settle(identity, id, null);
-            result2.push(event);
-          }
-          if (!terminal) {
-            await budget.settle(identity, id, null);
-            fail();
-          }
-        } catch {
+          });
           try {
-            await budget.settle(identity, id, null);
-          } catch {}
-          fail();
+            for await (const event of resolved.models.streamSimple(model, context, options)) {
+              if (event.type === "done" || event.type === "error")
+                terminal = true;
+              if (event.type === "done")
+                await budget.settle(identity, id, Math.ceil(event.message.usage.cost.total * 1e6));
+              else if (event.type === "error")
+                await budget.settle(identity, id, null);
+              result2.push(event);
+            }
+            if (!terminal) {
+              await budget.settle(identity, id, null);
+              fail2();
+            }
+          } catch {
+            try {
+              await budget.settle(identity, id, null);
+            } catch {}
+            fail2();
+          }
+        })();
+        return result2;
+      };
+      const outcome = await new ForgeRunner().run({
+        profile: run.kind,
+        sessionId: run.session_id,
+        model: resolved.model,
+        systemPrompt: await prompt(run.kind === "skill_evolve" ? "skill-evolve" : "prompt-edit"),
+        input: JSON.stringify({
+          ...input,
+          ...lessons.length ? { reusable_lessons: lessons } : {}
+        }),
+        tools,
+        stream,
+        deadlineMs: Math.max(1, run.deadline_at - Date.now()),
+        maxCalls: run.kind === "prompt_edit" ? Math.min(2, snapshot.values.maxCalls) : snapshot.values.maxCalls,
+        maxTokens: snapshot.values.maxTokens,
+        maxCostMicros: snapshot.values.maxCostMicros,
+        signal
+      });
+      const usage = {
+        calls: outcome.calls,
+        tokens: outcome.usage?.totalTokens ?? null,
+        cost_micros: outcome.usage ? Math.ceil(outcome.usage.cost.total * 1e6) : null,
+        elapsed_ms: outcome.elapsedMs
+      };
+      if (run.kind === "prompt_edit") {
+        const candidate = edited;
+        if (!outcome.finalized || !candidate || outcome.error)
+          return {
+            ...fallback(outcome.error ?? "not_finalized"),
+            result: {
+              ...fallback(outcome.error ?? "not_finalized").result,
+              usage
+            }
+          };
+        if (candidate.status === "improved" && !preservedConstraints(original, candidate.text))
+          return fallback("constraint_guard_failed");
+        const improved = candidate.status === "improved" && candidate.text !== original;
+        if (improved && candidate.lesson && snapshot.values.learning === "reusable-only") {
+          try {
+            await learning.save(identity, run.project_id, candidate.lesson, run);
+          } catch (error) {
+            if (!(error instanceof ForgeError && error.code === "learning_not_reusable"))
+              throw error;
+          }
         }
-      })();
-      return result2;
-    };
-    const outcome = await new ForgeRunner().run({
-      profile: run.kind,
-      sessionId: run.session_id,
-      model: resolved.model,
-      systemPrompt: await prompt(run.kind === "skill_evolve" ? "skill-evolve" : "prompt-edit"),
-      input: JSON.stringify({
-        ...input,
-        ...lessons.length ? { reusable_lessons: lessons } : {}
-      }),
-      tools,
-      stream,
-      deadlineMs: Math.max(1, run.deadline_at - Date.now()),
-      maxCalls: run.kind === "prompt_edit" ? Math.min(2, snapshot.values.maxCalls) : snapshot.values.maxCalls,
-      maxTokens: snapshot.values.maxTokens,
-      maxCostMicros: snapshot.values.maxCostMicros,
-      signal
-    });
-    const usage = {
-      calls: outcome.calls,
-      tokens: outcome.usage?.totalTokens ?? null,
-      cost_micros: outcome.usage ? Math.ceil(outcome.usage.cost.total * 1e6) : null,
-      elapsed_ms: outcome.elapsedMs
-    };
-    if (run.kind === "prompt_edit") {
-      const candidate = edited;
-      if (!outcome.finalized || !candidate || outcome.error)
         return {
-          ...fallback(outcome.error ?? "not_finalized"),
+          state: improved ? "improved" : "unchanged",
           result: {
-            ...fallback(outcome.error ?? "not_finalized").result,
+            status: candidate.status,
+            original,
+            candidate: improved ? candidate.text : original,
+            effective: improved && snapshot.values.autoApply ? candidate.text : original,
+            auto_applied: improved && snapshot.values.autoApply,
+            reason: candidate.reason,
             usage
           }
         };
-      if (candidate.status === "improved" && !preservedConstraints(original, candidate.text))
-        return fallback("constraint_guard_failed");
-      const improved = candidate.status === "improved" && candidate.text !== original;
-      if (improved && candidate.lesson && snapshot.values.learning === "reusable-only") {
-        try {
-          await learning.save(identity, run.project_id, candidate.lesson, run);
-        } catch (error) {
-          if (!(error instanceof ForgeError && error.code === "learning_not_reusable"))
-            throw error;
-        }
       }
+      if (!outcome.finalized || !staging.closed)
+        throw new ForgeError(outcome.error ?? "not_finalized", "SPR işi finalize ile bitirmedi.", 422);
+      const result = staging.result;
       return {
-        state: improved ? "improved" : "unchanged",
-        result: {
-          status: candidate.status,
-          original,
-          candidate: improved ? candidate.text : original,
-          effective: improved && snapshot.values.autoApply ? candidate.text : original,
-          auto_applied: improved && snapshot.values.autoApply,
-          reason: candidate.reason,
-          usage
-        }
+        state: result.decision === "no-op" ? "no_op" : result.decision === "reject" ? "rejected" : "completed",
+        result: { ...result, usage }
       };
+    } finally {
+      await staging.dispose();
     }
-    if (!outcome.finalized || !staging.closed)
-      throw new ForgeError(outcome.error ?? "not_finalized", "SPR işi finalize ile bitirmedi.", 422);
-    const result = staging.result;
-    return {
-      state: result.decision === "no-op" ? "no_op" : result.decision === "reject" ? "rejected" : "completed",
-      result: { ...result, usage }
-    };
   };
 }
 
 // src/cli/main.ts
 import { parseArgs } from "node:util";
 import {
-  resolve as resolve12,
-  dirname as dirname7,
-  basename as basename4,
-  relative as relative4,
-  isAbsolute as isAbsolute2,
-  sep
+  resolve as resolve16,
+  dirname as dirname8,
+  basename as basename5,
+  relative as relative5,
+  isAbsolute as isAbsolute3,
+  sep as sep2
 } from "node:path";
+
+// src/application/deletion.ts
+import { createHash as createHash20, randomUUID as randomUUID16 } from "node:crypto";
+import { sql as sql16 } from "kysely";
+
+// src/skills/remove.ts
+import { constants as constants2 } from "node:fs";
+import { open as open7, lstat as lstat9, readdir as readdir3, unlink as unlink2, rmdir } from "node:fs/promises";
+import { resolve as resolve14, join as join14, basename as basename3 } from "node:path";
+import { createHash as createHash19 } from "node:crypto";
+async function removeRevision(root, tenant, path, skillId, revision) {
+  if (process.platform !== "linux")
+    throw new ForgeError("safe_delete_unavailable", "Bu platformda güvenli kalıcı silme adapter'ı hazır değil.", 503);
+  validatePackagePath(path);
+  if (!path.startsWith(`tenants/${createHash19("sha256").update(tenant).digest("hex")}/packages/`))
+    throw new ForgeError("unsafe_path", "Silme yolu tenant paket köküne ait değil.");
+  const parts = path.split("/");
+  if (parts.length !== 8 || !/^[a-f0-9]{20}$/.test(parts[3]) || parts[4] !== skillId || parts[5] !== "revisions" || parts[6] !== revision || !/^[a-f0-9]{64}$/.test(revision))
+    throw new ForgeError("unsafe_path", "Silme yolu beklenen skill/revision kimliğiyle eşleşmiyor.");
+  root = resolve14(root);
+  const handles = [];
+  try {
+    let current = "/";
+    for (const segment of [
+      "",
+      ...root.split("/").filter(Boolean),
+      ...path.split("/").slice(0, -1)
+    ]) {
+      if (segment)
+        current = join14(current, segment);
+      const handle = await open7(current, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+      handles.push(handle);
+      current = `/proc/self/fd/${handle.fd}`;
+    }
+    const target = join14(current, basename3(path));
+    const stat = await lstat9(target);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new ForgeError("unsafe_path", "Revision dizini yönlendirilmiş.");
+    let visited = 0;
+    async function erase(parent, name) {
+      if (++visited > 1e4)
+        throw new ForgeError("cleanup_limit", "Revision temizlik sınırı aşıldı.");
+      try {
+        const child = join14(parent, name), info = await lstat9(child);
+        if (!info.isDirectory() || info.isSymbolicLink()) {
+          await unlink2(child);
+          return;
+        }
+        const handle = await open7(child, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+        try {
+          const anchor = `/proc/self/fd/${handle.fd}`;
+          for (const entry of await readdir3(anchor))
+            await erase(anchor, entry);
+        } finally {
+          await handle.close();
+        }
+        await rmdir(child);
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          throw error;
+      }
+    }
+    await erase(current, basename3(path));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()));
+  }
+}
+
+// src/application/deletion.ts
+class DeletionService {
+  storage;
+  dataDir;
+  constructor(storage, dataDir) {
+    this.storage = storage;
+    this.dataDir = dataDir;
+  }
+  async check(db, actor, project, item) {
+    await new IdentityService(db).authorize(actor, "write", project);
+    const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", item.skill_id).where("scope_key", "in", [
+      "workspace",
+      `personal:${actor.userId}`,
+      `project:${project}`
+    ]).executeTakeFirst();
+    if (!row)
+      throw new ForgeError("skill_unavailable", "Paket bulunamadı.", 404);
+    await new IdentityService(db).authorize(actor, row.scope_key === "workspace" ? "admin" : "write", project);
+    if (row.active_revision !== item.revision || row.updated_at !== item.updated_at)
+      throw new ForgeError("revision_conflict", "Paket önizlemeden sonra değişti.", 409);
+    if (!row.archived || row.pinned || row.protected || !row.managed)
+      throw new ForgeError("skill_protected", "Kalıcı silme yalnız arşivlenmiş, managed ve korunmayan paket içindir.", 409);
+    const tables = [
+      "revision_readers",
+      "execution_revision_pins",
+      "run_revision_pins",
+      "migration_receipts",
+      "skill_observations",
+      "skill_overrides"
+    ];
+    const labels = {
+      revision_readers: "devam eden okuma",
+      execution_revision_pins: "script çalıştırması",
+      run_revision_pins: "SPR işi",
+      migration_receipts: "veri geçişi kaydı",
+      skill_observations: "kullanım geçmişi",
+      skill_overrides: "proje override kaydı"
+    };
+    const references2 = [];
+    for (const table of tables)
+      if (await db.selectFrom(table).select("skill_id").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).limit(1).executeTakeFirst())
+        references2.push(labels[table]);
+    const unknownExecutions = await db.selectFrom("executions as e").leftJoin("execution_revision_pins as p", (j) => j.onRef("p.tenant_id", "=", "e.tenant_id").onRef("p.execution_id", "=", "e.id")).select("e.id").where("e.tenant_id", "=", actor.tenantId).where("e.state", "=", "running").where("p.execution_id", "is", null).limit(1).executeTakeFirst();
+    const unknownRuns = await db.selectFrom("runs as r").leftJoin("run_revision_pins as p", (j) => j.onRef("p.tenant_id", "=", "r.tenant_id").onRef("p.run_id", "=", "r.id")).select("r.id").where("r.tenant_id", "=", actor.tenantId).where("r.state", "=", "running").where("p.run_id", "is", null).limit(1).executeTakeFirst();
+    if (unknownExecutions || unknownRuns)
+      references2.push("revision bilgisi bulunmayan çalışan iş");
+    if (references2.length)
+      throw new ForgeError("skill_referenced", `Paket referansları korunuyor: ${references2.join(", ")}`, 409);
+    return row;
+  }
+  async preview(actor, input) {
+    if (!this.dataDir || process.platform !== "linux")
+      throw new ForgeError("safe_delete_unavailable", "Güvenli dosya silme adapter'ı bu ortamda hazır değil.", 503);
+    await new IdentityService(this.storage.db).authorize(actor, "write", input.project_ref);
+    const items = [];
+    for (const item of input.items)
+      try {
+        const row = await this.check(this.storage.db, actor, input.project_ref, item);
+        const count = await this.storage.db.selectFrom("skill_revisions").select(sql16`count(*)`.as("n")).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).executeTakeFirstOrThrow();
+        items.push({
+          revision_count: Number(count.n),
+          skill_id: row.id,
+          name: row.name,
+          status: "eligible",
+          action: "delete",
+          existing_revisions: "removed"
+        });
+      } catch (error) {
+        items.push({
+          skill_id: item.skill_id,
+          status: "blocked",
+          ...errorEnvelope(error)
+        });
+      }
+    return {
+      action: "delete",
+      items,
+      effect: "Paket ve bütün revision dosyaları kalıcı silinir. Geri alınamaz. Aktif referanslar engellenir; mevcut yedekler etkilenmez."
+    };
+  }
+  async pending(actor, project, after = "") {
+    await new IdentityService(this.storage.db).authorize(actor, "write", project);
+    const rows = await this.storage.db.selectFrom("package_deletions as d").select(["d.skill_id", "d.scope_key", "d.created_at"]).where("d.tenant_id", "=", actor.tenantId).where("d.scope_key", "in", [
+      "workspace",
+      `personal:${actor.userId}`,
+      `project:${project}`
+    ]).where("d.skill_id", ">", after).where(({ exists, selectFrom }) => exists(selectFrom("package_gc as g").select("g.revision").whereRef("g.tenant_id", "=", "d.tenant_id").whereRef("g.skill_id", "=", "d.skill_id").where("g.state", "=", "pending"))).orderBy("d.skill_id").limit(51).execute();
+    return {
+      items: rows.slice(0, 50),
+      next: rows.length > 50 ? rows[49].skill_id : null
+    };
+  }
+  async resume(actor, project, skillId) {
+    await new IdentityService(this.storage.db).authorize(actor, "write", project);
+    const row = await this.storage.db.selectFrom("package_deletions").selectAll().where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("scope_key", "in", [
+      "workspace",
+      `personal:${actor.userId}`,
+      `project:${project}`
+    ]).executeTakeFirst();
+    if (!row)
+      throw new ForgeError("skill_unavailable", "Silme kaydı bulunamadı.", 404);
+    await new IdentityService(this.storage.db).authorize(actor, row.scope_key === "workspace" ? "admin" : "write", project);
+    if (!this.dataDir || process.platform !== "linux")
+      throw new ForgeError("safe_delete_unavailable", "Güvenli dosya silme adapter'ı bu ortamda hazır değil.", 503);
+    return this.cleanup(actor, skillId);
+  }
+  async cleanup(actor, skillId) {
+    const pending = await this.storage.db.selectFrom("package_gc").selectAll().where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("state", "=", "pending").orderBy("revision").limit(25).execute();
+    let cleanupError;
+    for (const revision of pending)
+      try {
+        await removeRevision(this.dataDir, actor.tenantId, revision.package_path, skillId, revision.revision);
+        await this.storage.db.updateTable("package_gc").set({ state: "completed", updated_at: Date.now() }).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("revision", "=", revision.revision).execute();
+      } catch (error) {
+        cleanupError = errorEnvelope(error);
+        break;
+      }
+    const remaining = await this.storage.db.selectFrom("package_gc").select("revision").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("state", "=", "pending").limit(1).executeTakeFirst();
+    const result = {
+      skill_id: skillId,
+      action: "delete",
+      status: remaining ? "pending_cleanup" : "completed",
+      ...cleanupError
+    };
+    return result;
+  }
+  async apply(actor, input) {
+    if (!this.dataDir || process.platform !== "linux")
+      throw new ForgeError("safe_delete_unavailable", "Güvenli dosya silme adapter'ı bu ortamda hazır değil.", 503);
+    if (new Set(input.items.map((i) => i.skill_id)).size !== input.items.length)
+      throw new ForgeError("duplicate_item", "Aynı paket iki kez seçilemez.");
+    await new IdentityService(this.storage.db).authorize(actor, "write", input.project_ref);
+    const items = [];
+    for (const item of input.items)
+      try {
+        const hash6 = createHash20("sha256").update(JSON.stringify({ action: "delete", item })).digest("hex");
+        await this.storage.db.transaction().execute(async (tx) => {
+          await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+          await new IdentityService(tx).authorize(actor, "write", input.project_ref);
+          const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
+          if (receipt) {
+            if (receipt.input_hash !== hash6)
+              throw new ForgeError("idempotency_conflict", "İşlem anahtarı başka seçime ait.", 409);
+            const tombstone = await tx.selectFrom("package_deletions").selectAll().where("tenant_id", "=", actor.tenantId).where("skill_id", "=", item.skill_id).executeTakeFirstOrThrow();
+            await new IdentityService(tx).authorize(actor, tombstone.scope_key === "workspace" ? "admin" : "write", input.project_ref);
+            return;
+          }
+          const row = await this.check(tx, actor, input.project_ref, item);
+          const changed = await tx.updateTable("skills").set({ active_revision: null }).where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).where("active_revision", "=", item.revision).where("updated_at", "=", item.updated_at).returning("id").executeTakeFirst();
+          if (!changed)
+            throw new ForgeError("revision_conflict", "Paket başka işlemle değişti.", 409);
+          const now = Date.now();
+          await sql16`INSERT INTO package_gc (tenant_id, skill_id, revision, package_path, state, updated_at) SELECT tenant_id, skill_id, revision, package_path, 'pending', ${now} FROM skill_revisions WHERE tenant_id=${actor.tenantId} AND skill_id=${row.id}`.execute(tx);
+          await tx.deleteFrom("skill_revisions").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).execute();
+          await tx.deleteFrom("skills").where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).execute();
+          await tx.insertInto("package_deletions").values({
+            tenant_id: actor.tenantId,
+            skill_id: row.id,
+            scope_key: row.scope_key,
+            created_at: now
+          }).execute();
+          await tx.insertInto("maintenance_items").values({
+            tenant_id: actor.tenantId,
+            user_id: actor.userId,
+            project_id: input.project_ref,
+            operation_id: input.operation_id,
+            skill_id: row.id,
+            input_hash: hash6,
+            result_json: JSON.stringify({
+              skill_id: row.id,
+              action: "delete",
+              status: "pending_cleanup"
+            }),
+            created_at: now
+          }).execute();
+          await tx.insertInto("audit_events").values({
+            tenant_id: actor.tenantId,
+            id: randomUUID16(),
+            user_id: actor.userId,
+            project_id: input.project_ref,
+            kind: "maintenance.delete",
+            detail: JSON.stringify({
+              skill_id: row.id,
+              operation_id: input.operation_id
+            }),
+            created_at: now
+          }).execute();
+        });
+        const result = await this.cleanup(actor, item.skill_id);
+        await this.storage.db.updateTable("maintenance_items").set({ result_json: JSON.stringify(result) }).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).execute();
+        items.push(result);
+      } catch (error) {
+        items.push({
+          skill_id: item.skill_id,
+          status: "blocked",
+          ...errorEnvelope(error)
+        });
+      }
+    return { operation_id: input.operation_id, items };
+  }
+}
 
 // src/migration/http.ts
 import { z as z11 } from "zod";
@@ -5306,8 +6302,8 @@ function registerMigrationHttp(app, storage, identity, store) {
 }
 
 // src/application/members.ts
-import { randomUUID as randomUUID14 } from "node:crypto";
-import { sql as sql15 } from "kysely";
+import { randomUUID as randomUUID17 } from "node:crypto";
+import { sql as sql17 } from "kysely";
 import { z as z12 } from "zod";
 class MemberService {
   db;
@@ -5337,10 +6333,10 @@ class MemberService {
       role: z12.enum(["admin", "editor", "viewer"])
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       await tx.insertInto("users").values({
-        id: randomUUID14(),
+        id: randomUUID17(),
         subject: input.subject,
         display_name: input.display_name,
         created_at: Date.now()
@@ -5355,7 +6351,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: null,
-        id: randomUUID14(),
+        id: randomUUID17(),
         kind: "member.provisioned",
         detail: JSON.stringify({
           target_user_id: user.id,
@@ -5376,7 +6372,7 @@ class MemberService {
       project_role: z12.enum(["editor", "viewer"]).nullable()
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin", input.project_ref);
       const member = await tx.selectFrom("memberships").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).executeTakeFirst();
       if (!member)
@@ -5410,7 +6406,7 @@ class MemberService {
         state: "cancelled",
         error_code: "permission_revoked",
         lease_until: 0,
-        fence: sql15`fence + 1`,
+        fence: sql17`fence + 1`,
         updated_at: Date.now()
       }).where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).where("state", "not in", terminalStates);
       let cancelled = [];
@@ -5424,7 +6420,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: input.project_ref,
-        id: randomUUID14(),
+        id: randomUUID17(),
         kind: "member.updated",
         detail: JSON.stringify({
           target_user_id: target,
@@ -5441,7 +6437,7 @@ class MemberService {
 }
 
 // src/application/telemetry.ts
-import { randomUUID as randomUUID15 } from "node:crypto";
+import { randomUUID as randomUUID18 } from "node:crypto";
 
 // src/telemetry/redact.ts
 var sensitive = /authorization|cookie|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key/i;
@@ -5568,7 +6564,7 @@ class TelemetryService {
     });
     if (result.scrubbed_runs + result.deleted_events + result.deleted_lessons + result.deleted_observations)
       await this.storage.db.insertInto("audit_events").values({
-        id: randomUUID15(),
+        id: randomUUID18(),
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: project,
@@ -5608,8 +6604,8 @@ class TelemetryService {
 }
 
 // src/application/maintenance.ts
-import { createHash as createHash18, randomUUID as randomUUID16 } from "node:crypto";
-import { sql as sql16 } from "kysely";
+import { createHash as createHash21, randomUUID as randomUUID19 } from "node:crypto";
+import { sql as sql18 } from "kysely";
 import { z as z13 } from "zod";
 var itemSchema = z13.object({
   skill_id: z13.string().min(1).max(100),
@@ -5619,14 +6615,16 @@ var itemSchema = z13.object({
 var maintenanceSchema = z13.object({
   project_ref: z13.string().min(1).max(100),
   operation_id: z13.string().min(1).max(200),
-  action: z13.enum(["archive", "restore"]),
+  action: z13.enum(["archive", "restore", "delete"]),
   items: z13.array(itemSchema).min(1).max(100)
 }).strict();
 
 class MaintenanceService {
   storage;
-  constructor(storage) {
+  dataDir;
+  constructor(storage, dataDir) {
     this.storage = storage;
+    this.dataDir = dataDir;
   }
   async skill(db, actor, project, id) {
     const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", id).where("scope_key", "in", [
@@ -5659,9 +6657,9 @@ class MaintenanceService {
       query = query.where("id", ">", options.after);
     if (options.state && options.state !== "all")
       query = query.where("archived", "=", options.state === "archived" ? 1 : 0);
-    const limit = z13.number().int().min(1).max(50).parse(options.limit ?? 50);
-    const rows = await query.orderBy("id").limit(limit + 1).execute();
-    const selected = rows.slice(0, limit), ids = selected.map((s) => s.id);
+    const limit2 = z13.number().int().min(1).max(50).parse(options.limit ?? 50);
+    const rows = await query.orderBy("id").limit(limit2 + 1).execute();
+    const selected = rows.slice(0, limit2), ids = selected.map((s) => s.id);
     const counts = ids.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", "kind"]).select((eb) => [
       eb.fn.countAll().as("count"),
       eb.fn.max("created_at").as("last_seen")
@@ -5698,11 +6696,16 @@ class MaintenanceService {
       external_usage: "unknown",
       grace_days: 7,
       items,
-      next: rows.length > limit ? selected.at(-1).id : null
+      next: rows.length > limit2 ? selected.at(-1).id : null
     };
   }
   async preview(actor, raw) {
     const input = maintenanceSchema.parse(raw);
+    if (input.action === "delete")
+      return new DeletionService(this.storage, this.dataDir).preview(actor, {
+        ...input,
+        action: "delete"
+      });
     await new IdentityService(this.storage.db).authorize(actor, "write", input.project_ref);
     const items = [];
     for (const item of input.items) {
@@ -5731,6 +6734,12 @@ class MaintenanceService {
   }
   async apply(actor, raw) {
     const input = maintenanceSchema.parse(raw);
+    if (input.action === "delete")
+      return new DeletionService(this.storage, this.dataDir).apply(actor, {
+        ...input,
+        action: "delete"
+      });
+    const action = input.action;
     if (new Set(input.items.map((i) => i.skill_id)).size !== input.items.length)
       throw new ForgeError("duplicate_item", "Aynı paket iki kez seçilemez.");
     await new IdentityService(this.storage.db).authorize(actor, "write", input.project_ref);
@@ -5738,20 +6747,20 @@ class MaintenanceService {
     for (const item of input.items) {
       try {
         items.push(await this.storage.db.transaction().execute(async (tx) => {
-          await tx.updateTable("memberships").set({ role: sql16`role` }).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).execute();
+          await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
           await new IdentityService(tx).authorize(actor, "write", input.project_ref);
-          const hash5 = createHash18("sha256").update(JSON.stringify({ action: input.action, item })).digest("hex");
+          const hash6 = createHash21("sha256").update(JSON.stringify({ action, item })).digest("hex");
           const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
           if (receipt) {
             const skill = await this.skill(tx, actor, input.project_ref, item.skill_id);
             await new IdentityService(tx).authorize(actor, skill.scope_key === "workspace" ? "admin" : "write", input.project_ref);
-            if (receipt.input_hash !== hash5)
+            if (receipt.input_hash !== hash6)
               throw new ForgeError("idempotency_conflict", "İşlem anahtarı başka seçime ait.", 409);
             return { ...JSON.parse(receipt.result_json), replayed: true };
           }
-          const row = await this.check(tx, actor, input.project_ref, input.action, item);
+          const row = await this.check(tx, actor, input.project_ref, action, item);
           const updated = await tx.updateTable("skills").set({
-            archived: input.action === "archive" ? 1 : 0,
+            archived: action === "archive" ? 1 : 0,
             updated_at: Math.max(Date.now(), row.updated_at + 1)
           }).where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).where("active_revision", "=", item.revision).where("updated_at", "=", item.updated_at).returning("id").executeTakeFirst();
           if (!updated)
@@ -5759,7 +6768,7 @@ class MaintenanceService {
           const result = {
             skill_id: row.id,
             status: "completed",
-            action: input.action
+            action
           };
           await tx.insertInto("maintenance_items").values({
             tenant_id: actor.tenantId,
@@ -5767,7 +6776,7 @@ class MaintenanceService {
             project_id: input.project_ref,
             operation_id: input.operation_id,
             skill_id: row.id,
-            input_hash: hash5,
+            input_hash: hash6,
             result_json: JSON.stringify(result),
             created_at: Date.now()
           }).execute();
@@ -5775,8 +6784,8 @@ class MaintenanceService {
             tenant_id: actor.tenantId,
             user_id: actor.userId,
             project_id: input.project_ref,
-            id: randomUUID16(),
-            kind: `maintenance.${input.action}`,
+            id: randomUUID19(),
+            kind: `maintenance.${action}`,
             detail: JSON.stringify({
               ...result,
               operation_id: input.operation_id
@@ -5798,9 +6807,9 @@ class MaintenanceService {
 }
 
 // src/application/packages.ts
-import { sql as sql17 } from "kysely";
+import { sql as sql19 } from "kysely";
 import { z as z14 } from "zod";
-import { createHash as createHash19, randomUUID as randomUUID17 } from "node:crypto";
+import { createHash as createHash22, randomUUID as randomUUID20 } from "node:crypto";
 class PackageManager {
   store;
   constructor(store) {
@@ -5843,8 +6852,8 @@ class PackageManager {
     for (const change of input.changes) {
       validatePackagePath(change.path);
       const current = loaded.files[change.path];
-      const hash5 = current ? createHash19("sha256").update(current).digest("hex") : null;
-      if (hash5 !== change.original_hash)
+      const hash6 = current ? createHash22("sha256").update(current).digest("hex") : null;
+      if (hash6 !== change.original_hash)
         throw new ForgeError("file_conflict", "Dosya okunmuş taban hash'i ile eşleşmiyor.", 409);
       if (change.content === null)
         delete loaded.files[change.path];
@@ -5879,13 +6888,13 @@ class PackageManager {
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => key !== "base_revision" && key !== "base_updated_at").map(([key, value]) => [key, value ? 1 : 0]));
       const result = await tx.updateTable("skills").set({
         ...patch,
-        updated_at: sql17`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
+        updated_at: sql19`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
       }).where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).where("active_revision", "=", input.base_revision).where("updated_at", "=", skill.updated_at).returningAll().executeTakeFirst();
       if (!result)
         throw new ForgeError("revision_conflict", "Paket yapılandırılırken aktif sürüm değişti.", 409);
       await tx.insertInto("audit_events").values({
         tenant_id: identity.tenantId,
-        id: randomUUID17(),
+        id: randomUUID20(),
         user_id: identity.userId,
         project_id: skill.project_id,
         kind: "skill.configured",
@@ -5909,21 +6918,21 @@ class PackageManager {
 }
 
 // src/http/server.ts
-import { basename as basename3 } from "node:path";
+import { basename as basename4 } from "node:path";
 
 // src/application/execution-results.ts
-import { mkdir as mkdir8, open as open7 } from "node:fs/promises";
-import { join as join12 } from "node:path";
-import { randomUUID as randomUUID18 } from "node:crypto";
+import { mkdir as mkdir9, open as open8 } from "node:fs/promises";
+import { join as join15 } from "node:path";
+import { randomUUID as randomUUID21 } from "node:crypto";
 async function storeExecutionResult(dataDir, id, executed) {
   const bytes = Buffer.from(JSON.stringify(executed.result));
   const artifacts = [...executed.artifacts];
   let resultPath;
   if (bytes.length > 8192) {
-    resultPath = `forge-result-${randomUUID18()}.json`;
-    const directory = join12(dataDir, "execution", executed.execution_id, "artifacts");
-    await mkdir8(directory, { recursive: true, mode: 448 });
-    const fd = await open7(join12(directory, resultPath), "wx", 384);
+    resultPath = `forge-result-${randomUUID21()}.json`;
+    const directory = join15(dataDir, "execution", executed.execution_id, "artifacts");
+    await mkdir9(directory, { recursive: true, mode: 448 });
+    const fd = await open8(join15(directory, resultPath), "wx", 384);
     try {
       await fd.writeFile(bytes);
       await fd.sync();
@@ -5944,14 +6953,14 @@ async function storeExecutionResult(dataDir, id, executed) {
     artifacts
   };
 }
-function executionPage(codec, actor, project, stored, limit = 10, cursor) {
+function executionPage(codec, actor, project, stored, limit2 = 10, cursor) {
   const binding = [
     actor.tenantId,
     actor.userId,
     project,
     "execution_artifacts",
     stored.execution_id,
-    limit
+    limit2
   ];
   const offset = cursor ? codec.decode(cursor, binding) : 0;
   const artifacts = stored.artifacts ?? [];
@@ -5973,7 +6982,7 @@ function executionPage(codec, actor, project, stored, limit = 10, cursor) {
   };
   const page = [];
   let used = Buffer.byteLength(JSON.stringify(base));
-  for (const a of artifacts.slice(offset, offset + limit)) {
+  for (const a of artifacts.slice(offset, offset + limit2)) {
     const item = {
       path: a.path,
       bytes: a.bytes,
@@ -6009,21 +7018,33 @@ function byteChunk(bytes, offset) {
 }
 
 // src/telemetry/observations.ts
-import { randomUUID as randomUUID19 } from "node:crypto";
-async function observe(db, actor, project, kind2, items, correlation = randomUUID19()) {
+import { randomUUID as randomUUID22 } from "node:crypto";
+import { sql as sql20 } from "kysely";
+async function observe(db, actor, project, kind2, items, correlation = randomUUID22()) {
   if (!items.length)
     return;
-  await db.insertInto("skill_observations").values(items.map((item) => ({
+  const rows = items.map((item) => ({
     tenant_id: actor.tenantId,
     user_id: actor.userId,
     project_id: project,
-    id: randomUUID19(),
+    id: randomUUID22(),
     skill_id: item.skill_id,
     revision: item.revision,
     kind: kind2,
     correlation,
     created_at: Date.now()
-  }))).onConflict((oc) => oc.columns([
+  }));
+  if (db.isTransaction)
+    return insert(db, rows);
+  let batch = batches.get(db);
+  if (!batch) {
+    batch = new ObservationBatch(db);
+    batches.set(db, batch);
+  }
+  return batch.add(rows);
+}
+async function insert(db, rows) {
+  await db.insertInto("skill_observations").values(rows).onConflict((oc) => oc.columns([
     "tenant_id",
     "user_id",
     "project_id",
@@ -6032,11 +7053,79 @@ async function observe(db, actor, project, kind2, items, correlation = randomUUI
     "correlation"
   ]).doNothing()).execute();
 }
+var batches = new WeakMap;
+
+class ObservationBatch {
+  db;
+  queue = [];
+  outstanding = 0;
+  running = false;
+  timer;
+  constructor(db) {
+    this.db = db;
+  }
+  add(rows) {
+    if (this.outstanding >= 128)
+      return Promise.reject(new ForgeError("observation_capacity", "Gözlem yazma kapasitesi dolu; yeniden deneyin.", 429));
+    this.outstanding++;
+    const result = new Promise((resolve15, reject) => {
+      this.queue.push({ rows, resolve: resolve15, reject });
+    });
+    this.schedule();
+    return result;
+  }
+  schedule() {
+    if (this.running || !this.queue.length)
+      return;
+    if (this.queue.length >= 32) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      this.flush();
+    } else if (!this.timer) {
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        this.flush();
+      }, 10);
+    }
+  }
+  async flush() {
+    this.running = true;
+    const group = this.queue.splice(0, 32);
+    const errors = new Map;
+    try {
+      await this.db.transaction().execute(async (tx) => {
+        for (const item of group) {
+          await sql20`savepoint forge_observation`.execute(tx);
+          try {
+            await insert(tx, item.rows);
+          } catch (error) {
+            await sql20`rollback to savepoint forge_observation`.execute(tx);
+            errors.set(item, error);
+          }
+          await sql20`release savepoint forge_observation`.execute(tx);
+        }
+      });
+      for (const item of group) {
+        if (errors.has(item))
+          item.reject(errors.get(item));
+        else
+          item.resolve();
+      }
+    } catch (error) {
+      for (const item of group)
+        item.reject(error);
+    } finally {
+      this.outstanding -= group.length;
+      this.running = false;
+      this.schedule();
+    }
+  }
+}
 
 // src/application/forge.ts
-import { join as join13 } from "node:path";
-import { createHash as createHash20, randomUUID as randomUUID20 } from "node:crypto";
-import { sql as sql18 } from "kysely";
+import { join as join16 } from "node:path";
+import { createHash as createHash23, randomUUID as randomUUID23 } from "node:crypto";
+import { sql as sql21 } from "kysely";
 
 // src/mcp/schemas.ts
 import { z as z15 } from "zod";
@@ -6166,7 +7255,7 @@ class ForgeService {
     validatePackagePath(value.path);
     return {
       path: value.path,
-      bytes: await secureRead(join13(this.dataDir, "execution", value.execution, "artifacts"), value.path)
+      bytes: await secureRead(join16(this.dataDir, "execution", value.execution, "artifacts"), value.path)
     };
   }
   publicRun(run, detail = false) {
@@ -6222,50 +7311,50 @@ class ForgeService {
     if (name === "forge_load") {
       const value2 = toolSchemas.forge_load.parse(input);
       validatePackagePath(value2.path);
-      const loaded2 = await this.packages.files(identity, value2.skill_id, value2.revision, value2.inventory ? [] : [value2.path]);
-      if (loaded2.skill.project_id && loaded2.skill.project_id !== value2.project_ref)
-        throw new ForgeError("project_mismatch", "Paket başka projeye ait.", 403);
-      if (value2.inventory) {
-        const offset2 = value2.cursor ? this.cursors.decode(value2.cursor, binding) : 0;
-        if (!Number.isSafeInteger(offset2) || offset2 < 0 || offset2 > loaded2.manifest.files.length)
-          throw new ForgeError("invalid_cursor", "Envanter sayfası geçersiz.");
+      return this.packages.withRevision(identity, value2.skill_id, value2.revision, async () => {
+        const loaded2 = await this.packages.files(identity, value2.skill_id, value2.revision, value2.inventory ? [] : [value2.path]);
+        if (loaded2.skill.project_id && loaded2.skill.project_id !== value2.project_ref)
+          throw new ForgeError("project_mismatch", "Paket başka projeye ait.", 403);
+        if (value2.inventory) {
+          const offset2 = value2.cursor ? this.cursors.decode(value2.cursor, binding) : 0;
+          if (!Number.isSafeInteger(offset2) || offset2 < 0 || offset2 > loaded2.manifest.files.length)
+            throw new ForgeError("invalid_cursor", "Envanter sayfası geçersiz.");
+          return {
+            skill_id: value2.skill_id,
+            revision: value2.revision,
+            files: loaded2.manifest.files.slice(offset2, offset2 + 40).map((f) => ({ path: f.path, bytes: f.bytes })),
+            file_count: loaded2.manifest.files.length,
+            entrypoints: Object.keys(loaded2.manifest.execution?.entrypoints ?? {}),
+            next_cursor: offset2 + 40 < loaded2.manifest.files.length ? this.cursors.encode(binding, offset2 + 40) : null
+          };
+        }
+        const bytes = loaded2.files[value2.path];
+        if (!bytes)
+          throw new ForgeError("file_unavailable", "Sabit sürümde dosya bulunamadı.", 404);
+        const offset = value2.cursor ? this.cursors.decode(value2.cursor, binding) : 0;
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length)
+          throw new ForgeError("invalid_cursor", "Dosya aralığı geçersiz.");
+        let end = Math.min(bytes.length, offset + 24576);
+        const binary = !Buffer.from(bytes.toString("utf8")).equals(bytes) || bytes.includes(0);
+        if (!binary && end < bytes.length)
+          while (end > offset && (bytes[end] & 192) === 128)
+            end--;
+        await observe(this.storage.db, identity, value2.project_ref, "loaded", [{ skill_id: value2.skill_id, revision: value2.revision }]);
         return {
           skill_id: value2.skill_id,
           revision: value2.revision,
-          files: loaded2.manifest.files.slice(offset2, offset2 + 40).map((f) => ({ path: f.path, bytes: f.bytes })),
+          path: value2.path,
+          encoding: binary ? "base64" : "utf8",
+          content: bytes.subarray(offset, end).toString(binary ? "base64" : "utf8"),
+          bytes: end - offset,
+          total_bytes: bytes.length,
+          files: value2.path === "SKILL.md" ? loaded2.manifest.files.slice(0, 40).map((f) => ({ path: f.path, bytes: f.bytes })) : undefined,
           file_count: loaded2.manifest.files.length,
-          entrypoints: Object.keys(loaded2.manifest.execution?.entrypoints ?? {}),
-          next_cursor: offset2 + 40 < loaded2.manifest.files.length ? this.cursors.encode(binding, offset2 + 40) : null
+          inventory_truncated: loaded2.manifest.files.length > 40,
+          entrypoints: value2.path === "SKILL.md" ? Object.keys(loaded2.manifest.execution?.entrypoints ?? {}) : undefined,
+          next_cursor: end < bytes.length ? this.cursors.encode(binding, end) : null
         };
-      }
-      const bytes = loaded2.files[value2.path];
-      if (!bytes)
-        throw new ForgeError("file_unavailable", "Sabit sürümde dosya bulunamadı.", 404);
-      const offset = value2.cursor ? this.cursors.decode(value2.cursor, binding) : 0;
-      if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length)
-        throw new ForgeError("invalid_cursor", "Dosya aralığı geçersiz.");
-      let end = Math.min(bytes.length, offset + 24576);
-      const binary = !Buffer.from(bytes.toString("utf8")).equals(bytes) || bytes.includes(0);
-      if (!binary && end < bytes.length)
-        while (end > offset && (bytes[end] & 192) === 128)
-          end--;
-      await observe(this.storage.db, identity, value2.project_ref, "loaded", [
-        { skill_id: value2.skill_id, revision: value2.revision }
-      ]);
-      return {
-        skill_id: value2.skill_id,
-        revision: value2.revision,
-        path: value2.path,
-        encoding: binary ? "base64" : "utf8",
-        content: bytes.subarray(offset, end).toString(binary ? "base64" : "utf8"),
-        bytes: end - offset,
-        total_bytes: bytes.length,
-        files: value2.path === "SKILL.md" ? loaded2.manifest.files.slice(0, 40).map((f) => ({ path: f.path, bytes: f.bytes })) : undefined,
-        file_count: loaded2.manifest.files.length,
-        inventory_truncated: loaded2.manifest.files.length > 40,
-        entrypoints: value2.path === "SKILL.md" ? Object.keys(loaded2.manifest.execution?.entrypoints ?? {}) : undefined,
-        next_cursor: end < bytes.length ? this.cursors.encode(binding, end) : null
-      };
+      });
     }
     if (name === "forge_handoff") {
       const value2 = toolSchemas.forge_handoff.parse(input);
@@ -6305,14 +7394,14 @@ class ForgeService {
       const deadline = Date.now() + value2.wait_ms;
       let run = accepted2.run;
       while (!terminalStates.includes(run.state) && Date.now() < deadline && !signal?.aborted) {
-        await new Promise((resolve11) => setTimeout(resolve11, 40));
+        await new Promise((resolve15) => setTimeout(resolve15, 40));
         run = await this.queue.get(identity, run.id);
       }
       const prepared = run.result_json ? JSON.parse(run.result_json) : null;
       if (prepared && !prepared.content_expired && typeof prepared === "object" && typeof prepared.status === "string")
         return {
           run_id: run.id,
-          original_hash: createHash20("sha256").update(value2.original).digest("hex"),
+          original_hash: createHash23("sha256").update(value2.original).digest("hex"),
           ...prepared
         };
       return {
@@ -6396,7 +7485,7 @@ class ForgeService {
           const resultBytes = Buffer.from(run.result_json ?? "null");
           const resultBinding = [
             ...binding,
-            createHash20("sha256").update(resultBytes).digest("hex")
+            createHash23("sha256").update(resultBytes).digest("hex")
           ];
           const chunk = byteChunk(resultBytes, value2.cursor ? this.cursors.decode(value2.cursor, resultBinding) : 0);
           return {
@@ -6429,28 +7518,35 @@ class ForgeService {
     const loaded = await this.packages.files(identity, value.skill_id, value.revision);
     if (loaded.skill.project_id && loaded.skill.project_id !== value.project_ref)
       throw new ForgeError("project_mismatch", "Paket başka projeye ait.", 403);
-    const hash5 = createHash20("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash6 = createHash23("sha256").update(JSON.stringify(value)).digest("hex");
     const accepted = await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("memberships").set({ role: sql18`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("tenants").set({ name: sql21`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       const existing = await tx.selectFrom("executions").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", value.project_ref).where("idempotency_key", "=", value.idempotency_key).executeTakeFirst();
       if (existing) {
-        if (existing.input_hash !== hash5)
+        if (existing.input_hash !== hash6)
           throw new ForgeError("idempotency_conflict", "Script anahtarı başka girdiye ait.", 409);
         return { fresh: false, row: existing };
       }
       const row = {
         tenant_id: identity.tenantId,
-        id: randomUUID20(),
+        id: randomUUID23(),
         user_id: identity.userId,
         project_id: value.project_ref,
         idempotency_key: value.idempotency_key,
-        input_hash: hash5,
+        input_hash: hash6,
         state: "running",
         result_json: null,
         created_at: Date.now()
       };
       await tx.insertInto("executions").values(row).execute();
+      await tx.insertInto("execution_revision_pins").values({
+        tenant_id: identity.tenantId,
+        execution_id: row.id,
+        skill_id: value.skill_id,
+        revision: value.revision,
+        created_at: row.created_at
+      }).execute();
       return { fresh: true, row };
     });
     if (!accepted.fresh)
@@ -6490,7 +7586,7 @@ class ForgeService {
       clearInterval(permissionTimer);
     }
     await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("memberships").set({ role: sql18`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("tenants").set({ name: sql21`name` }).where("id", "=", identity.tenantId).execute();
       try {
         await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       } catch {
@@ -6502,6 +7598,7 @@ class ForgeService {
       }
       await observe(tx, identity, value.project_ref, result.status === "completed" ? "entrypoint_executed" : "execution_failed", [{ skill_id: value.skill_id, revision: value.revision }], accepted.row.id);
       await tx.updateTable("executions").set({ state: result.status, result_json: JSON.stringify(result) }).where("tenant_id", "=", identity.tenantId).where("id", "=", accepted.row.id).execute();
+      await tx.deleteFrom("execution_revision_pins").where("tenant_id", "=", identity.tenantId).where("execution_id", "=", accepted.row.id).execute();
     });
     return executionPage(this.cursors, identity, value.project_ref, result);
   }
@@ -6510,13 +7607,38 @@ class ForgeService {
 // src/http/server.ts
 import staticFiles from "@fastify/static";
 import { existsSync as existsSync2 } from "node:fs";
-import { resolve as resolve11 } from "node:path";
+import { resolve as resolve15 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual as timingSafeEqual2, createHash as createHash21 } from "node:crypto";
+import { timingSafeEqual as timingSafeEqual2, createHash as createHash24 } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { z as z16, ZodError as ZodError2 } from "zod";
+
+// src/mcp/published-schemas.ts
+function publishedSchema(schema) {
+  const standard = schema["~standard"];
+  const input = standard.jsonSchema.input({ target: "draft-2020-12" });
+  return {
+    "~standard": {
+      ...standard,
+      jsonSchema: {
+        input(options) {
+          if (options.target === "draft-2020-12" && Object.keys(options).length === 1)
+            return structuredClone(input);
+          return standard.jsonSchema.input(options);
+        },
+        output(options) {
+          return standard.jsonSchema.output(options);
+        }
+      }
+    }
+  };
+}
+var publishedToolSchemas = Object.fromEntries(Object.entries(toolSchemas).map(([name, schema]) => [
+  name,
+  publishedSchema(schema)
+]));
 
 // src/mcp/server.ts
 import { ZodError } from "zod";
@@ -6533,7 +7655,7 @@ function createMcpServer(service, identity, oauth = false) {
             securitySchemes: [{ type: "oauth2", scopes: ["forge"] }]
           }
         } : {},
-        inputSchema: toolSchemas[name],
+        inputSchema: publishedToolSchemas[name],
         annotations: {
           readOnlyHint: [
             "forge_search",
@@ -6572,7 +7694,7 @@ function createMcpServer(service, identity, oauth = false) {
 
 // src/http/oidc.ts
 import * as oidc from "openid-client";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from "jose";
 class OidcIdentity {
   options;
   config;
@@ -6619,6 +7741,15 @@ class OidcIdentity {
       expectedState: pending.state,
       expectedNonce: pending.nonce,
       idTokenExpected: true
+    }).catch((error) => {
+      if (error instanceof oidc.AuthorizationResponseError || error instanceof oidc.ClientError && [
+        "OAUTH_INVALID_RESPONSE",
+        "OAUTH_JWT_CLAIM_COMPARISON_FAILED",
+        "OAUTH_JWT_TIMESTAMP_CHECK_FAILED",
+        "OAUTH_JSON_ATTRIBUTE_COMPARISON_FAILED"
+      ].includes(error.code ?? ""))
+        throw new ForgeError("invalid_login_response", "OIDC giriş yanıtı doğrulanamadı.", 401);
+      throw error;
     });
     const claims = tokens.claims();
     if (!claims?.sub)
@@ -6631,6 +7762,10 @@ class OidcIdentity {
       audience: this.options.audience,
       requiredClaims: ["sub", "exp", "iat"],
       algorithms: ["RS256", "ES256", "PS256", "EdDSA"]
+    }).catch((error) => {
+      if (error instanceof joseErrors.JWTClaimValidationFailed || error instanceof joseErrors.JWTExpired || error instanceof joseErrors.JWTInvalid || error instanceof joseErrors.JWSInvalid || error instanceof joseErrors.JWSSignatureVerificationFailed || error instanceof joseErrors.JWKSNoMatchingKey || error instanceof joseErrors.JOSEAlgNotAllowed)
+        throw new ForgeError("invalid_bearer", "Bearer kimliği doğrulanamadı.", 401);
+      throw error;
     });
     const scopes = typeof result.payload.scope === "string" ? result.payload.scope.split(" ") : [];
     if (!scopes.includes("forge"))
@@ -6691,6 +7826,7 @@ async function createHttpServer(config) {
   };
   let startupWork;
   let closingStartup = false;
+  let startupReady = false;
   app.addHook("onReady", async () => {
     startupWork = (async () => {
       if (localOwner) {
@@ -6712,8 +7848,10 @@ async function createHttpServer(config) {
           packageIntegrity.status = "failed";
         }
       }
-      if (!closingStartup)
+      if (!closingStartup) {
         await worker.start();
+        startupReady = true;
+      }
     })().catch(() => {
       packageIntegrity.status = "failed";
     });
@@ -6739,6 +7877,8 @@ async function createHttpServer(config) {
     const publicRoute = [
       "/",
       "/auth/pair",
+      "/health/live",
+      "/health/ready",
       "/auth/start",
       "/auth/callback",
       "/.well-known/oauth-protected-resource"
@@ -6753,7 +7893,7 @@ async function createHttpServer(config) {
       const sessionToken = request.cookies.forge_session;
       if (sessionToken) {
         identity = await identityService.authenticate(sessionToken, tenant);
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash21("sha256").update(sessionToken).digest("hex")))
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash24("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
       } else if (oidc2 && request.headers.authorization?.startsWith("Bearer ")) {
         identity = {
@@ -6765,6 +7905,37 @@ async function createHttpServer(config) {
         throw new ForgeError("unauthorized", "Kimlik doğrulaması gerekiyor.", 401);
     }
     identities.set(request, identity);
+  });
+  app.post("/api/service/stop", {
+    onResponse: async (request, reply) => {
+      if (reply.statusCode === 202 && request.headers.authorization === `Bearer ${config.token}`)
+        setImmediate(() => {
+          app.close().catch(() => {
+            process.exitCode = 1;
+          });
+        });
+    }
+  }, async (request, reply) => {
+    if (!localOwner || !tokenMatches(request.headers.authorization, `Bearer ${config.token}`))
+      throw new ForgeError("stop_denied", "Servis yalnız yerel owner CLI kimliğiyle durdurulabilir.", 403);
+    return reply.code(202).send({
+      service: "skill-forge",
+      protocol: PROTOCOL_VERSION,
+      version: PRODUCT_VERSION,
+      pid: process.pid,
+      status: "stopping"
+    });
+  });
+  app.get("/health/live", async () => ({ status: "live" }));
+  app.get("/health/ready", async (_request, reply) => {
+    if (!startupReady || closingStartup || ["failed", "degraded"].includes(packageIntegrity.status))
+      return reply.code(503).send({ status: "not_ready" });
+    try {
+      await storage.now();
+    } catch {
+      return reply.code(503).send({ status: "not_ready" });
+    }
+    return { status: "ready" };
   });
   app.get("/health", async () => ({
     status: packageIntegrity.status === "checking" ? "checking" : ["degraded", "failed"].includes(packageIntegrity.status) ? "degraded" : "healthy",
@@ -6791,7 +7962,7 @@ async function createHttpServer(config) {
     reply.setCookie("forge_session", token, cookieOptions);
     return {
       authenticated: true,
-      csrf: createHash21("sha256").update(token).digest("hex")
+      csrf: createHash24("sha256").update(token).digest("hex")
     };
   });
   app.post("/api/pairing", async (request) => {
@@ -6843,7 +8014,7 @@ async function createHttpServer(config) {
     identity: requestIdentity(request),
     role: await identityService.authorize(requestIdentity(request), "read"),
     projects: await identityService.listProjects(requestIdentity(request)),
-    csrf: request.cookies.forge_session ? createHash21("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash24("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/logout", async (request, reply) => {
     if (request.cookies.forge_session)
@@ -6950,7 +8121,19 @@ async function createHttpServer(config) {
   });
   app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z16.object({ project_ref: z16.string() }).parse(request.query).project_ref));
   app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z16.object({ project_ref: z16.string() }).strict().parse(request.body).project_ref));
-  const maintenance = new MaintenanceService(storage);
+  const maintenance = new MaintenanceService(storage, config.dataDir);
+  const deletions = new DeletionService(storage, config.dataDir);
+  app.get("/api/maintenance/deletions", async (request) => {
+    const q = z16.object({
+      project_ref: z16.string(),
+      after: z16.string().max(100).optional()
+    }).strict().parse(request.query);
+    return deletions.pending(requestIdentity(request), q.project_ref, q.after);
+  });
+  app.post("/api/maintenance/deletions/resume", async (request) => {
+    const q = z16.object({ project_ref: z16.string(), skill_id: z16.string().max(100) }).strict().parse(request.body);
+    return deletions.resume(requestIdentity(request), q.project_ref, q.skill_id);
+  });
   app.get("/api/maintenance", async (request) => {
     const q = z16.object({
       project_ref: z16.string(),
@@ -7140,7 +8323,7 @@ async function createHttpServer(config) {
   app.post("/api/runs/:id/cancel", async (request) => forge.queue.cancel(requestIdentity(request), request.params.id));
   app.get("/api/artifacts/:id", async (request, reply) => {
     const artifact = await forge.artifact(requestIdentity(request), request.params.id, z16.object({ reference: z16.string().max(3000) }).parse(request.query).reference);
-    return reply.type("application/octet-stream").header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(basename3(artifact.path))}`).send(artifact.bytes);
+    return reply.type("application/octet-stream").header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(basename4(artifact.path))}`).send(artifact.bytes);
   });
   app.get("/api/settings/session", async (request) => {
     const q = z16.object({
@@ -7216,7 +8399,7 @@ async function createHttpServer(config) {
     }
   });
   const bundledWeb = fileURLToPath2(new URL("./web/", import.meta.url));
-  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve11("dist/web");
+  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve15("dist/web");
   if (existsSync2(webRoot))
     await app.register(staticFiles, {
       root: webRoot,
@@ -7280,6 +8463,7 @@ async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
+      "database-name": { type: "string" },
       "data-dir": { type: "string" },
       "server-url": { type: "string" },
       "legacy-home": { type: "string" },
@@ -7307,7 +8491,9 @@ async function main() {
   }
   if (values.help || !positionals.length) {
     process.stdout.write(`Skill Forge
+  backup / restore --data-dir <kaynak> --output <yeni-dizin>  SQLite/PostgreSQL yedekleme
   serve   Yerel kimlikli HTTP/MCP servisi
+  stop    Yerel servisi kimlikli ve kontrollü durdur
   worker  Ayrı süreçte kalıcı iş tüketicisi
   mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)
   install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu
@@ -7333,8 +8519,8 @@ async function main() {
       maxEntries: values["scan-limit"] ? Number(values["scan-limit"]) : undefined
     });
     if (values.output) {
-      const requested = resolve12(values.output);
-      const output = resolve12(await realpath3(dirname7(requested)), basename4(requested));
+      const requested = resolve16(values.output);
+      const output = resolve16(await realpath3(dirname8(requested)), basename5(requested));
       for (const root of report.roots) {
         let source = root.path;
         try {
@@ -7343,11 +8529,11 @@ async function main() {
           if (error.code !== "ENOENT")
             throw error;
         }
-        const path = relative4(source, output);
-        if (!path || path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute2(path))
+        const path = relative5(source, output);
+        if (!path || path !== ".." && !path.startsWith(`..${sep2}`) && !isAbsolute3(path))
           throw new ForgeError("source_write_denied", "Manifest kaynak veri alanına yazılamaz.");
       }
-      await writeFile4(output, JSON.stringify(report, null, 2) + `
+      await writeFile5(output, JSON.stringify(report, null, 2) + `
 `, {
         mode: 384,
         flag: "wx"
@@ -7373,6 +8559,17 @@ async function main() {
 `);
     if (report.failed)
       process.exitCode = 1;
+    return;
+  }
+  if (positionals[0] === "backup" || positionals[0] === "restore") {
+    if (!values["data-dir"] || !values.output)
+      throw new ForgeError("backup_paths_required", "--data-dir kaynak ve --output yeni hedef dizin gerekiyor.");
+    const url = process.env.SKILL_FORGE_POSTGRES_URL;
+    if (url && positionals[0] === "restore" && !values["database-name"])
+      throw new ForgeError("database_name_required", "Restore için --database-name yeni DB adı gerekiyor.");
+    const report = url ? positionals[0] === "backup" ? await backupPostgres(values["data-dir"], values.output, url) : await restorePostgres(values["data-dir"], values.output, url, values["database-name"]) : await (positionals[0] === "backup" ? backupSqlite : restoreSqlite)(values["data-dir"], values.output);
+    process.stdout.write(JSON.stringify(report) + `
+`);
     return;
   }
   const config = await localConfig(values["data-dir"], values.port === undefined ? undefined : Number(values.port));
@@ -7498,7 +8695,7 @@ async function main() {
 `);
         return;
       }
-      process.stdout.write(JSON.stringify(await clientHook(config, resolve12(process.argv[1]), values.client, values["project-ref"], await readHookInput(process.stdin))) + `
+      process.stdout.write(JSON.stringify(await clientHook(config, resolve16(process.argv[1]), values.client, values["project-ref"], await readHookInput(process.stdin))) + `
 `);
       break;
     }
@@ -7514,7 +8711,7 @@ async function main() {
       }
       if (!values["project-ref"])
         throw new ForgeError("project_required", "Kurulum açık --project-ref gerektirir.");
-      await ensureDaemon(config, resolve12(process.argv[1]));
+      await ensureDaemon(config, resolve16(process.argv[1]));
       const check = await fetch(`${config.url}/api/settings/effective?project_ref=${encodeURIComponent(values["project-ref"])}`, { headers: { authorization: `Bearer ${config.token}` } });
       if (!check.ok)
         throw new ForgeError("project_unavailable", "Kurulum projesi servis tarafından doğrulanamadı.", 403);
@@ -7523,7 +8720,7 @@ async function main() {
         projectRoot: values.project,
         projectRef: values["project-ref"],
         dataDir: config.dataDir,
-        entry: resolve12(process.argv[1]),
+        entry: resolve16(process.argv[1]),
         port: config.port
       });
       const registration = await fetch(`${config.url}/api/installations`, {
@@ -7533,10 +8730,10 @@ async function main() {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          id: installationFingerprint([client, resolve12(values.project)]),
+          id: installationFingerprint([client, resolve16(values.project)]),
           project_ref: values["project-ref"],
           client,
-          directory: resolve12(values.project),
+          directory: resolve16(values.project),
           event: "installed"
         })
       });
@@ -7572,11 +8769,11 @@ async function main() {
       break;
     }
     case "mcp":
-      await ensureDaemon(config, resolve12(process.argv[1]));
+      await ensureDaemon(config, resolve16(process.argv[1]));
       await bridge(config);
       break;
     case "login": {
-      await ensureDaemon(config, resolve12(process.argv[1]));
+      await ensureDaemon(config, resolve16(process.argv[1]));
       const response = await fetch(`${config.url}/api/pairing`, {
         method: "POST",
         headers: { authorization: `Bearer ${config.token}` }
@@ -7586,6 +8783,11 @@ async function main() {
       const value = await response.json();
       process.stdout.write(`${config.url}
 Eşleme kodu (5 dakika, tek kullanım): ${value.code}
+`);
+      break;
+    }
+    case "stop": {
+      process.stdout.write(JSON.stringify(await stopDaemon(config)) + `
 `);
       break;
     }

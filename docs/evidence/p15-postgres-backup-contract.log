@@ -1,0 +1,34 @@
+bun test v1.3.14 (0d9b296a)
+
+test/backup.test.ts:
+(pass) Node SQLite backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [3766.55ms]
+
+test/backup-postgres.test.ts:
+993 |   if (!isURLInstance(fileURLOrPath))
+994 |     return fileURLOrPath;
+995 |   return Bun.fileURLToPath(fileURLOrPath);
+996 | }
+997 | var { Error, TypeError } = globalThis;
+998 |   let err = new Error(message);
+                  ^
+error: Command failed: node /home/ugur/Projects/opencode2-skill-forge-mcp/dist/cli.js backup --data-dir /tmp/forge-backup-awiutC/source --output /tmp/forge-backup-awiutC/backup
+{"error":{"code":"backup_invalid","message":"pg_dump başarısız; bağlantı, araç/server sürümü ve yetkileri kontrol edin."}}
+
+   code: 1,
+ killed: false,
+ signal: null,
+    cmd: "node /home/ugur/Projects/opencode2-skill-forge-mcp/dist/cli.js backup --data-dir /tmp/forge-backup-awiutC/source --output /tmp/forge-backup-awiutC/backup",
+ stdout: "",
+ stderr: "{\"error\":{\"code\":\"backup_invalid\",\"message\":\"pg_dump başarısız; bağlantı, araç/server sürümü ve yetkileri kontrol edin.\"}}\n",
+
+      at genericNodeError (node:child_process:998:13)
+      at exitHandler (node:child_process:103:28)
+      at emit (node:events:98:22)
+      at #maybeClose (node:child_process:766:16)
+      at #handleOnExit (node:child_process:520:72)
+(fail) Node PostgreSQL backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [1184.18ms]
+
+ 1 pass
+ 1 fail
+ 12 expect() calls
+Ran 2 tests across 2 files. [5.07s]

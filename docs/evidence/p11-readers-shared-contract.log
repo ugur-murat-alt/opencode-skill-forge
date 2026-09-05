@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [538.86ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [165.18ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [481.43ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [176.69ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.87ms]
+(pass) missing references and script packages without executable contracts are rejected [2.93ms]
+
+ 6 pass
+ 0 fail
+ 62 expect() calls
+Ran 6 tests across 2 files. [1.50s]

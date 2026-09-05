@@ -1,0 +1,1 @@
+{"kind":"Node stateless MCP construction microbenchmark; no tool calls","node":"v24.19.0","samples":[{"count":1000,"elapsed_ms":401.993573,"cpu":{"user":452712,"system":6959}},{"count":1000,"elapsed_ms":356.919889,"cpu":{"user":388136,"system":2872}},{"count":1000,"elapsed_ms":372.84453800000006,"cpu":{"user":437355,"system":4615}}]}

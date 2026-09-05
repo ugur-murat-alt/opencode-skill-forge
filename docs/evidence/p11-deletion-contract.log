@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [468.25ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [282.94ms]
+
+test/deletion.test.ts:
+(pass) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [429.62ms]
+(pass) permanent deletion postgres: references, real removal, partial replay and symlink confinement [295.67ms]
+
+ 4 pass
+ 0 fail
+ 76 expect() calls
+Ran 4 tests across 2 files. [1.66s]

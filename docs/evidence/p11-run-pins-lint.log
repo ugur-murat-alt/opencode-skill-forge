@@ -1,0 +1,3 @@
+$ bunx oxlint src web/src scripts test --ignore-pattern "test/fixtures/**" --max-warnings 0
+src/runner/staging.ts:34:31: warning unicorn(no-useless-spread): `Promise.allSettled` accepts an iterable, so it's unnecessary to convert the iterable to an array. help: Consider removing the spread operator.
+error: script "lint" exited with code 1

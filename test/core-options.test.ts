@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { resolveOptions } from "./fixtures/legacy/skillforge-core.js";
-import { normalizeCoreOptions } from "../src/core-options.js";
+import { normalizeCoreOptions } from "./legacy-runtime/core-options.js";
 
 const HANDOFF_TRIGGER = {
   stepThreshold: 1,

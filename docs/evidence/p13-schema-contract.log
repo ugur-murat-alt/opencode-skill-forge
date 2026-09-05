@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/mcp-schema-publication.test.ts:
+(pass) MCP publication preserves every schema and never shares mutable JSON [9.66ms]
+(pass) MCP publication keeps strict validation and Zod defaults [2.78ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [690.55ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.46ms]
+
+ 4 pass
+ 0 fail
+ 63 expect() calls
+Ran 4 tests across 2 files. [1257.00ms]

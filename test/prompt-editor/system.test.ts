@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   buildEditorPrompt,
   editorSystemForConfig,
-} from "../../src/prompt-editor/system.js";
-import type { PromptEditorContextSnapshot } from "../../src/prompt-editor/context-snapshot.js";
-import { collectRuntimeCapabilities } from "../../src/prompt-editor/capabilities.js";
-import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
-import type { PromptEditorWorkspaceContext } from "../../src/prompt-editor/workspace-context.js";
+} from "../legacy-runtime/prompt-editor/system.js";
+import type { PromptEditorContextSnapshot } from "../legacy-runtime/prompt-editor/context-snapshot.js";
+import { collectRuntimeCapabilities } from "../legacy-runtime/prompt-editor/capabilities.js";
+import { PROMPT_EDITOR_DEFAULTS } from "../legacy-runtime/prompt-editor/config.js";
+import type { PromptEditorWorkspaceContext } from "../legacy-runtime/prompt-editor/workspace-context.js";
 
 describe("buildEditorPrompt", () => {
   test("renders a snapshot as untrusted JSON and keeps the current user text as the sole target", () => {

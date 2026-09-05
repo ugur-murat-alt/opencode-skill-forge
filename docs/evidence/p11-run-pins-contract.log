@@ -1,0 +1,18 @@
+bun test v1.3.14 (0d9b296a)
+
+test/run-pins.test.ts:
+(pass) SPR pin sqlite: durable base, FK, stale select, fence-isolated disposal [366.82ms]
+(pass) SPR pin postgres: durable base, FK, stale select, fence-isolated disposal [188.13ms]
+
+test/staging.test.ts:
+(pass) private SPR candidate enforces inventory, read-before-change, exact patch and fenced publication [273.64ms]
+
+test/forge-runner.test.ts:
+(pass) Pi termination closes mixed batches and prevents writes after finalize without another call [6.96ms]
+(pass) call budget bounds non-terminating model loops [0.63ms]
+(pass) deadline cancels provider stream and reports unknown usage [20.40ms]
+
+ 6 pass
+ 0 fail
+ 35 expect() calls
+Ran 6 tests across 3 files. [1149.00ms]

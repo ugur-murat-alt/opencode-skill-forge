@@ -4,7 +4,7 @@ import { mkdir, open, readFile, lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ForgeError } from "../domain/errors.js";
-export const PRODUCT_VERSION = "0.5.6";
+export const PRODUCT_VERSION = "1.0.0";
 export const PROTOCOL_VERSION = 1;
 export interface LocalConfig {
   dataDir: string;

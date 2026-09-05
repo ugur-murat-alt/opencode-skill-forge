@@ -103,7 +103,7 @@ function App() {
     library: <Library project={project} />,
     jobs: <Jobs project={project} />,
     prompt: <PromptEditor project={project} />,
-    maintenance: <Maintenance project={project} />,
+    maintenance: <Maintenance key={project} project={project} />,
     installations: <Installations project={project} />,
     projects,
     models: <Models project={project} />,

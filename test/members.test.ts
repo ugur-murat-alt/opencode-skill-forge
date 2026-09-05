@@ -98,9 +98,14 @@ for (const backend of [
       await expect(
         identity.authorize(actor, "read", project.id),
       ).rejects.toMatchObject({ status: 403 });
-      const current = (await service.list(owner, project.id)).items.find(
-        (m) => m.user_id === actor.userId,
-      )!;
+      let page = await service.list(owner, project.id);
+      let current = page.items.find((m) => m.user_id === actor.userId);
+      while (!current && page.next) {
+        page = await service.list(owner, project.id, page.next);
+        current = page.items.find((m) => m.user_id === actor.userId);
+      }
+      if (!current)
+        throw new Error("Created member missing from paginated list");
       await service.update(owner, actor.userId, {
         ...request,
         generation: current.generation,

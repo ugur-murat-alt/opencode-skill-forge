@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/backup.test.ts:
+(pass) Node SQLite backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [3760.40ms]
+
+ 1 pass
+ 0 fail
+ 12 expect() calls
+Ran 1 test across 1 file. [3.87s]

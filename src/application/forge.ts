@@ -162,92 +162,111 @@ export class ForgeService {
     if (name === "forge_load") {
       const value = toolSchemas.forge_load.parse(input);
       validatePackagePath(value.path);
-      const loaded = await this.packages.files(
+      return this.packages.withRevision(
         identity,
         value.skill_id,
         value.revision,
-        value.inventory ? [] : [value.path],
+        async () => {
+          const loaded = await this.packages.files(
+            identity,
+            value.skill_id,
+            value.revision,
+            value.inventory ? [] : [value.path],
+          );
+          if (
+            loaded.skill.project_id &&
+            loaded.skill.project_id !== value.project_ref
+          )
+            throw new ForgeError(
+              "project_mismatch",
+              "Paket başka projeye ait.",
+              403,
+            );
+          if (value.inventory) {
+            const offset = value.cursor
+              ? this.cursors.decode<number>(value.cursor, binding)
+              : 0;
+            if (
+              !Number.isSafeInteger(offset) ||
+              offset < 0 ||
+              offset > loaded.manifest.files.length
+            )
+              throw new ForgeError(
+                "invalid_cursor",
+                "Envanter sayfası geçersiz.",
+              );
+            return {
+              skill_id: value.skill_id,
+              revision: value.revision,
+              files: loaded.manifest.files
+                .slice(offset, offset + 40)
+                .map((f) => ({ path: f.path, bytes: f.bytes })),
+              file_count: loaded.manifest.files.length,
+              entrypoints: Object.keys(
+                loaded.manifest.execution?.entrypoints ?? {},
+              ),
+              next_cursor:
+                offset + 40 < loaded.manifest.files.length
+                  ? this.cursors.encode(binding, offset + 40)
+                  : null,
+            };
+          }
+          const bytes = loaded.files[value.path];
+          if (!bytes)
+            throw new ForgeError(
+              "file_unavailable",
+              "Sabit sürümde dosya bulunamadı.",
+              404,
+            );
+          const offset = value.cursor
+            ? this.cursors.decode<number>(value.cursor, binding)
+            : 0;
+          if (
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            offset > bytes.length
+          )
+            throw new ForgeError("invalid_cursor", "Dosya aralığı geçersiz.");
+          let end = Math.min(bytes.length, offset + 24576);
+          const binary =
+            !Buffer.from(bytes.toString("utf8")).equals(bytes) ||
+            bytes.includes(0);
+          if (!binary && end < bytes.length)
+            while (end > offset && (bytes[end]! & 0xc0) === 0x80) end--;
+          await observe(
+            this.storage.db,
+            identity,
+            value.project_ref,
+            "loaded",
+            [{ skill_id: value.skill_id, revision: value.revision }],
+          );
+          return {
+            skill_id: value.skill_id,
+            revision: value.revision,
+            path: value.path,
+            encoding: binary ? "base64" : "utf8",
+            content: bytes
+              .subarray(offset, end)
+              .toString(binary ? "base64" : "utf8"),
+            bytes: end - offset,
+            total_bytes: bytes.length,
+            files:
+              value.path === "SKILL.md"
+                ? loaded.manifest.files
+                    .slice(0, 40)
+                    .map((f) => ({ path: f.path, bytes: f.bytes }))
+                : undefined,
+            file_count: loaded.manifest.files.length,
+            inventory_truncated: loaded.manifest.files.length > 40,
+            entrypoints:
+              value.path === "SKILL.md"
+                ? Object.keys(loaded.manifest.execution?.entrypoints ?? {})
+                : undefined,
+            next_cursor:
+              end < bytes.length ? this.cursors.encode(binding, end) : null,
+          };
+        },
       );
-      if (
-        loaded.skill.project_id &&
-        loaded.skill.project_id !== value.project_ref
-      )
-        throw new ForgeError(
-          "project_mismatch",
-          "Paket başka projeye ait.",
-          403,
-        );
-      if (value.inventory) {
-        const offset = value.cursor
-          ? this.cursors.decode<number>(value.cursor, binding)
-          : 0;
-        if (
-          !Number.isSafeInteger(offset) ||
-          offset < 0 ||
-          offset > loaded.manifest.files.length
-        )
-          throw new ForgeError("invalid_cursor", "Envanter sayfası geçersiz.");
-        return {
-          skill_id: value.skill_id,
-          revision: value.revision,
-          files: loaded.manifest.files
-            .slice(offset, offset + 40)
-            .map((f) => ({ path: f.path, bytes: f.bytes })),
-          file_count: loaded.manifest.files.length,
-          entrypoints: Object.keys(
-            loaded.manifest.execution?.entrypoints ?? {},
-          ),
-          next_cursor:
-            offset + 40 < loaded.manifest.files.length
-              ? this.cursors.encode(binding, offset + 40)
-              : null,
-        };
-      }
-      const bytes = loaded.files[value.path];
-      if (!bytes)
-        throw new ForgeError(
-          "file_unavailable",
-          "Sabit sürümde dosya bulunamadı.",
-          404,
-        );
-      const offset = value.cursor
-        ? this.cursors.decode<number>(value.cursor, binding)
-        : 0;
-      if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length)
-        throw new ForgeError("invalid_cursor", "Dosya aralığı geçersiz.");
-      let end = Math.min(bytes.length, offset + 24576);
-      const binary =
-        !Buffer.from(bytes.toString("utf8")).equals(bytes) || bytes.includes(0);
-      if (!binary && end < bytes.length)
-        while (end > offset && (bytes[end]! & 0xc0) === 0x80) end--;
-      await observe(this.storage.db, identity, value.project_ref, "loaded", [
-        { skill_id: value.skill_id, revision: value.revision },
-      ]);
-      return {
-        skill_id: value.skill_id,
-        revision: value.revision,
-        path: value.path,
-        encoding: binary ? "base64" : "utf8",
-        content: bytes
-          .subarray(offset, end)
-          .toString(binary ? "base64" : "utf8"),
-        bytes: end - offset,
-        total_bytes: bytes.length,
-        files:
-          value.path === "SKILL.md"
-            ? loaded.manifest.files
-                .slice(0, 40)
-                .map((f) => ({ path: f.path, bytes: f.bytes }))
-            : undefined,
-        file_count: loaded.manifest.files.length,
-        inventory_truncated: loaded.manifest.files.length > 40,
-        entrypoints:
-          value.path === "SKILL.md"
-            ? Object.keys(loaded.manifest.execution?.entrypoints ?? {})
-            : undefined,
-        next_cursor:
-          end < bytes.length ? this.cursors.encode(binding, end) : null,
-      };
     }
     if (name === "forge_handoff") {
       const value = toolSchemas.forge_handoff.parse(input);
@@ -537,10 +556,9 @@ export class ForgeService {
       .digest("hex");
     const accepted = await this.storage.db.transaction().execute(async (tx) => {
       await tx
-        .updateTable("memberships")
-        .set({ role: sql`role` })
-        .where("tenant_id", "=", identity.tenantId)
-        .where("user_id", "=", identity.userId)
+        .updateTable("tenants")
+        .set({ name: sql`name` })
+        .where("id", "=", identity.tenantId)
         .execute();
       await new IdentityService(tx).authorize(
         identity,
@@ -576,6 +594,16 @@ export class ForgeService {
         created_at: Date.now(),
       };
       await tx.insertInto("executions").values(row).execute();
+      await tx
+        .insertInto("execution_revision_pins")
+        .values({
+          tenant_id: identity.tenantId,
+          execution_id: row.id,
+          skill_id: value.skill_id,
+          revision: value.revision,
+          created_at: row.created_at,
+        })
+        .execute();
       return { fresh: true, row };
     });
     if (!accepted.fresh)
@@ -656,10 +684,9 @@ export class ForgeService {
     }
     await this.storage.db.transaction().execute(async (tx) => {
       await tx
-        .updateTable("memberships")
-        .set({ role: sql`role` })
-        .where("tenant_id", "=", identity.tenantId)
-        .where("user_id", "=", identity.userId)
+        .updateTable("tenants")
+        .set({ name: sql`name` })
+        .where("id", "=", identity.tenantId)
         .execute();
       try {
         await new IdentityService(tx).authorize(
@@ -695,6 +722,12 @@ export class ForgeService {
         .set({ state: result.status, result_json: JSON.stringify(result) })
         .where("tenant_id", "=", identity.tenantId)
         .where("id", "=", accepted.row.id)
+        .execute();
+      // The sandbox has returned and its terminal result is durable in this transaction.
+      await tx
+        .deleteFrom("execution_revision_pins")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("execution_id", "=", accepted.row.id)
         .execute();
     });
     return executionPage(this.cursors, identity, value.project_ref, result);

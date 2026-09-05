@@ -1,0 +1,18 @@
+bun test v1.3.14 (0d9b296a)
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [737.28ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [298.78ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [1053.66ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.53ms]
+
+test/observation-batch.test.ts:
+(pass) observation group commit sqlite: isolation, idempotency, rollback and bounded admission [593.54ms]
+(pass) observation group commit postgres: isolation, idempotency, rollback and bounded admission [310.45ms]
+
+ 6 pass
+ 0 fail
+ 71 expect() calls
+Ran 6 tests across 3 files. [3.60s]

@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-09-05T19:40:41.062727+00:00",
+  "probe_pid": 3193061,
+  "proc_io": "rchar: 1206689048\nwchar: 3152928565\nsyscr: 910202\nsyscw: 1858693\nread_bytes: 53071872\nwrite_bytes: 3211657216\ncancelled_write_bytes: 0\n",
+  "host_io_pressure": "some avg10=5.83 avg60=6.32 avg300=6.32 total=4909720825\nfull avg10=5.65 avg60=5.98 avg300=6.01 total=4360567123\n",
+  "host_cpu_pressure": "some avg10=0.01 avg60=0.12 avg300=0.07 total=10991153491\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  "database_bytes": {
+    "local.sqlite": 77414400,
+    "local.sqlite-wal": 4288952
+  },
+  "top_process_names_cpu": [
+    "COMMAND         %CPU",
+    "rustc            114",
+    "MainThread      37.9",
+    "bash            37.5",
+    "python3         33.3",
+    "chrome          18.5",
+    "bun             13.0",
+    "ChatGPT          8.7",
+    "cargo            5.8"
+  ],
+  "interpretation": "Passive concurrent-load observation; not attribution of latency cause. No other processes changed."
+}

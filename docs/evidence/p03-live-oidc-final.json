@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "provider": "Keycloak 26.7.3",
+  "proxy": "Caddy 2.11.4",
+  "profile": "server",
+  "tls_verification": true,
+  "csrf_and_project_write": "passed",
+  "authorization_code_pkce": "passed",
+  "secure_session": "passed",
+  "access_claim_names": [
+    "aud",
+    "azp",
+    "exp",
+    "iat",
+    "iss",
+    "jti",
+    "scope",
+    "sid",
+    "sub",
+    "typ"
+  ],
+  "invalid_signature_and_foreign_tenant": "rejected",
+  "bearer_jwks_audience_scope": "passed",
+  "tenant": "acceptance"
+}

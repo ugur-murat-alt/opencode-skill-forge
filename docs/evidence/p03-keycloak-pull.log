@@ -1,0 +1,18 @@
+26.7.3: Pulling from keycloak/keycloak
+2f8a5293b510: Pulling fs layer
+d9fc89992974: Pulling fs layer
+44bb90d0dc2d: Pulling fs layer
+0fd8efa709d2: Pulling fs layer
+44136fa355b3: Already exists
+85a1b823957c: Download complete
+d9fc89992974: Download complete
+44bb90d0dc2d: Download complete
+44bb90d0dc2d: Pull complete
+2f8a5293b510: Download complete
+2f8a5293b510: Pull complete
+0fd8efa709d2: Download complete
+d9fc89992974: Pull complete
+0fd8efa709d2: Pull complete
+Digest: sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54
+Status: Downloaded newer image for quay.io/keycloak/keycloak:26.7.3
+quay.io/keycloak/keycloak:26.7.3

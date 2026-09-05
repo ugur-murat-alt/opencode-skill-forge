@@ -1,5 +1,8 @@
 import { Type, type TSchema } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { sql } from "kysely";
+import { JobQueue } from "../jobs/queue.js";
+import { IdentityService } from "../application/identity.js";
 import type { Identity } from "../application/identity.js";
 import type { Run } from "../storage/schema.js";
 import { PackageStore, type SkillScope } from "../skills/store.js";
@@ -8,6 +11,8 @@ import { validatePackage } from "../skills/validate.js";
 import { ForgeError } from "../domain/errors.js";
 /** A private candidate capability: no host paths, shell, credentials or main history. */
 export class EvolutionStaging {
+  private pinned = false;
+  private operations = new Set<Promise<unknown>>();
   private files: Record<string, Buffer> = {};
   private readFiles = new Set<string>();
   private searched = false;
@@ -24,6 +29,18 @@ export class EvolutionStaging {
     readonly identity: Identity,
     readonly run: Run,
   ) {}
+  async dispose() {
+    this.closed = true;
+    await Promise.allSettled(this.operations);
+    if (!this.pinned) return;
+    await this.store.storage.db
+      .deleteFrom("run_revision_pins")
+      .where("tenant_id", "=", this.run.tenant_id)
+      .where("run_id", "=", this.run.id)
+      .where("fence", "=", this.run.fence)
+      .execute();
+    this.pinned = false;
+  }
   private check() {
     if (this.closed) throw new ForgeError("run_closed", "İş sonlandırılmış.");
   }
@@ -40,11 +57,17 @@ export class EvolutionStaging {
       parameters,
       execute: async (_id, args) => {
         this.check();
-        const result = await action(args);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          details: {},
-        };
+        const operation = action(args);
+        this.operations.add(operation);
+        try {
+          const result = await operation;
+          return {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+            details: {},
+          };
+        } finally {
+          this.operations.delete(operation);
+        }
       },
     };
   }
@@ -84,7 +107,7 @@ export class EvolutionStaging {
               "inventory_required",
               "Önce kanonik sahip envanterini inceleyin.",
             );
-          if (this.selected)
+          if (this.selected || this.pinned)
             throw new ForgeError(
               "candidate_already_selected",
               "Bir iş tek kanonik paketi değiştirir.",
@@ -110,6 +133,31 @@ export class EvolutionStaging {
                 "owner_mismatch",
                 "Kanonik ad/kapsam/sürüm eşleşmiyor.",
               );
+            await this.store.storage.db.transaction().execute(async (tx) => {
+              await tx
+                .updateTable("tenants")
+                .set({ name: sql`name` })
+                .where("id", "=", this.identity.tenantId)
+                .execute();
+              await new JobQueue(this.store.storage).assertLease(tx, this.run);
+              await new IdentityService(tx).authorize(
+                this.identity,
+                skill.scope_key === "workspace" ? "admin" : "write",
+                skill.project_id ?? undefined,
+              );
+              await tx
+                .insertInto("run_revision_pins")
+                .values({
+                  tenant_id: this.run.tenant_id,
+                  run_id: this.run.id,
+                  fence: this.run.fence,
+                  skill_id: skill.id,
+                  revision: skill.active_revision!,
+                  created_at: Date.now(),
+                })
+                .execute();
+            });
+            this.pinned = true;
             const loaded = await this.store.files(
               this.identity,
               skill.id,

@@ -1,0 +1,1 @@
+$ bunx oxlint src web/src scripts test --ignore-pattern "test/fixtures/**" --max-warnings 0

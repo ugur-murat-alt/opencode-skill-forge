@@ -1,0 +1,27 @@
+bun test v1.3.14 (0d9b296a)
+
+test/archive.test.ts:
+(pass) classic package ZIP roundtrip preserves references and binary assets [16.31ms]
+(pass) ZIP import rejects traversal, multiple roots, expansion limit and symlink metadata [81.25ms]
+
+test/package-root-anchor.test.ts:
+(pass) package root stays on its original inode across ancestor replacement and drains escaped reads [12.29ms]
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [401.95ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [202.37ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [354.43ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [164.09ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.89ms]
+(pass) missing references and script packages without executable contracts are rejected [1.93ms]
+
+test/deletion.test.ts:
+(pass) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [499.03ms]
+(pass) permanent deletion postgres: references, real removal, partial replay and symlink confinement [326.76ms]
+
+ 11 pass
+ 0 fail
+ 130 expect() calls
+Ran 11 tests across 5 files. [2.22s]

@@ -1,0 +1,18 @@
+{"profile":{"clients":10,"idle_control_clients":1,"requests":300,"requested_rps":100,"achieved_rps":99.82993498047716,"elapsed_ms":3005.110642,"connect_ms":39.79483200000004,"latency":{"forge_search":{"n":150,"includes_failed_calls":true,"p50_ms":8.018583000000035,"p95_ms":17.799322999999276,"p99_ms":27.54116199999953},"forge_load":{"n":150,"includes_failed_calls":true,"p50_ms":22.250498000000334,"p95_ms":48.03243599999951,"p99_ms":66.43902600000001}},"errors":0,"rss_bytes":294703104}}
+{"profile":{"clients":100,"idle_control_clients":1,"requests":300,"requested_rps":100,"achieved_rps":99.89797725936296,"elapsed_ms":3003.063808000001,"connect_ms":359.8581640000002,"latency":{"forge_search":{"n":150,"includes_failed_calls":true,"p50_ms":6.702428999999938,"p95_ms":12.373098000000027,"p99_ms":16.782368999999562},"forge_load":{"n":150,"includes_failed_calls":true,"p50_ms":14.15194799999881,"p95_ms":25.944526999999653,"p99_ms":33.86903400000119}},"errors":0,"rss_bytes":334200832}}
+{"profile":{"clients":1000,"idle_control_clients":1,"requests":1000,"requested_rps":100,"achieved_rps":99.96356808767968,"elapsed_ms":10003.644519,"connect_ms":3118.7277990000002,"latency":{"forge_search":{"n":500,"includes_failed_calls":true,"p50_ms":6.842040999999881,"p95_ms":12.638843000000634,"p99_ms":17.84925900000235},"forge_load":{"n":500,"includes_failed_calls":true,"p50_ms":13.926221999998234,"p95_ms":24.828678000001673,"p99_ms":38.075974999999744}},"errors":0,"rss_bytes":472219648}}
+{"soak_window":{"minute":1,"requests":6000,"errors":0,"elapsed_ms":60013.736768,"latency":{"forge_search":{"n":3000,"includes_failed_calls":true,"p50_ms":6.74740699999893,"p95_ms":13.236681000002136,"p99_ms":21.47875500000373},"forge_load":{"n":3000,"includes_failed_calls":true,"p50_ms":13.931459999999788,"p95_ms":26.586993999997503,"p99_ms":59.51338399999804}},"scheduler":{"max_delay_ms":100.31620900000053,"max_scheduled_to_complete_ms":1111.7983390000009},"runtime":{"event_loop_delay":{"resolution_ms":20,"mean_ms":21.34001413105413,"p95_ms":25.640959,"max_ms":107.347967,"observations":2808},"event_loop_utilization":0.8902485892825913,"cpu_user_ms":19884.681,"cpu_system_ms":4000.532,"resource_usage_fs_write_delta":1385192,"resource_usage_fs_read_delta":0,"voluntary_context_switches":243892,"involuntary_context_switches":923,"gc":{"count":96,"duration_ms":292.13761699199677,"max_duration_ms":13.617942929267883}},"rss_bytes":524357632,"heap_used_bytes":222950056}}
+{"status":"measured","context":{"ten_package_application_bytes":2235,"catalog_application_bytes":2235,"items":5,"catalog_count":10},"load":{"requested_rps":100,"requests":300,"elapsed_ms":3006.483861,"achieved_rps":99.78408244602868,"clients":1,"pattern":"half search, half same-package load; overlapping official MCP calls"},"latency":{"forge_search":{"n":150,"p50_ms":19.799778999999944,"p95_ms":52.23651400000017,"p99_ms":87.55607499999996},"forge_load":{"n":150,"p50_ms":274.1185839999998,"p95_ms":551.0447060000001,"p99_ms":577.212096}},"report":"/home/ugur/Projects/opencode2-skill-forge-mcp/docs/evidence/p13-diagnostics-integration.json"}
+108 |         stdio: "inherit",
+109 |       },
+110 |     );
+111 |     child.once("error", no);
+112 |     child.once("exit", (code) =>
+113 |       code === 0 ? ok() : no(Error(`Probe exit ${code}`)),
+                                   ^
+error: Probe exit 1
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/scripts/catalog-benchmark.ts:113:30)
+      at emit (node:events:98:22)
+      at #handleOnExit (node:child_process:520:14)
+
+Bun v1.3.14 (Linux x64)

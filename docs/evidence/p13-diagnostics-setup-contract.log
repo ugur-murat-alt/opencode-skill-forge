@@ -1,0 +1,27 @@
+bun test v1.3.14 (0d9b296a)
+
+test/benchmark-setup.test.ts:
+39 |         expect(String((error as { stderr: string }).stderr)).toContain(
+40 |           message!,
+41 |         );
+42 |       }
+43 |       expect(failed).toBe(true);
+44 |       expect(await readdir(temp)).toEqual([]);
+                                       ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "bun",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/benchmark-setup.test.ts:44:35)
+(fail) catalog setup rejects bad arguments and cleans a failed runtime copy [167.67ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [187.00ms]

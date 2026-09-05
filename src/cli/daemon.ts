@@ -72,3 +72,78 @@ export async function ensureDaemon(config: LocalConfig, entry: string) {
     503,
   );
 }
+
+/** Ask the authenticated local service to close itself; never signal a stored PID. */
+export async function stopDaemon(config: LocalConfig) {
+  if (config.profile === "server")
+    throw new ForgeError(
+      "stop_denied",
+      "Ortak sunucuyu işletim sistemi veya container yöneticisiyle durdurun.",
+      403,
+    );
+  await daemonHealth(config);
+  let response: Response;
+  try {
+    response = await fetch(`${config.url}/api/service/stop`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.token}` },
+      signal: AbortSignal.timeout(5000),
+      redirect: "error",
+    });
+  } catch (error) {
+    if ((error as { cause?: { code?: string } }).cause?.code === "ECONNREFUSED")
+      return { status: "already_stopped" };
+    throw new ForgeError(
+      "stop_unavailable",
+      "Servise ulaşılamadı; durmuş olduğu doğrulanamadı.",
+      503,
+    );
+  }
+  if (response.status !== 202)
+    throw new ForgeError(
+      "stop_denied",
+      "Servis durdurma isteğini reddetti; kimlik ve profili kontrol edin.",
+      response.status === 401 || response.status === 403
+        ? response.status
+        : 409,
+    );
+  const result = (await response.json()) as {
+    service?: string;
+    version?: string;
+    protocol?: number;
+    pid?: number;
+  };
+  if (
+    result.service !== "skill-forge" ||
+    result.version !== PRODUCT_VERSION ||
+    result.protocol !== PROTOCOL_VERSION ||
+    !Number.isSafeInteger(result.pid) ||
+    result.pid! <= 0 ||
+    result.pid === process.pid
+  )
+    throw new ForgeError(
+      "daemon_identity_mismatch",
+      "Durdurma yanıtı servis kimliğiyle uyuşmuyor.",
+      409,
+    );
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(result.pid!, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH")
+        return { status: "stopped", pid: result.pid };
+      throw new ForgeError(
+        "stop_unverified",
+        "Süreç çıkışı doğrulanamadı.",
+        503,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new ForgeError(
+    "stop_timeout",
+    "Kapanış istendi ancak süreç çıkışı zamanında doğrulanamadı.",
+    503,
+  );
+}

@@ -145,3 +145,91 @@ for (const backend of [
       await rm(root, { recursive: true, force: true });
     }
   });
+
+for (const backend of [
+  "sqlite",
+  ...(process.env.FORGE_TEST_POSTGRES_URL ? ["postgres"] : []),
+])
+  test(`legacy learning ${backend}: dependent cross-project import prevents destructive rollback`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "forge-learning-references-"));
+    const storage = await openDatabase({
+      dataDir: root,
+      ...(backend === "postgres"
+        ? { postgresUrl: process.env.FORGE_TEST_POSTGRES_URL }
+        : {}),
+    });
+    try {
+      const identity = new IdentityService(storage.db),
+        owner = await identity.bootstrapLocal();
+      const firstProject = await identity.createProject(
+        owner,
+        "Original import",
+      );
+      const secondProject = await identity.createProject(
+        owner,
+        "Dependent import",
+      );
+      const migration = new LearningMigration(storage),
+        learning = new LearningStore(storage);
+      const lesson = `Preserve explicit version constraints ${crypto.randomUUID()}.`;
+      const bytes = Buffer.from(
+        `# Prompt Editor — Learn\n\n## [1700000000000]\n${lesson}\n`,
+      );
+      const first = await migration.import(
+        owner,
+        firstProject.id,
+        hash(crypto.randomUUID()),
+        hash(bytes),
+        bytes,
+        true,
+      );
+      const second = await migration.import(
+        owner,
+        secondProject.id,
+        hash(crypto.randomUUID()),
+        hash(bytes),
+        bytes,
+        true,
+      );
+      expect(first.records[0].status).toBe("created");
+      expect(second.records[0]).toMatchObject({
+        status: "duplicate",
+        entry_id: first.records[0].entry_id,
+      });
+      await expect(
+        migration.rollback(owner, first.receipt_id),
+      ).rejects.toMatchObject({ code: "migration_target_referenced" });
+      expect(
+        (await learning.list(owner, secondProject.id)).some(
+          (x) => x.id === first.records[0].entry_id,
+        ),
+      ).toBe(true);
+      expect(
+        (
+          await storage.db
+            .selectFrom("learning_imports")
+            .select("state")
+            .where("tenant_id", "=", owner.tenantId)
+            .where("id", "=", first.receipt_id)
+            .executeTakeFirstOrThrow()
+        ).state,
+      ).toBe("applied");
+      await migration.rollback(owner, second.receipt_id);
+      expect(
+        (await learning.list(owner, firstProject.id)).some(
+          (x) => x.id === first.records[0].entry_id,
+        ),
+      ).toBe(true);
+      await migration.rollback(owner, first.receipt_id);
+      expect(
+        (await learning.list(owner, firstProject.id)).some(
+          (x) => x.id === first.records[0].entry_id,
+        ),
+      ).toBe(false);
+      expect(await migration.original(owner, first.receipt_id)).toEqual(bytes);
+      expect(await migration.original(owner, second.receipt_id)).toEqual(bytes);
+    } finally {
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });

@@ -17,12 +17,12 @@ Bir scripti kullanmak için kayıtlı girişini seçin, girdi şemasına uygun J
 
 Bakım raporu seçili kullanıcı ve projedeki servis gözlemlerini sayar:
 
-| Ölçüm | Kanıtladığı |
-|---|---|
-| Aramada görünme | Paket servis arama yanıtında yer aldı |
-| Yükleme | Sabit sürümün dosya içeriği servis üzerinden okundu |
-| Script çalıştırma | Kayıtlı giriş başarıyla tamamlandı |
-| Script hatası | Çalıştırma başarısız sonuçlandı |
+| Ölçüm                           | Kanıtladığı                                                               |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| Aramada görünme                 | Paket servis arama yanıtında yer aldı                                     |
+| Yükleme                         | Sabit sürümün dosya içeriği servis üzerinden okundu                       |
+| Script çalıştırma               | Kayıtlı giriş başarıyla tamamlandı                                        |
+| Script hatası                   | Çalıştırma başarısız sonuçlandı                                           |
 | Görevde uygulama / görev sonucu | Bu ölçümler mevcut servis gözleminden çıkarılmaz; bilinmiyor olarak kalır |
 
 Bir kullanıcı dosyayı birden çok parçada okuyabilir; yükleme sayısı tekil görev veya başarı sayısı değildir. Başka kullanıcıların özel gözlemleri ve servis dışında kullanılan/export edilmiş dosyalar bu raporun kapsamı dışındadır. Bu alanlarda kullanım sıfır kabul edilmez. Varsayılan pencere 30 gündür; yeni paketler ilk 7 gün gözlem dönemindedir. “Aramada görünmedi” ve “göründü ama yüklenmedi” ayrı gerekçelerdir; otomatik silme önerisi değildir.
@@ -74,3 +74,35 @@ Ek API yolları:
 Paket düzenleyicisindeki “Çakışmayan dosya değişikliklerini güncel sürümle birleştir” seçeneği varsayılan kapalıdır. Açıldığında servis, okunmuş taban sürümü ile güncel sürümü karşılaştırır. Farklı dosyalardaki değişiklikler korunur; iki yazar aynı dosyada aynı byte sonucunu üretmişse de birleştirilebilir. Aynı dosyada farklı değişiklik varsa `rebase_conflict` döner; servis metin içindeki çakışmayı tahmin ederek çözmez. Silme/değiştirme çatışması da reddedilir.
 
 HTTP edit gövdesinde bu seçenek `rebase: true` alanıdır. `original_hash` hâlâ okunmuş taban dosyasıyla eşleşmelidir. Birleşmiş bütün paket yeniden doğrulanır, kayıtlı script testleri yeniden çalıştırılır. Güncel tabana yalnız bir CAS yayın denemesi yapılır; üçüncü bir yazar değiştirirse tekrar çatışma döner. Koruma, güncel yetki ve worker fencing kontrolleri atlanmaz. SPR finalize aynı manager yolunu kullanır; bu işlem SPR'nin anlamsal sahiplik ve kalite değerlendirmesinin yerine geçmez.
+
+Arşivleme ve restore öğeleri, üyelik/proje yetkisi iptaliyle aynı tenant kilidi altında kontrol edilir ve yazılır. İptal önce tamamlanırsa bekleyen öğe engellenir; paket durumu, başarı receipt'i ve audit kaydı değişmez. Toplu isteğin diğer öğeleri kendi sonuçlarıyla raporlanır. Yetki yeniden verildikten sonra aynı başarısız öğe tekrar denenebilir; daha önce başarılı olmuş öğenin receipt'i tekrar yazmayı önler.
+
+Script çalıştırmaları kabul edildiğinde tam tenant/paket/revision bağı veritabanına kaydedilir. İş sürerken revision silme, yabancı anahtar tarafından engellenir. Terminal sonucun yazılması ve bağın bırakılması aynı transaction'dır; aynı execution tekrar çağrılırsa ikinci iş/bağ oluşturulmaz. Sonucu bilinmeyen veya çökmüş execution'ın bağı süre tahminiyle bırakılmaz. Migration öncesi execution kayıtlarında revision alanı bulunmadığından eski işler için ilişki uydurulmaz. Bu koruma SPR ve diğer dosya okurlarının tamamlandığı veya kalıcı silmenin kullanıma açıldığı anlamına gelmez.
+
+SPR mevcut paketi seçerken taban revision'a `run_id + fence` bağı alır; aktif lease ve güncel yetki yeniden denetlenir. Handler kapanışı devam eden araç işlemlerini bekler, sonra yalnız kendi fence bağını bırakır. Eski worker yeni denemenin bağını silemez. Cancel veya lease expiry, bir dosya okurunun gerçekten durduğunu kanıtlamadığı için bağı kendiliğinden kaldırmaz. Çökmüş worker bağlarının kontrollü toplanması henüz tamamlanmamıştır; genel dosya okuyucu koruması aşağıda açıklanır.
+
+Paket yükleme ve bütünlük taraması, dosyaların okunması boyunca kısa ömürlü revision okur kaydı tutar. Yetki ve revision varlığı kayıt alınırken aynı transaction'da kontrol edilir; dosya I/O boyunca tenant kilidi tutulmaz. Aynı kullanıcı/tenant/revision için eşzamanlı okumalar yalnız koruma kaydını paylaşır; içerik cache edilmez ve her çağrı yetkiyi yeniden kontrol eder. Son okur bitince kayıt bırakılır. Farklı kullanıcılar aynı kaydı paylaşmaz. Bütünlük taraması 25 revision referansını sayfa başına tek transaction ile alır ve sayfa sonunda bırakır. DB bağlantısı/process kaybında kalan kayıtlar otomatik süre tahminiyle silinmez; kontrollü artık kayıt temizliği henüz açıktır. Backup snapshot okurları kaynak DB’de FK kayıtlarıyla korunur; [yedekleme rehberi](yedekleme.md) kaynak/restore davranışını açıklar.
+
+## Kalıcı silme API'si
+
+Linux sunucusunda `POST /api/maintenance/preview` ve `POST /api/maintenance/apply` aynı bakım gövdesinde `action: "delete"` kabul eder. Önce arşivlenmiş paketleri rapordan seçin; aynı `project_ref`, `operation_id` ve `items` gövdesini önizleme ve uygulamada kullanın. Her öğede rapordaki `skill_id`, `revision`, `updated_at` bulunmalıdır. Önizleme silinecek revision sayısını gösterir. Web ekranındaki kalıcı silme ve temizliği sürdürme akışı aşağıda açıklanır.
+
+Kalıcı silme yalnız managed, arşivlenmiş, pinned/protected olmayan paket içindir. Canlı okur, script/SPR referansı, geçiş kaydı, kullanım geçmişi veya override bağı varsa engellenir. Revision bilgisi bulunmayan çalışan işler de korunur. Referansları geçersizleştirerek zorla silme yapılmaz; varsayılan geri alınabilir arşivleme kullanılmaya devam eder.
+
+Metadata silme, tombstone, işlem receipt'i ve dosya temizleme kayıtları tek transaction'dır. Dosya temizliği bunun ardından yapılır. Öğenin `completed` olması revision dosyalarının kaldırıldığını belirtir. `pending_cleanup` dönerse aynı gövdeyi tekrar gönderin; çağrı en fazla 25 revision temizler. Alternatif olarak aşağıdaki keşif/devam API’sini kullanın. Başarılı diğer öğeler tekrar silinmez; engellenen öğeler kendi hata nedenini taşır. Temizlik sırasında bağlantı kapanırsa durable kayıtlar kalır. Bekleyen kayıtlar web ekranından veya keşif API’sinden yeniden bulunabilir.
+
+Linux'ta kökten başlayarak her dizin adımı file descriptor ile sabitlenir; recursive path-only silme kullanılmaz. Yollar tenant, skill ve revision kimliğiyle eşleşmelidir. Yönlendirilmiş revision kökü temizliği engeller; alt dizinlerdeki symlink hedefleri takip edilmez. macOS/Windows eşdeğer güvenli adapter henüz hazır olmadığından bu platformlarda metadata silinmeden `safe_delete_unavailable` döner.
+
+Kalıcı silinen kimlik için restore yoktur. Audit/receipt/tombstone metadata'sı tekrar güvenliği için kalır. Önceki backup'lar ve dışa aktarılmış kopyalar bu işlemle silinmez; kullanıcı/secret erasure ve backup retention ayrı işletim kapsamıdır.
+
+### Bekleyen dosyaları yeniden bulma
+
+Bakım ekranında **Kalıcı silmeyi incele** seçimi, revision sayısını ve geri alınamaz etkisini gösterir. Uygulama ayrı düğmeyle başlatılır. **Bekleyen dosya temizliği** listesi sunucudan yeniden yüklenir; sayfa yenilense veya işlemi başka yönetici devralırsa korunur. **Temizliği sürdür** yalnız önceden silinmesine karar verilmiş paketin kalan dosyalarını temizler. Hata durumunda kayıt listede kalır.
+
+API: `GET /api/maintenance/deletions?project_ref=...&after=...` en fazla 50 kayıt ve `next` döndürür. `POST /api/maintenance/deletions/resume` gövdesi `project_ref` ve `skill_id` içerir. Kişisel kapsam yalnız sahibine, proje kapsamı yetkili projeye bağlıdır; çalışma alanı temizliğini sürdürmek admin yetkisi gerektirir. Özgün operation body veya kullanıcının tarayıcı depolaması gerekmez. Önceki operation receipt yeniden oynatılırsa güncel dosya durumundan sonuç yenilenir.
+
+Linux SQLite üzerinde dosya temizliği devam ederken Node servisinin `SIGKILL` ile kesilmesi de doğrulanır. Yeniden başlatma sonrası Bekleyen dosya temizliği listesini yenileyip **Temizliği sürdür** eylemini kullanın. Metadata kararı tekrar verilmez; kalan dosyalar temizlenir. Servisin çökmesinden kalmış genel okur/SPR referanslarını toplama işi bundan ayrıdır.
+
+Linux paket okumasında mutlak kökün her bileşeni `/` başlangıcından descriptor üzerinden açılır. Envanter ve seçilmiş dosyalar aynı açık kökten okunur; arada üst dizin taşınıp yerine symlink konulması okumayı yeni hedefe yönlendirmez. İçerik cache edilmez; dosya hash'i ve gerçek envanter her yüklemede denetlenir. Okuma tamamlanınca descriptor'lar kapanır; callback'in başlattığı devam eden okumalar kapanıştan önce beklenir. Linux dışındaki yol için aynı dirfd garantisi verilmez; platform kabulü ayrı doğrulanmalıdır.
+
+Aynı paket sürümünü örtüşen biçimde okuyan istekler yalnız açık kök descriptor'ını paylaşır. Her isteğin yetkisi tekrar kontrol edilir; inventory ve dosya hash'i gerçek dosyadan okunur. İçerik cache edilmez. Son okuyucu bitince kök kapanır; sonraki istek kökü yeniden açıp doğrular. Bu yaşam süresi dışındaki descriptor'lar veya yetki sonuçları saklanmaz.

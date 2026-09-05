@@ -1,0 +1,11 @@
+{
+  "image": "skill-forge-local:acceptance",
+  "profile": "local",
+  "platform": "linux",
+  "status": "passed",
+  "runtime": "v24.20.0",
+  "uid": 1000,
+  "health": "healthy",
+  "persistence": "verified_after_restart",
+  "image_id": "sha256:fb6b6f8e9ae9bd4b39b22f12577840e6eb77f53eb7126e6a3b0679811bbeab62"
+}

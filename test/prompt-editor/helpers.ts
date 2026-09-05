@@ -5,7 +5,7 @@ import {
   requestsFile,
   type PromptEditorRequest,
   type PromptEditorSessionFlags,
-} from "../../src/prompt-editor/live.js";
+} from "../legacy-runtime/prompt-editor/live.js";
 
 export function writeSessionFlags(
   file: string,

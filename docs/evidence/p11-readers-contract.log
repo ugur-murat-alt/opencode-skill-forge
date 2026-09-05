@@ -1,0 +1,37 @@
+bun test v1.3.14 (0d9b296a)
+
+test/run-pins.test.ts:
+(pass) SPR pin sqlite: durable base, FK, stale select, fence-isolated disposal [414.51ms]
+(pass) SPR pin postgres: durable base, FK, stale select, fence-isolated disposal [228.06ms]
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [331.32ms]
+100 |       await expect(
+101 |         store.files(owner, pkg.skill_id, pkg.revision),
+102 |       ).rejects.toMatchObject({ code: "revision_corrupt" });
+103 |       expect(await count()).toHaveLength(0);
+104 |       const report = await store.reconcile(owner);
+105 |       expect(report.issues.some((i) => i.skill_id === pkg.skill_id)).toBe(true);
+                                                                           ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/revision-readers.test.ts:105:70)
+(fail) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [260.98ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [318.99ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [145.18ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.23ms]
+(pass) missing references and script packages without executable contracts are rejected [2.87ms]
+
+test/execution-pins.test.ts:
+(pass) execution revision pin sqlite: real sandbox, FK protection, completion/failure and replay [3165.89ms]
+(pass) execution revision pin postgres: real sandbox, FK protection, completion/failure and replay [2960.03ms]
+
+ 9 pass
+ 1 fail
+ 103 expect() calls
+Ran 10 tests across 4 files. [8.13s]

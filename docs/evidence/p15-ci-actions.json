@@ -1,0 +1,30 @@
+[
+  {
+    "repository": "actions/checkout",
+    "release": "v7.0.1",
+    "commit": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "source": "https://api.github.com/repos/actions/checkout/releases/latest",
+    "release_url": "https://github.com/actions/checkout/releases/tag/v7.0.1"
+  },
+  {
+    "repository": "actions/setup-node",
+    "release": "v7.0.0",
+    "commit": "820762786026740c76f36085b0efc47a31fe5020",
+    "source": "https://api.github.com/repos/actions/setup-node/releases/latest",
+    "release_url": "https://github.com/actions/setup-node/releases/tag/v7.0.0"
+  },
+  {
+    "repository": "oven-sh/setup-bun",
+    "release": "v2.2.0",
+    "commit": "0c5077e51419868618aeaa5fe8019c62421857d6",
+    "source": "https://api.github.com/repos/oven-sh/setup-bun/releases/latest",
+    "release_url": "https://github.com/oven-sh/setup-bun/releases/tag/v2.2.0"
+  },
+  {
+    "repository": "actions/upload-artifact",
+    "release": "v7.0.1",
+    "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "source": "https://api.github.com/repos/actions/upload-artifact/releases/latest",
+    "release_url": "https://github.com/actions/upload-artifact/releases/tag/v7.0.1"
+  }
+]

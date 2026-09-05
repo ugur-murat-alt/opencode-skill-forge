@@ -1,0 +1,20 @@
+bun test v1.3.14 (0d9b296a)
+
+test/archive.test.ts:
+(pass) classic package ZIP roundtrip preserves references and binary assets [15.99ms]
+(pass) ZIP import rejects traversal, multiple roots, expansion limit and symlink metadata [80.92ms]
+
+test/revision-readers.test.ts:
+(pass) revision readers sqlite: independent live references, FK, real bytes and corrupt cleanup [706.41ms]
+(pass) revision readers postgres: independent live references, FK, real bytes and corrupt cleanup [244.90ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [630.85ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [200.59ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.88ms]
+(pass) missing references and script packages without executable contracts are rejected [2.18ms]
+
+ 8 pass
+ 0 fail
+ 74 expect() calls
+Ran 8 tests across 3 files. [2.04s]

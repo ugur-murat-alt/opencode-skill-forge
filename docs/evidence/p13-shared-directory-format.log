@@ -1,0 +1,3 @@
+src/skills/directory-readers.ts 72ms
+src/skills/store.ts 120ms (unchanged)
+test/directory-readers.test.ts 12ms

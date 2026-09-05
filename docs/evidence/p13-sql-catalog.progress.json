@@ -1,0 +1,263 @@
+{
+  "captured_at": "2026-09-05T21:03:31.068Z",
+  "status": "running",
+  "bundle_sha256": "2368cb7569bb73d9ed9f105e41c3a40c4c2923adddce0c78edd3279ab1587c8a",
+  "soak": {
+    "minutes": 1,
+    "requested_rps": 100,
+    "windows": [
+      {
+        "minute": 1,
+        "requests": 6000,
+        "errors": 0,
+        "elapsed_ms": 78270.846486,
+        "latency": {
+          "forge_search": {
+            "n": 3000,
+            "includes_failed_calls": true,
+            "p50_ms": 267.287427999996,
+            "p95_ms": 17176.130309999993,
+            "p99_ms": 18590.262982
+          },
+          "forge_load": {
+            "n": 3000,
+            "includes_failed_calls": true,
+            "p50_ms": 4049.488043000005,
+            "p95_ms": 17981.792727000007,
+            "p99_ms": 19167.19739
+          }
+        },
+        "scheduler": {
+          "max_delay_ms": 497.93849200000113,
+          "max_scheduled_to_complete_ms": 20215.703504999998
+        },
+        "sql": [
+          {
+            "fingerprint": "305a1a21eb900b32c5a8302250acb31ec964d695b0e79850efc2a4a8b97f3592",
+            "operation": "insert",
+            "table": "skill_observations",
+            "calls": 3000,
+            "errors": 0,
+            "synchronous_ms": 24701.792875000407,
+            "max_synchronous_ms": 41.89968200000294
+          },
+          {
+            "fingerprint": "a3216614a5e14bd5108a78da73ac98f0f31edc7d28450e819f52e93759f3bafb",
+            "operation": "insert",
+            "table": "skill_observations",
+            "calls": 3000,
+            "errors": 0,
+            "synchronous_ms": 21599.578152999813,
+            "max_synchronous_ms": 34.81383999998798
+          },
+          {
+            "fingerprint": "5692925ba7b9b221252af908b156fb17ae629886f48884c17f53e2663c8fe28f",
+            "operation": "select",
+            "table": "memberships",
+            "calls": 12014,
+            "errors": 0,
+            "synchronous_ms": 1685.6014479995647,
+            "max_synchronous_ms": 4.003485999986879
+          },
+          {
+            "fingerprint": "1f60b540c9e416df82341f10a8910095caaea537618c9f9903f967e0cffcd1ee",
+            "operation": "select",
+            "table": "skills",
+            "calls": 3000,
+            "errors": 0,
+            "synchronous_ms": 954.5882009999987,
+            "max_synchronous_ms": 3.365769000010914
+          },
+          {
+            "fingerprint": "05437943355c4b70d7d0bcef665d77a335345f0353dfe465e913ba3b460d2d02",
+            "operation": "select",
+            "table": "projects",
+            "calls": 12010,
+            "errors": 0,
+            "synchronous_ms": 633.1241460004967,
+            "max_synchronous_ms": 2.4792100000049686
+          },
+          {
+            "fingerprint": "9ad33a863ec0e6c56c7ab8440d202618a7601fa3ae72eb23e4d15f092f8cbef3",
+            "operation": "select",
+            "table": "other",
+            "calls": 1054,
+            "errors": 0,
+            "synchronous_ms": 511.14543899992714,
+            "max_synchronous_ms": 9.047251000010874
+          },
+          {
+            "fingerprint": "3582caa18585ee29912441c115df9b3def543b2edd88951f75545f21de5e7719",
+            "operation": "update",
+            "table": "other",
+            "calls": 1054,
+            "errors": 0,
+            "synchronous_ms": 229.36434699984238,
+            "max_synchronous_ms": 17.278552999996464
+          },
+          {
+            "fingerprint": "a69f97163e6472c407dba44c880e5ffad198efb822736f42e42037e229a18ea2",
+            "operation": "select",
+            "table": "other",
+            "calls": 1054,
+            "errors": 0,
+            "synchronous_ms": 117.8689689999519,
+            "max_synchronous_ms": 1.7445540000044275
+          },
+          {
+            "fingerprint": "e6f07d43b5c21db0fbb9a31feac2dc599787763393dd5acbfad80e247eb02ad5",
+            "operation": "begin",
+            "table": "other",
+            "calls": 1058,
+            "errors": 0,
+            "synchronous_ms": 85.3012849999941,
+            "max_synchronous_ms": 2.318156999986968
+          },
+          {
+            "fingerprint": "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098",
+            "operation": "commit",
+            "table": "other",
+            "calls": 1058,
+            "errors": 0,
+            "synchronous_ms": 54.723935999958485,
+            "max_synchronous_ms": 6.365711999998894
+          },
+          {
+            "fingerprint": "08c4f5156ccbe786c36e92e71b814f714e51714b87d6d90da53871c69a76b1ff",
+            "operation": "delete",
+            "table": "revision_readers",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 12.630574999995588,
+            "max_synchronous_ms": 6.687817999998515
+          },
+          {
+            "fingerprint": "eb48d16fbdada127f9a2d06df638f4a7074586ab995573bd433a89ad44fb1720",
+            "operation": "select",
+            "table": "skill_observations",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 9.411820000001171,
+            "max_synchronous_ms": 8.745957999999519
+          },
+          {
+            "fingerprint": "caf606d4d242946cb82c596dc986b07139751dafa38e6a5746ee012b820e1e72",
+            "operation": "select",
+            "table": "memberships",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.6125750000064727,
+            "max_synchronous_ms": 0.34641100000590086
+          },
+          {
+            "fingerprint": "b443d6961cc02a67dd4bfb991d1a9316d3132dee1bd69b9e21fe8ff9ab695cb5",
+            "operation": "select",
+            "table": "other",
+            "calls": 6,
+            "errors": 0,
+            "synchronous_ms": 0.5921820000148728,
+            "max_synchronous_ms": 0.16782800000510179
+          },
+          {
+            "fingerprint": "5cfc520bdee576277d7fde8be191d1282244eb5338817f0f7a8e9900b5d22e70",
+            "operation": "select",
+            "table": "other",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.551184000003559,
+            "max_synchronous_ms": 0.513120000003255
+          },
+          {
+            "fingerprint": "2bdd5b0dc86746fa5717badfc183547c4b5a5cdb1c80fc8967c0ae6949eec552",
+            "operation": "select",
+            "table": "other",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.2818780000015977,
+            "max_synchronous_ms": 0.23480500000005122
+          },
+          {
+            "fingerprint": "3b39801ac30e76669637eec0c4703945d3660e8fbdcbd0513cf8212f4e7dee8b",
+            "operation": "select",
+            "table": "audit_events",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.224887000003946,
+            "max_synchronous_ms": 0.18235400000412483
+          },
+          {
+            "fingerprint": "cca941246624cb77368f08ba1ee06b3c17ed154e680c0d32f0dc338985fd11c6",
+            "operation": "select",
+            "table": "other",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.18801099999109283,
+            "max_synchronous_ms": 0.1192179999925429
+          },
+          {
+            "fingerprint": "dbf053d65f68204ff835c1688fe3781e39964838f6ec2086bba8fb1b32435fd3",
+            "operation": "select",
+            "table": "skills",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.17055099999561207,
+            "max_synchronous_ms": 0.10427199999685399
+          },
+          {
+            "fingerprint": "0b12ca678fb24174c0acc4c7e06ec9c27d7db80c1512fb7bff72736a0b8ebe45",
+            "operation": "select",
+            "table": "skill_revisions",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.138704000004509,
+            "max_synchronous_ms": 0.0815740000034566
+          },
+          {
+            "fingerprint": "c08d0f81ef4e0697b510c883c287633b6857733e81ec6774e28a8d79778e9734",
+            "operation": "insert",
+            "table": "revision_readers",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.1053200000023935,
+            "max_synchronous_ms": 0.059085000000777654
+          },
+          {
+            "fingerprint": "e0b5c86f4de2f4b9e0afe979e5e59b5b0f9cd17919792e6d42ba8df40a7d6170",
+            "operation": "update",
+            "table": "tenants",
+            "calls": 2,
+            "errors": 0,
+            "synchronous_ms": 0.09477399999741465,
+            "max_synchronous_ms": 0.05000599999766564
+          }
+        ],
+        "runtime": {
+          "event_loop_delay": {
+            "resolution_ms": 20,
+            "mean_ms": 69.47997510479574,
+            "p95_ms": 151.781375,
+            "max_ms": 502.530047,
+            "observations": 1126
+          },
+          "event_loop_utilization": 0.9999819855756844,
+          "cpu_user_ms": 37415.836,
+          "cpu_system_ms": 5290.964,
+          "resource_usage_fs_write_delta": 1145152,
+          "resource_usage_fs_read_delta": 104,
+          "voluntary_context_switches": 137005,
+          "involuntary_context_switches": 3587,
+          "gc": {
+            "count": 55,
+            "duration_ms": 943.9899923801422,
+            "max_duration_ms": 108.13086104393005
+          }
+        },
+        "rss_bytes": 531333120,
+        "heap_used_bytes": 147771448
+      }
+    ],
+    "errors": 0,
+    "requests": 6000,
+    "status": "running"
+  }
+}

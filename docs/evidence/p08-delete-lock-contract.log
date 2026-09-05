@@ -1,0 +1,25 @@
+bun test v1.3.14 (0d9b296a)
+
+test/learning-delete-lock.test.ts:
+(pass) learning deletion sqlite: revocation serializes before removal and preserves history [280.11ms]
+67 |             );
+68 |             blocked = waiters.rows[0]!.blocked;
+69 |             if (!blocked)
+70 |               await new Promise((resolve) => setTimeout(resolve, 10));
+71 |           }
+72 |           expect(blocked).toBe(true);
+                               ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/learning-delete-lock.test.ts:72:27)
+      at async <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/kysely.js:680:38)
+      at async provideConnection (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/driver/default-connection-provider.js:10:26)
+(fail) learning deletion postgres: revocation serializes before removal and preserves history [3113.36ms]
+
+ 1 pass
+ 1 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [3.53s]

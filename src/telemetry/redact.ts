@@ -1,4 +1,4 @@
-import { sanitizePromptEditorText } from "../prompt-editor/context-snapshot.js";
+import { sanitizePromptEditorText } from "../prompt/sanitize.js";
 const sensitive =
   /authorization|cookie|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key/i;
 /** Metadata-only by default; inherited prompt sanitizer remains the text boundary. */

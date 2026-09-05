@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/run-pins.test.ts:
+(pass) SPR pin sqlite: durable base, FK, stale select, fence-isolated disposal [387.31ms]
+(pass) SPR pin postgres: durable base, FK, stale select, fence-isolated disposal [209.15ms]
+
+ 2 pass
+ 0 fail
+ 22 expect() calls
+Ran 2 tests across 1 file. [865.00ms]

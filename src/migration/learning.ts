@@ -268,6 +268,44 @@ export class LearningMigration {
       if (row.state === "rolled_back")
         return { receipt_id: id, state: row.state, replayed: true };
       const report = JSON.parse(row.report_json) as { records: RecordResult[] };
+      const createdIds = new Set(
+        report.records
+          .filter((record) => record.status === "created")
+          .map((record) => record.entry_id),
+      );
+      // Personal lessons can be referenced by imports in another project.
+      // Hold the tenant write lock throughout this check and the deletion.
+      let cursor = "";
+      while (createdIds.size) {
+        const receipts = await tx
+          .selectFrom("learning_imports")
+          .select(["id", "report_json"])
+          .where("tenant_id", "=", actor.tenantId)
+          .where("user_id", "=", actor.userId)
+          .where("state", "=", "applied")
+          .where("id", "!=", id)
+          .where("id", ">", cursor)
+          .orderBy("id")
+          .limit(25)
+          .execute();
+        for (const receipt of receipts) {
+          const references = JSON.parse(receipt.report_json) as {
+            records: RecordResult[];
+          };
+          if (
+            references.records.some(
+              (record) => record.entry_id && createdIds.has(record.entry_id),
+            )
+          )
+            throw new ForgeError(
+              "migration_target_referenced",
+              "Ders başka etkin aktarımda kullanılıyor; önce bağımlı aktarımı geri alın.",
+              409,
+            );
+        }
+        if (receipts.length < 25) break;
+        cursor = receipts.at(-1)!.id;
+      }
       for (const record of report.records.filter(
         (x) => x.status === "created",
       )) {

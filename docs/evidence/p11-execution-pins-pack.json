@@ -1,0 +1,216 @@
+{
+  "@vaur94/opencode2-skill-forge": {
+    "id": "@vaur94/opencode2-skill-forge@0.5.6",
+    "name": "@vaur94/opencode2-skill-forge",
+    "version": "0.5.6",
+    "size": 679064,
+    "unpackedSize": 1485193,
+    "shasum": "9fa345d4b1d0dfb57579c0a0a2a56150627e233d",
+    "integrity": "sha512-3MizGOzWz+Nl1gwT95LM0Lpkc5sXj6JGBP4LJwc621vnAjt20sET2vpcUHho+z1qkJFdjQA7IqW4O53aYMu9XA==",
+    "filename": "vaur94-opencode2-skill-forge-0.5.6.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 1071,
+        "mode": 420
+      },
+      {
+        "path": "README.md",
+        "size": 8171,
+        "mode": 420
+      },
+      {
+        "path": "SPR_SKILL_AUTHORING.md",
+        "size": 7558,
+        "mode": 420
+      },
+      {
+        "path": "dist/archive-worker.js",
+        "size": 10201,
+        "mode": 420
+      },
+      {
+        "path": "dist/cli.js",
+        "size": 381658,
+        "mode": 493
+      },
+      {
+        "path": "dist/index.js",
+        "size": 309191,
+        "mode": 420
+      },
+      {
+        "path": "dist/prompts/prompt-edit.md",
+        "size": 741,
+        "mode": 420
+      },
+      {
+        "path": "dist/prompts/skill-evolve.md",
+        "size": 1510,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/index-CJUM6Nvp.js",
+        "size": 264695,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/index-Dp2Koay2.css",
+        "size": 12392,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-400-normal-C38fXH4l.woff2",
+        "size": 23664,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-400-normal-CyCys3Eg.woff",
+        "size": 30696,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-500-normal-BL9OpVg8.woff",
+        "size": 31284,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-500-normal-Cerq10X2.woff2",
+        "size": 24272,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-600-normal-CiBQ2DWP.woff",
+        "size": 31260,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-600-normal-LgqL8muc.woff2",
+        "size": 24452,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-400-normal-77YHD8bZ.woff",
+        "size": 47560,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-400-normal-C1nco2VV.woff2",
+        "size": 35000,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-500-normal-BxGbmqWO.woff",
+        "size": 48492,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-500-normal-CV4jyFjo.woff2",
+        "size": 36024,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-600-normal-CIVaiw4L.woff",
+        "size": 48668,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-600-normal-D2bJ5OIk.woff2",
+        "size": 36260,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/index.html",
+        "size": 395,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/bakim-ve-paket-duzenleme.md",
+        "size": 10135,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/container-sunucu.md",
+        "size": 4884,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/eski-veri-kesfi.md",
+        "size": 11654,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/katalog-benchmarki.md",
+        "size": 4144,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/kilitli-bagimliliklar.md",
+        "size": 1892,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/kullanicilar-ve-yetkiler.md",
+        "size": 4468,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/mcp-cikti-ve-sayfalama.md",
+        "size": 3502,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/ogrenme-gecmisi.md",
+        "size": 1764,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/oidc-kabul.md",
+        "size": 3656,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/oturum-tercihleri.md",
+        "size": 2172,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/paket-butunlugu.md",
+        "size": 2643,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/sunucu-veri-aktarimi.md",
+        "size": 5007,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/surekli-dogrulama.md",
+        "size": 2324,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/temiz-paket-kontrolu.md",
+        "size": 1979,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/worker-kurtarma.md",
+        "size": 2522,
+        "mode": 420
+      },
+      {
+        "path": "docs/tr/yedekleme.md",
+        "size": 5285,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 1947,
+        "mode": 420
+      }
+    ],
+    "entryCount": 40,
+    "bundled": []
+  }
+}

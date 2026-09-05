@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { parse } from "jsonc-parser";
 
 const rootConfigText = readFileSync("spr-agent.jsonc", "utf8");
-const distConfigText = readFileSync("test/fixtures/legacy/spr-agent.jsonc", "utf8");
+const distConfigText = readFileSync(
+  "test/fixtures/legacy/spr-agent.jsonc",
+  "utf8",
+);
 const config = parse(rootConfigText) as {
   description?: string;
   system?: string;
@@ -75,7 +78,10 @@ describe("legacy SPR skill-authoring characterization", () => {
     };
     expect(packageJson.files).toContain("SPR_SKILL_AUTHORING.md");
 
-    const handbook = readFileSync("test/fixtures/legacy/SPR_SKILL_AUTHORING.md", "utf8");
+    const handbook = readFileSync(
+      "test/fixtures/legacy/SPR_SKILL_AUTHORING.md",
+      "utf8",
+    );
     for (const marker of [
       "## 5. Deterministic decision model",
       "## 6. Global versus project scope",

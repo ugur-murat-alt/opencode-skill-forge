@@ -1,3 +1,4 @@
+import { DeletionService } from "../application/deletion.js";
 import { registerMigrationHttp } from "../migration/http.js";
 import {
   SessionPreferences,
@@ -107,6 +108,7 @@ export async function createHttpServer(config: LocalConfig) {
   };
   let startupWork: Promise<void> | undefined;
   let closingStartup = false;
+  let startupReady = false;
   app.addHook("onReady", async () => {
     startupWork = (async () => {
       if (localOwner) {
@@ -130,7 +132,10 @@ export async function createHttpServer(config: LocalConfig) {
           packageIntegrity.status = "failed";
         }
       }
-      if (!closingStartup) await worker.start();
+      if (!closingStartup) {
+        await worker.start();
+        startupReady = true;
+      }
     })().catch(() => {
       packageIntegrity.status = "failed";
     });
@@ -177,6 +182,8 @@ export async function createHttpServer(config: LocalConfig) {
       [
         "/",
         "/auth/pair",
+        "/health/live",
+        "/health/ready",
         "/auth/start",
         "/auth/callback",
         "/.well-known/oauth-protected-resource",
@@ -222,6 +229,55 @@ export async function createHttpServer(config: LocalConfig) {
         );
     }
     identities.set(request, identity);
+  });
+  app.post(
+    "/api/service/stop",
+    {
+      onResponse: async (request, reply) => {
+        if (
+          reply.statusCode === 202 &&
+          request.headers.authorization === `Bearer ${config.token}`
+        )
+          setImmediate(() => {
+            void app.close().catch(() => {
+              process.exitCode = 1;
+            });
+          });
+      },
+    },
+    async (request, reply) => {
+      if (
+        !localOwner ||
+        !tokenMatches(request.headers.authorization, `Bearer ${config.token}`)
+      )
+        throw new ForgeError(
+          "stop_denied",
+          "Servis yalnız yerel owner CLI kimliğiyle durdurulabilir.",
+          403,
+        );
+      return reply.code(202).send({
+        service: "skill-forge",
+        protocol: PROTOCOL_VERSION,
+        version: PRODUCT_VERSION,
+        pid: process.pid,
+        status: "stopping",
+      });
+    },
+  );
+  app.get("/health/live", async () => ({ status: "live" }));
+  app.get("/health/ready", async (_request, reply) => {
+    if (
+      !startupReady ||
+      closingStartup ||
+      ["failed", "degraded"].includes(packageIntegrity.status)
+    )
+      return reply.code(503).send({ status: "not_ready" });
+    try {
+      await storage.now();
+    } catch {
+      return reply.code(503).send({ status: "not_ready" });
+    }
+    return { status: "ready" };
   });
   app.get("/health", async () => ({
     status:
@@ -537,7 +593,29 @@ export async function createHttpServer(config: LocalConfig) {
         .project_ref,
     ),
   );
-  const maintenance = new MaintenanceService(storage);
+  const maintenance = new MaintenanceService(storage, config.dataDir);
+  const deletions = new DeletionService(storage, config.dataDir);
+  app.get("/api/maintenance/deletions", async (request) => {
+    const q = z
+      .object({
+        project_ref: z.string(),
+        after: z.string().max(100).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return deletions.pending(requestIdentity(request), q.project_ref, q.after);
+  });
+  app.post("/api/maintenance/deletions/resume", async (request) => {
+    const q = z
+      .object({ project_ref: z.string(), skill_id: z.string().max(100) })
+      .strict()
+      .parse(request.body);
+    return deletions.resume(
+      requestIdentity(request),
+      q.project_ref,
+      q.skill_id,
+    );
+  });
   app.get("/api/maintenance", async (request) => {
     const q = z
       .object({

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Archive, RotateCcw, Download } from "lucide-react";
+import { Archive, RotateCcw, Download, Trash2 } from "lucide-react";
 import { api } from "./api";
 import { useResource, ErrorNotice, Refresh, Empty, date } from "./ui";
 type Item = {
@@ -22,7 +22,13 @@ type Report = {
   external_usage: string;
 };
 type Result = {
-  items: { skill_id: string; status: string; error?: { message: string } }[];
+  items: {
+    skill_id: string;
+    name?: string;
+    revision_count?: number;
+    status: string;
+    error?: { message: string };
+  }[];
   effect?: string;
 };
 const reasons: Record<string, string> = {
@@ -44,10 +50,36 @@ export function Maintenance({ project }: { project: string }) {
     [result, setResult] = useState<Result | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [cleanupAfter, setCleanupAfter] = useState("");
+  const cleanups = useResource<{
+    items: { skill_id: string }[];
+    next: string | null;
+  }>(
+    `/api/maintenance/deletions?project_ref=${encodeURIComponent(project)}&after=${encodeURIComponent(cleanupAfter)}`,
+  );
+  async function resume(skill_id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const item = await api<Result["items"][number]>(
+        "/api/maintenance/deletions/resume",
+        {
+          method: "POST",
+          body: JSON.stringify({ project_ref: project, skill_id }),
+        },
+      );
+      setResult({ items: [item] });
+      await cleanups.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   const report = useResource<Report>(
     `/api/maintenance?project_ref=${encodeURIComponent(project)}&state=${state}&days=${days}${after ? `&after=${encodeURIComponent(after)}` : ""}`,
   );
-  async function preview(action: "archive" | "restore") {
+  async function preview(action: "archive" | "restore" | "delete") {
     setBusy(true);
     setError("");
     setResult(null);
@@ -91,6 +123,7 @@ export function Maintenance({ project }: { project: string }) {
       setPending(null);
       setSelected([]);
       await report.refresh();
+      await cleanups.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -180,6 +213,12 @@ export function Maintenance({ project }: { project: string }) {
           <RotateCcw size={16} />
           Geri almayı incele
         </button>
+        <button
+          disabled={!selected.length || busy}
+          onClick={() => void preview("delete")}
+        >
+          <Trash2 size={16} /> Kalıcı silmeyi incele
+        </button>
       </div>
       {pending && (
         <section className="panel">
@@ -213,6 +252,39 @@ export function Maintenance({ project }: { project: string }) {
           <ResultList value={result} />
         </section>
       )}
+      <section className="panel">
+        <h2>Bekleyen dosya temizliği</h2>
+        <p>
+          Silme kararı verilmiş paketlerin kalan dosyalarıdır. Sürdürme işlemi
+          yeni bir paket silmez. Her çağrı en fazla 25 revision temizler.
+        </p>
+        <ErrorNotice message={cleanups.error} />
+        <Refresh run={cleanups.refresh} loading={cleanups.loading} />
+        {cleanups.data?.items.map((item) => (
+          <div className="toolbar" key={item.skill_id}>
+            <code>{item.skill_id}</code>
+            <button disabled={busy} onClick={() => void resume(item.skill_id)}>
+              Temizliği sürdür
+            </button>
+          </div>
+        ))}
+        {cleanups.data && !cleanups.data.items.length && (
+          <p>Bu sayfada bekleyen temizlik yok.</p>
+        )}
+        {cleanupAfter && (
+          <button disabled={busy} onClick={() => setCleanupAfter("")}>
+            İlk sayfa
+          </button>
+        )}
+        {cleanups.data?.next && (
+          <button
+            disabled={busy}
+            onClick={() => setCleanupAfter(cleanups.data!.next!)}
+          >
+            Sonraki temizlikler
+          </button>
+        )}
+      </section>
       <section className="panel table-panel">
         <table>
           <thead>
@@ -302,13 +374,19 @@ function ResultList({ value }: { value: Result }) {
     <ul>
       {value.items.map((item) => (
         <li key={item.skill_id}>
-          <code>{item.skill_id.slice(0, 8)}</code>:{" "}
+          <code>{item.name ?? item.skill_id.slice(0, 8)}</code>
+          {item.revision_count !== undefined
+            ? ` · ${item.revision_count} revision`
+            : ""}
+          :{" "}
           {item.error?.message ??
             (item.status === "eligible"
               ? "Uygun"
               : item.status === "completed"
                 ? "Tamamlandı"
-                : "Engellendi")}
+                : item.status === "pending_cleanup"
+                  ? "Dosya temizliği bekliyor"
+                  : "Engellendi")}
         </li>
       ))}
     </ul>

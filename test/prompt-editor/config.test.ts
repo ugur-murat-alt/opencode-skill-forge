@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   PROMPT_EDITOR_DEFAULTS,
   resolvePromptEditorOptions,
-} from "../../src/prompt-editor/config.js";
+} from "../legacy-runtime/prompt-editor/config.js";
 
 describe("resolvePromptEditorOptions", () => {
   test("defaults enforce thorough rewriting with a finite run deadline", () => {

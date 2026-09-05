@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+test/package-root-anchor.test.ts:
+(pass) package root stays on its original inode across ancestor replacement and drains escaped reads [6.37ms]
+
+test/inventory-bounds.test.ts:
+(pass) inventory bounds empty directories and rejects redirected ancestors [216.43ms]
+
+ 2 pass
+ 0 fail
+ 15 expect() calls
+Ran 2 tests across 2 files. [243.00ms]

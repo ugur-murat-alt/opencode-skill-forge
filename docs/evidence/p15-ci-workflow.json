@@ -1,0 +1,14 @@
+{
+  "path": ".github/workflows/verify.yml",
+  "sha256": "bb498bf45ab105fd113ce198e40f4fee32ad24410f0b0b5882f83107df8efb9b",
+  "remote_execution": "not_run",
+  "locally_verified": [
+    "yaml_parse",
+    "lint",
+    "format",
+    "typecheck",
+    "sqlite_postgres_docker_tests",
+    "build",
+    "package"
+  ]
+}

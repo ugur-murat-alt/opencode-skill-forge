@@ -1,0 +1,63 @@
+{
+  "captured_at": "2026-09-05T20:26:06.292Z",
+  "status": "running",
+  "bundle_sha256": "5c86578ce02640fbacfc148a6bf8873ce2d25665f092920ce1d009f05882b7d3",
+  "soak": {
+    "minutes": 1,
+    "requested_rps": 100,
+    "windows": [
+      {
+        "minute": 1,
+        "requests": 6000,
+        "errors": 0,
+        "elapsed_ms": 60050.879278,
+        "latency": {
+          "forge_search": {
+            "n": 3000,
+            "includes_failed_calls": true,
+            "p50_ms": 43.958230999996886,
+            "p95_ms": 112.61344600000302,
+            "p99_ms": 167.9321659999987
+          },
+          "forge_load": {
+            "n": 3000,
+            "includes_failed_calls": true,
+            "p50_ms": 640.4553549999982,
+            "p95_ms": 1473.3550560000003,
+            "p99_ms": 1581.5789050000021
+          }
+        },
+        "scheduler": {
+          "max_delay_ms": 144.3973249999981,
+          "max_scheduled_to_complete_ms": 1664.0847520000025
+        },
+        "runtime": {
+          "event_loop_delay": {
+            "resolution_ms": 20,
+            "mean_ms": 31.156509891022313,
+            "p95_ms": 51.707903,
+            "max_ms": 148.373503,
+            "observations": 1927
+          },
+          "event_loop_utilization": 0.9989812097576984,
+          "cpu_user_ms": 18416.331,
+          "cpu_system_ms": 2887.504,
+          "resource_usage_fs_write_delta": 1148016,
+          "resource_usage_fs_read_delta": 96,
+          "voluntary_context_switches": 177506,
+          "involuntary_context_switches": 1852,
+          "gc": {
+            "count": 53,
+            "duration_ms": 311.09059488773346,
+            "max_duration_ms": 14.957433938980103
+          }
+        },
+        "rss_bytes": 458924032,
+        "heap_used_bytes": 228210152
+      }
+    ],
+    "errors": 0,
+    "requests": 6000,
+    "status": "running"
+  }
+}

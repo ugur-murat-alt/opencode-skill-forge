@@ -1,0 +1,8 @@
+{
+  "Dockerfile": "b2c9b47809fe804216a4688b2fe8d592959697bd48c1350de1c7e14a4c198828",
+  "compose.yaml": "aa090e2b4519fa3708809dc599195f9f33673be63adcec96585a7835ee3a5ce1",
+  ".dockerignore": "bd567f90eea5857f4eb0758161e29d604d6d7984de6c5d6e04946d60e2211bac",
+  "scripts/container-health.mjs": "103acf6c83d05df13eeeb7235f0c3bfc5af060b1e99fddd970fc7c268e381daf",
+  "scripts/container-smoke.mjs": "5205fa5e468b00225b4ece7905706d249a2c1979325da34d4a1090e1767651c9",
+  ".github/workflows/verify.yml": "112d5897d31a02f71fe8af170f79111d496c05666ca2af97ab56b856bd4d469c"
+}

@@ -4,7 +4,7 @@
 
 - `SKILL_FORGE_MCP_PLAN.md` ürün hedefi ve P01–P16 / K01–K30 kabul kaynağıdır. İlerlemeyi gerçek komut ve kanıtla bu plana işle; çalıştırılmayan kontrole başarılı deme.
 - TypeScript/ESM, Node LTS dağıtımı; Pi üzerinden tek ForgeRunner, SQLite/PostgreSQL, Fastify ve altı MCP aracı. Web ve MCP aynı uygulama/ACL/yayın servislerini kullanır.
-- Kullanıcı değişikliklerini koru. Yeni servis `src/` kaynaklarından derlenir; OpenCode runtime üretim bağımlılığı olarak P14'te kaldırılır.
+- Kullanıcı değişikliklerini koru. Yeni servis `src/` kaynaklarından derlenir; OpenCode runtime üretim bağımlılığı değildir; eski host kaynakları yalnız `test/legacy-runtime/` altında karakterizasyon içindir.
 
 ## Güvenlik ve domain
 
@@ -17,7 +17,7 @@
 
 ## Geçiş ve doğrulama
 
-- `test/fixtures/legacy/` Git'ten korunmuş bundle/politika karakterizasyonudur; üretim girişi değildir. Manifest hash'lerini koru. `test/security-regressions.test.ts` ve eski tehdit senaryolarını eşdeğer kaynak testleri geçmeden silme.
+- `test/fixtures/legacy/` Git'ten korunmuş bundle/politika karakterizasyonudur; üretim girişi değildir. Manifest hash'lerini koru. `test/legacy-runtime/` host sözleşmesi testlerini typecheck kapsamında tut; üretim kaynaklarından bu alana import ekleme. `test/security-regressions.test.ts` ve eski tehdit senaryolarını eşdeğer kaynak testleri geçmeden silme.
 - Eski `spr-agent.jsonc` ve OpenCode wrapper geçiş fixture sözleşmesidir; yeni runner'a izin kaynağı değildir. Kullanıcının sildiği `dist/` dosyalarını eski build'i geçirmek için geri getirme.
 - Global state testleri `OC_SKILL_POWER_HOME` ve yeni `SKILL_FORGE_DATA_DIR` için geçici dizin kullanır; gerçek kullanıcı verisine yazmaz.
 - `bun run typecheck`, `bun test`, `bun run build:plugin` çalıştır. Geçişte build:plugin adı source build uyumluluk alias'ı olabilir. Son paket kontrolü `npm pack --dry-run` ve temiz artifact kurulum smoke testidir.

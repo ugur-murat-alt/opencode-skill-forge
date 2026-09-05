@@ -7,7 +7,7 @@ import {
   appendLearning,
   loadLearnFile,
   learnPreview,
-} from "../../src/prompt-editor/learn.js";
+} from "../legacy-runtime/prompt-editor/learn.js";
 
 let dir: string;
 let file: string;

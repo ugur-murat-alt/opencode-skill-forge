@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/benchmark-setup.test.ts:
+(pass) catalog setup rejects bad arguments and cleans a failed runtime copy [314.27ms]
+
+ 1 pass
+ 0 fail
+ 6 expect() calls
+Ran 1 test across 1 file. [332.00ms]

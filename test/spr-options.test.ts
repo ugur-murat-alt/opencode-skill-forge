@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseSprOptions } from "../src/spr-options.js";
+import { parseSprOptions } from "./legacy-runtime/spr-options.js";
 
 describe("parseSprOptions", () => {
   test("parses provider/model with optional variant", () => {

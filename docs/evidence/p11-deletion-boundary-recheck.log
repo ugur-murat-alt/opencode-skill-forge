@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/deletion.test.ts:
+(pass) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [494.99ms]
+(pass) permanent deletion postgres: references, real removal, partial replay and symlink confinement [301.26ms]
+
+ 2 pass
+ 0 fail
+ 36 expect() calls
+Ran 2 tests across 1 file. [932.00ms]

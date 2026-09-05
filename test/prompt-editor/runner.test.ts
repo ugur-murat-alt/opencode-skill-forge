@@ -3,10 +3,13 @@ import {
   EditorRegistry,
   runEditor,
   startEventLoop,
-} from "../../src/prompt-editor/runner.js";
-import type { PluginRuntime } from "../../src/prompt-editor/types.js";
-import { storedMessageType } from "../../src/prompt-editor/editor-session.js";
-import { appendJournal, readJournal } from "../../src/prompt-editor/journal.js";
+} from "../legacy-runtime/prompt-editor/runner.js";
+import type { PluginRuntime } from "../legacy-runtime/prompt-editor/types.js";
+import { storedMessageType } from "../legacy-runtime/prompt-editor/editor-session.js";
+import {
+  appendJournal,
+  readJournal,
+} from "../legacy-runtime/prompt-editor/journal.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

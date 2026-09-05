@@ -1,0 +1,42 @@
+bun test v1.3.14 (0d9b296a)
+
+test/maintenance-lock.test.ts:
+(pass) maintenance sqlite archive: project revocation serializes before item writes [348.15ms]
+(pass) maintenance sqlite restore: project revocation serializes before item writes [348.52ms]
+103 |                 )
+104 |               ).rows[0]!.blocked;
+105 |               if (!blocked)
+106 |                 await new Promise((resolve) => setTimeout(resolve, 10));
+107 |             }
+108 |             expect(blocked).toBe(true);
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/maintenance-lock.test.ts:108:29)
+      at async <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/kysely.js:680:38)
+      at async provideConnection (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/driver/default-connection-provider.js:10:26)
+(fail) maintenance postgres archive: project revocation serializes before item writes [3166.47ms]
+103 |                 )
+104 |               ).rows[0]!.blocked;
+105 |               if (!blocked)
+106 |                 await new Promise((resolve) => setTimeout(resolve, 10));
+107 |             }
+108 |             expect(blocked).toBe(true);
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/maintenance-lock.test.ts:108:29)
+      at async <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/kysely.js:680:38)
+      at async provideConnection (/home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/driver/default-connection-provider.js:10:26)
+(fail) maintenance postgres restore: project revocation serializes before item writes [3105.80ms]
+
+ 2 pass
+ 2 fail
+ 20 expect() calls
+Ran 4 tests across 1 file. [7.11s]

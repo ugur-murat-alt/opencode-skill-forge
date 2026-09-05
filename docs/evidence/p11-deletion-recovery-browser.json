@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "browser": "Playwright Chromium",
+  "routing": "Browser plugin not available",
+  "url": "http://127.0.0.1:38552/#maintenance",
+  "title": "Skill Forge",
+  "viewports": [
+    [
+      1440,
+      1000
+    ],
+    [
+      390,
+      844
+    ]
+  ],
+  "console": [
+    {
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "url": "http://127.0.0.1:38552/api/me"
+    }
+  ],
+  "expected_console": "Unauthenticated initial /api/me returns 401 before pairing",
+  "unexpected_errors": [],
+  "flow": [
+    "pair login",
+    "select two archived real packages",
+    "preview irreversible revision impact",
+    "apply mixed completed/pending",
+    "reload pending from server",
+    "fix fixture symlink",
+    "resume cleanup",
+    "verify real files removed and outside sentinel preserved"
+  ],
+  "screenshots": [
+    "/tmp/forge-delete-preview.png",
+    "/tmp/forge-delete-pending.png",
+    "/tmp/forge-delete-completed.png",
+    "/tmp/forge-delete-mobile.png"
+  ]
+}

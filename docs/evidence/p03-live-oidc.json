@@ -1,0 +1,8 @@
+{
+  "status": "failed",
+  "provider": "Keycloak 26.7.3",
+  "proxy": "Caddy 2.11.4",
+  "profile": "server",
+  "tls_verification": true,
+  "error": "Forge callback failed with 500"
+}

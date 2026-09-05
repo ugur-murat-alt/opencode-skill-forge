@@ -1,13 +1,12 @@
 import { mkdtemp, writeFile, rm, cp, symlink, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { openDatabase } from "../src/storage/database.js";
 import { IdentityService } from "../src/application/identity.js";
 import { ForgeService } from "../src/application/forge.js";
-const root = await mkdtemp(join(tmpdir(), "forge-catalog-benchmark-"));
 const count = Number(process.argv[2] ?? 10000);
 if (!Number.isInteger(count) || count < 10 || count > 10000)
   throw Error("Catalog size must be 10–10000");
@@ -16,21 +15,42 @@ const soakMinutes = Number(
 );
 if (!Number.isInteger(soakMinutes) || soakMinutes < 0 || soakMinutes > 60)
   throw Error("Soak minutes must be 0–60");
-const runtime = join(root, "runtime");
-await mkdir(runtime);
-await cp(resolve("dist"), join(runtime, "dist"), { recursive: true });
-await cp(resolve("bun.lock"), join(runtime, "bun.lock"));
-await symlink(resolve("node_modules"), join(runtime, "node_modules"), "dir");
-const storage = await openDatabase({ dataDir: root });
-const auth = new IdentityService(storage.db),
-  owner = await auth.bootstrapLocal(),
-  project = await auth.createProject(owner, "Catalog benchmark fixture");
-const forge = new ForgeService(storage, root, "fixture-benchmark-signing-key");
-const seedHash = createHash("sha256");
-let baselineBytes = 0;
-let sample: { skill_id: string; revision: string } | undefined;
-const start = performance.now();
+const output = resolve(
+  process.argv[3] ?? "docs/evidence/p07-catalog-benchmark.json",
+);
+const cpuProfile = process.argv.includes("--cpu-profile");
+if (cpuProfile && !output.endsWith(".json"))
+  throw Error("CPU profile requires an explicit .json report path");
+const profilePath = output.replace(/\.json$/, ".cpuprofile");
+const root = await mkdtemp(join(tmpdir(), "forge-catalog-benchmark-"));
+let storage: Awaited<ReturnType<typeof openDatabase>> | undefined;
 try {
+  const runtime = join(root, "runtime");
+  await mkdir(runtime);
+  await mkdir(join(runtime, "scripts"));
+  for (const name of [
+    "catalog-probe.mjs",
+    "benchmark-runtime.mjs",
+    "benchmark-measure.mjs",
+    "benchmark-sql.mjs",
+  ])
+    await cp(resolve("scripts", name), join(runtime, "scripts", name));
+  await cp(resolve("dist"), join(runtime, "dist"), { recursive: true });
+  await cp(resolve("bun.lock"), join(runtime, "bun.lock"));
+  await symlink(resolve("node_modules"), join(runtime, "node_modules"), "dir");
+  storage = await openDatabase({ dataDir: root });
+  const auth = new IdentityService(storage.db),
+    owner = await auth.bootstrapLocal(),
+    project = await auth.createProject(owner, "Catalog benchmark fixture");
+  const forge = new ForgeService(
+    storage,
+    root,
+    "fixture-benchmark-signing-key",
+  );
+  const seedHash = createHash("sha256");
+  let baselineBytes = 0;
+  let sample: { skill_id: string; revision: string } | undefined;
+  const start = performance.now();
   for (let i = 0; i < count; i++) {
     const name = `catalog-fixture-${String(i).padStart(5, "0")}`;
     const content = `---\nname: ${name}\ndescription: Catalog benchmark deterministic fixture category ${i % 100}.\n---\nRead this bounded reference for item ${i}.\n`;
@@ -62,6 +82,10 @@ try {
       );
   }
   const input = {
+    cpu_profile: cpuProfile
+      ? { path: profilePath, interval_us: 1000, acceptance: false }
+      : null,
+    sql_profile: process.argv.includes("--sql-profile"),
     matrix: process.argv.includes("--matrix"),
     soak_minutes: soakMinutes,
     runtime_entry: pathToFileURL(join(runtime, "dist/index.js")).href,
@@ -82,9 +106,17 @@ try {
     const child = spawn(
       "node",
       [
-        resolve("scripts/catalog-probe.mjs"),
+        ...(cpuProfile
+          ? [
+              "--cpu-prof",
+              "--cpu-prof-interval=1000",
+              `--cpu-prof-dir=${dirname(profilePath)}`,
+              `--cpu-prof-name=${basename(profilePath)}`,
+            ]
+          : []),
+        join(runtime, "scripts/catalog-probe.mjs"),
         join(root, "input.json"),
-        resolve(process.argv[3] ?? "docs/evidence/p07-catalog-benchmark.json"),
+        output,
       ],
       {
         env: {
@@ -102,6 +134,6 @@ try {
     );
   });
 } finally {
-  await storage.close().catch(() => {});
+  await storage?.close().catch(() => {});
   await rm(root, { recursive: true, force: true });
 }

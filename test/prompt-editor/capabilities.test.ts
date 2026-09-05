@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   collectRuntimeCapabilities,
   renderRuntimeCapabilities,
-} from "../../src/prompt-editor/capabilities.js";
+} from "../legacy-runtime/prompt-editor/capabilities.js";
 
 describe("prompt-editor runtime capabilities", () => {
   test("keeps the effective tools readable and infers namespaced providers", () => {

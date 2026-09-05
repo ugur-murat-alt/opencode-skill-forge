@@ -59,13 +59,15 @@ node dist/cli.js migration-rollback --data-dir /guvenli/skill-forge --receipt ak
 
 Geri alınmış işlem tekrar aktarım komutunda `rolled_back` olarak görünür; otomatik yeniden etkinleştirilmez. Learn aktarımı aşağıdaki açık eşlemeyle desteklenir. Rewrites ve oturum bayrağı aktarımı aşağıda açıklanır.
 
-
 Özel learn dosyası aktarımı
 
 Aynı `migration-import` komutunda `learn.md` kaynak öğesi için `flags` yerine şu seçim kullanılır:
 
 ```json
-{"source_id":"manifestteki-64-karakterlik-kimlik","learning":{"enabled":false}}
+{
+  "source_id": "manifestteki-64-karakterlik-kimlik",
+  "learning": { "enabled": false }
+}
 ```
 
 `enabled` açıkça seçilir. `false` dersleri saklar fakat retrieval'a katmaz; webden etkinleştirilebilir. Proje içindeki eski global learn dosyası dahi sahibinin **kişisel** kapsamına aktarılır. Özgün dosya byte'ları sahip/proje ACL'sine bağlı geçiş arşivinde, checksum ve kayıt raporuyla saklanır. Servis DB yedekleri bu özel metinleri içerir ve özel veri olarak korunmalıdır.
@@ -79,15 +81,14 @@ node dist/cli.js migration-learning-export --data-dir /guvenli/skill-forge --rec
 node dist/cli.js migration-learning-rollback --data-dir /guvenli/skill-forge --receipt aktarim-kimligi
 ```
 
-Export checksum'u yeniden doğrular. Geri alma yalnız aktarımın oluşturduğu değişmemiş dersleri kaldırır; önceden var olan duplicate kayıtları ve özgün dosya arşivini korur. Sonradan düzenlenmiş/etkinlik durumu değiştirilmiş ders varsa bütün geri alma transaction'ı durur. Kaynak dosya hiçbir komutta değiştirilmez. Dosya başına 16 MiB, tenant geçiş arşivi için 128 MiB sınırı vardır; kapasite aşımı sessiz silme yapmaz.
-
+Export checksum'u yeniden doğrular. Geri alma yalnız aktarımın oluşturduğu değişmemiş dersleri kaldırır; önceden var olan duplicate kayıtları ve özgün dosya arşivini korur. Sonradan düzenlenmiş/etkinlik durumu değiştirilmiş ders varsa bütün geri alma transaction'ı durur. Başka applied aktarım aynı dersi duplicate olarak kullanıyorsa `migration_target_referenced` ile geri alma durur; önce bağımlı aktarımı, sonra dersi oluşturan aktarımı geri alın. Bu koruma aynı kişinin farklı projelerdeki personal ders paylaşımlarını da kapsar. Kaynak dosya hiçbir komutta değiştirilmez. Dosya başına 16 MiB, tenant geçiş arşivi için 128 MiB sınırı vardır; kapasite aşımı sessiz silme yapmaz.
 
 Eski rewrite geçmişi
 
 `rewrites.jsonl` kaynak öğesi için seçim şu biçimdedir:
 
 ```json
-{"source_id":"manifestteki-64-karakterlik-kimlik","rewrites":true}
+{ "source_id": "manifestteki-64-karakterlik-kimlik", "rewrites": true }
 ```
 
 Aynı manifest/eşleme komutu geçerli JSONL kayıtlarını sahibine ve açık hedef projesine bağlı özel geçmişe alır. Bu kayıtlar yeni `runs` oluşturmaz, tüketim veya model kalite kanıtı sayılmaz. Eski `applied` alanı yoksa bilinmiyor olarak korunur; true/false yalnız kaynakta ne kaydedildiğini belirtir. Prompt Editor sayfasında 20 kayıtlık sayfalar, 400 karakterlik önizlemeler ve tam metin açma vardır. Geçmiş kimliğe göre sabit sıralanır; zaman etiketi kaynak zamanını gösterir.
@@ -101,20 +102,19 @@ node dist/cli.js migration-rewrites-rollback --data-dir /guvenli/skill-forge --r
 
 Geri alma yalnız seçilen aktarımın referansını kaldırır; başka aktarımın da kullandığı kayıt görünür kalır. Hiçbir etkin aktarım referansı kalmadığında görünür geçmiş kaydı kaldırılır. Özgün arşiv ve kaynak dosya korunur. JSON raporları özel prompt metinlerini içermez; export ve özel geçmiş API'si metin içerir ve sahip/proje yetkisi gerektirir.
 
-
 Oturum bayrakları aktarımı
 
 `session-flags.json` kaynağı genel proje ayarına çevrilmez. Her eski oturum, aynı sahibin açık hedef proje/istemci/oturumuna eşlenir. Hedef revision'ı `/api/settings/session` üzerinden okuyun; kayıt yoksa 0 kullanılır. Eşleme seçimi:
 
 ```json
 {
-  "source_id":"manifestteki-64-karakterlik-kimlik",
-  "sessions":[
+  "source_id": "manifestteki-64-karakterlik-kimlik",
+  "sessions": [
     {
-      "legacy_session":"eski-oturum-kimligi",
-      "target":{"client":"codex","session":"hedef-oturum-kimligi"},
-      "base_revision":0,
-      "defaults":{"enabled":true,"autoAccept":true}
+      "legacy_session": "eski-oturum-kimligi",
+      "target": { "client": "codex", "session": "hedef-oturum-kimligi" },
+      "base_revision": 0,
+      "defaults": { "enabled": true, "autoAccept": true }
     }
   ]
 }

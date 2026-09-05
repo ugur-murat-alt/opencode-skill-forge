@@ -1,9 +1,10 @@
+import { DirectoryReaders } from "./directory-readers.js";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, open, rename, lstat } from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { sql } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
-import type { Run, Skill } from "../storage/schema.js";
+import type { Run, Skill, SkillRevision } from "../storage/schema.js";
 import { IdentityService, type Identity } from "../application/identity.js";
 import { JobQueue } from "../jobs/queue.js";
 import { ForgeError } from "../domain/errors.js";
@@ -23,6 +24,15 @@ export function searchText(value: string) {
     .toLocaleLowerCase("en-US");
 }
 export class PackageStore {
+  private directories = new DirectoryReaders();
+  private readers = new Map<
+    string,
+    {
+      id: string;
+      count: number;
+      ready: Promise<{ skill: Skill; row: SkillRevision }>;
+    }
+  >();
   constructor(
     readonly storage: DatabaseHandle,
     readonly dataDir: string,
@@ -78,64 +88,153 @@ export class PackageStore {
       );
     return result;
   }
+  /** Holds a durable revision reference only for the callback's actual read lifetime. */
+  async withRevision<T>(
+    identity: Identity,
+    skillId: string,
+    revision: string,
+    read: (skill: Skill, row: SkillRevision) => Promise<T>,
+    audit = false,
+  ): Promise<T> {
+    const key = JSON.stringify([
+      identity.tenantId,
+      identity.userId,
+      skillId,
+      revision,
+      audit,
+    ]);
+    let entry = this.readers.get(key);
+    if (!entry) {
+      const id = randomUUID();
+      const ready = this.storage.db.transaction().execute(async (tx) => {
+        await tx
+          .updateTable("tenants")
+          .set({ name: sql`name` })
+          .where("id", "=", identity.tenantId)
+          .execute();
+        const skill = await tx
+          .selectFrom("skills")
+          .selectAll()
+          .where("tenant_id", "=", identity.tenantId)
+          .where("id", "=", skillId)
+          .executeTakeFirst();
+        if (
+          !skill ||
+          (!audit &&
+            skill.scope_key.startsWith("personal:") &&
+            skill.owner_id !== identity.userId)
+        )
+          throw new ForgeError(
+            "skill_unavailable",
+            "Paket bulunamadı veya yetkiniz yok.",
+            404,
+          );
+        await new IdentityService(tx).authorize(
+          identity,
+          audit ? "admin" : "read",
+          audit ? undefined : (skill.project_id ?? undefined),
+        );
+        const row = await tx
+          .selectFrom("skill_revisions")
+          .selectAll()
+          .where("tenant_id", "=", identity.tenantId)
+          .where("skill_id", "=", skillId)
+          .where("revision", "=", revision)
+          .executeTakeFirst();
+        if (!row)
+          throw new ForgeError(
+            "revision_unavailable",
+            "Paket sürümü bulunamadı.",
+            404,
+          );
+        await tx
+          .insertInto("revision_readers")
+          .values({
+            tenant_id: identity.tenantId,
+            id,
+            skill_id: skillId,
+            revision,
+            created_at: Date.now(),
+          })
+          .execute();
+        return { skill, row };
+      });
+      entry = { id, count: 0, ready };
+      this.readers.set(key, entry);
+    }
+    entry.count++;
+    try {
+      const snapshot = await entry.ready;
+      // Share only the lifetime guard; each request rechecks authorization and reads real bytes.
+      await new IdentityService(this.storage.db).authorize(
+        identity,
+        audit ? "admin" : "read",
+        audit ? undefined : (snapshot.skill.project_id ?? undefined),
+      );
+      return await read(snapshot.skill, snapshot.row);
+    } finally {
+      entry.count--;
+      if (entry.count === 0) {
+        this.readers.delete(key);
+        await entry.ready.then(
+          async () => {
+            await this.storage.db
+              .deleteFrom("revision_readers")
+              .where("tenant_id", "=", identity.tenantId)
+              .where("id", "=", entry!.id)
+              .execute();
+          },
+          () => undefined,
+        );
+      }
+    }
+  }
   async files(
     identity: Identity,
     skillId: string,
     revision: string,
     selectedPaths?: string[],
   ) {
-    const skill = await this.authorizedSkill(identity, skillId);
-    const row = await this.storage.db
-      .selectFrom("skill_revisions")
-      .selectAll()
-      .where("tenant_id", "=", identity.tenantId)
-      .where("skill_id", "=", skillId)
-      .where("revision", "=", revision)
-      .executeTakeFirst();
-    if (!row)
-      throw new ForgeError(
-        "revision_unavailable",
-        "Paket sürümü bulunamadı.",
-        404,
-      );
-    const manifest = JSON.parse(row.manifest_json) as PackageManifest,
-      files: Record<string, Buffer> = {};
-    const inventory = await packageInventory(
-      this.canonicalPath(row.package_path),
-    );
-    if (
-      JSON.stringify(inventory) !==
-      JSON.stringify(manifest.files.map((file) => file.path).sort())
-    )
-      throw new ForgeError(
-        "revision_corrupt",
-        "Paket dosya envanteri değişti.",
-        409,
-      );
-    for (const file of manifest.files.filter(
-      (file) => !selectedPaths || selectedPaths.includes(file.path),
-    )) {
-      const bytes = await secureRead(
+    return this.withRevision(identity, skillId, revision, async (skill, row) =>
+      this.directories.withDirectory(
         this.canonicalPath(row.package_path),
-        file.path,
-      );
-      if (
-        bytes.length !== file.bytes ||
-        createHash("sha256").update(bytes).digest("hex") !== file.hash
-      )
-        throw new ForgeError(
-          "revision_corrupt",
-          "Değişmez paket sürümü hash kontrolünden geçmedi.",
-          409,
-        );
-      files[file.path] = bytes;
-    }
-    return {
-      skill,
-      manifest,
-      files,
-      path: this.canonicalPath(row.package_path),
-    };
+        async (reader) => {
+          const manifest = JSON.parse(row.manifest_json) as PackageManifest,
+            files: Record<string, Buffer> = {};
+          const inventory = await reader.inventory();
+          if (
+            JSON.stringify(inventory) !==
+            JSON.stringify(manifest.files.map((file) => file.path).sort())
+          )
+            throw new ForgeError(
+              "revision_corrupt",
+              "Paket dosya envanteri değişti.",
+              409,
+            );
+          for (const file of manifest.files.filter(
+            (file) => !selectedPaths || selectedPaths.includes(file.path),
+          )) {
+            const bytes = await reader.read(file.path);
+            if (
+              bytes.length !== file.bytes ||
+              createHash("sha256").update(bytes).digest("hex") !== file.hash
+            )
+              throw new ForgeError(
+                "revision_corrupt",
+                "Değişmez paket sürümü hash kontrolünden geçmedi.",
+                409,
+              );
+            files[file.path] = bytes;
+          }
+          return {
+            skill,
+            manifest,
+            files,
+            path: this.canonicalPath(row.package_path),
+          };
+        },
+      ),
+    );
   }
   async publishRebased(
     identity: Identity,
@@ -577,64 +676,99 @@ export class PackageStore {
     after?: { skill_id: string; revision: string },
   ) {
     await new IdentityService(this.storage.db).authorize(identity, "admin");
-    let query = this.storage.db
-      .selectFrom("skill_revisions")
-      .select(["skill_id", "revision", "package_path", "manifest_json"])
-      .where("tenant_id", "=", identity.tenantId);
-    if (after)
-      query = query.where((eb) =>
-        eb.or([
-          eb("skill_id", ">", after.skill_id),
-          eb.and([
-            eb("skill_id", "=", after.skill_id),
-            eb("revision", ">", after.revision),
-          ]),
-        ]),
-      );
-    const rows = await query
-      .orderBy("skill_id")
-      .orderBy("revision")
-      .limit(26)
-      .execute();
+    const { rows, pins } = await this.storage.db
+      .transaction()
+      .execute(async (tx) => {
+        await tx
+          .updateTable("tenants")
+          .set({ name: sql`name` })
+          .where("id", "=", identity.tenantId)
+          .execute();
+        await new IdentityService(tx).authorize(identity, "admin");
+        let query = tx
+          .selectFrom("skill_revisions")
+          .select(["skill_id", "revision", "package_path", "manifest_json"])
+          .where("tenant_id", "=", identity.tenantId);
+        if (after)
+          query = query.where((eb) =>
+            eb.or([
+              eb("skill_id", ">", after.skill_id),
+              eb.and([
+                eb("skill_id", "=", after.skill_id),
+                eb("revision", ">", after.revision),
+              ]),
+            ]),
+          );
+        const rows = await query
+          .orderBy("skill_id")
+          .orderBy("revision")
+          .limit(26)
+          .execute();
+        const pins = rows.slice(0, 25).map((row) => ({
+          tenant_id: identity.tenantId,
+          id: randomUUID(),
+          skill_id: row.skill_id,
+          revision: row.revision,
+          created_at: Date.now(),
+        }));
+        if (pins.length)
+          await tx.insertInto("revision_readers").values(pins).execute();
+        return { rows, pins };
+      });
     const issues: {
       skill_id: string;
       revision: string;
       reason: "missing_or_corrupt";
     }[] = [];
-    for (const row of rows.slice(0, 25)) {
-      try {
-        const manifest = JSON.parse(row.manifest_json) as PackageManifest;
-        if (
-          manifest.hash !== row.revision ||
-          !Array.isArray(manifest.files) ||
-          manifest.files.length > 256
-        )
-          throw Error("manifest");
-        const root = this.canonicalPath(row.package_path),
-          stat = await lstat(root);
-        if (!stat.isDirectory() || stat.isSymbolicLink())
-          throw Error("directory");
-        if (
-          JSON.stringify(await packageInventory(root)) !==
-          JSON.stringify(manifest.files.map((file) => file.path).sort())
-        )
-          throw Error("inventory");
-        for (const file of manifest.files) {
-          const bytes = await secureRead(root, file.path);
+    try {
+      for (const row of rows.slice(0, 25)) {
+        try {
+          const manifest = JSON.parse(row.manifest_json) as PackageManifest;
           if (
-            bytes.length !== file.bytes ||
-            createHash("sha256").update(bytes).digest("hex") !== file.hash
+            manifest.hash !== row.revision ||
+            !Array.isArray(manifest.files) ||
+            manifest.files.length > 256
           )
-            throw Error("hash");
+            throw Error("manifest");
+          const root = this.canonicalPath(row.package_path),
+            stat = await lstat(root);
+          if (!stat.isDirectory() || stat.isSymbolicLink())
+            throw Error("directory");
+          if (
+            JSON.stringify(await packageInventory(root)) !==
+            JSON.stringify(manifest.files.map((file) => file.path).sort())
+          )
+            throw Error("inventory");
+          for (const file of manifest.files) {
+            const bytes = await secureRead(root, file.path);
+            if (
+              bytes.length !== file.bytes ||
+              createHash("sha256").update(bytes).digest("hex") !== file.hash
+            )
+              throw Error("hash");
+          }
+        } catch (error) {
+          if (error instanceof ForgeError && error.status === 403) throw error;
+          issues.push({
+            skill_id: row.skill_id,
+            revision: row.revision,
+            reason: "missing_or_corrupt",
+          });
         }
-      } catch {
-        issues.push({
-          skill_id: row.skill_id,
-          revision: row.revision,
-          reason: "missing_or_corrupt",
-        });
       }
+    } finally {
+      if (pins.length)
+        await this.storage.db
+          .deleteFrom("revision_readers")
+          .where("tenant_id", "=", identity.tenantId)
+          .where(
+            "id",
+            "in",
+            pins.map((pin) => pin.id),
+          )
+          .execute();
     }
+    await new IdentityService(this.storage.db).authorize(identity, "admin");
     return {
       checked: Math.min(rows.length, 25),
       issues,

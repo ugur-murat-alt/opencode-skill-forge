@@ -1,0 +1,5 @@
+$ bunx prettier --check .
+Checking formatting...
+[warn] test/jobs-contract.test.ts
+[warn] Code style issues found in the above file. Run Prettier with --write to fix.
+error: script "fmt:check" exited with code 1

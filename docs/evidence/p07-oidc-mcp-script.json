@@ -1,0 +1,4 @@
+{
+  "script": "scripts/oidc-smoke.mjs",
+  "sha256": "5ab3b6dcedb17ed02723c2911c8125909786e168b6535056f5ec196df57a813a"
+}

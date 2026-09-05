@@ -2,7 +2,7 @@ import { installationFingerprint } from "./installer.js";
 import { createHash } from "node:crypto";
 import type { LocalConfig } from "../cli/config.js";
 import { ensureDaemon } from "../cli/daemon.js";
-import { sanitizePromptEditorText } from "../prompt-editor/context-snapshot.js";
+import { sanitizePromptEditorText } from "../prompt/sanitize.js";
 export async function clientHook(
   config: LocalConfig,
   entry: string,

@@ -1,0 +1,2 @@
+scripts/catalog-benchmark.ts 88ms
+scripts/catalog-probe.mjs 63ms (unchanged)

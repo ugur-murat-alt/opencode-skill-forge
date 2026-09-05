@@ -134,20 +134,93 @@ export function importPackage(archive: Buffer): {
 /** Untrusted decompression never occupies the service event loop; resource and time limits are real. */
 let activeImports = 0;
 export async function importPackageBounded(archive: Buffer) {
-  if (archive.length > 5 * 1024 * 1024) throw new ForgeError("archive_limit", "ZIP boyutu aşıldı.");
-  if (activeImports >= 2) throw new ForgeError("archive_busy", "Paket açma kapasitesi dolu; yeniden deneyin.", 429, 1);
+  if (archive.length > 5 * 1024 * 1024)
+    throw new ForgeError("archive_limit", "ZIP boyutu aşıldı.");
+  if (activeImports >= 2)
+    throw new ForgeError(
+      "archive_busy",
+      "Paket açma kapasitesi dolu; yeniden deneyin.",
+      429,
+      1,
+    );
   activeImports++;
   try {
-    const { Worker } = await import("node:worker_threads"), { existsSync } = await import("node:fs"), { fileURLToPath } = await import("node:url");
-    const built = new URL("./archive-worker.js", import.meta.url), source = new URL("./archive-worker.ts", import.meta.url);
-    const worker = new Worker(existsSync(fileURLToPath(built)) ? built : source, { workerData: archive, resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8, stackSizeMb: 2 } });
-    return await new Promise<{ name: string; files: Record<string, Buffer> }>((resolve, reject) => {
-      let completed = false;
-      const finish = (error?: Error, value?: { name: string; files: Record<string, Buffer> }) => { if (completed) return; completed = true; clearTimeout(timer); void worker.terminate(); if (error) reject(error); else resolve(value!); };
-      const timer = setTimeout(() => finish(new ForgeError("archive_timeout", "ZIP açma CPU/süre sınırını aştı.", 422)), 3000);
-      worker.once("message", value => { if (!value.ok) finish(new ForgeError(value.code, value.message)); else finish(undefined, { name: value.name, files: Object.fromEntries(Object.entries(value.files).map(([path, bytes]) => [path, Buffer.from(bytes as Uint8Array)])) }); });
-      worker.once("error", () => finish(new ForgeError("archive_worker_failed", "İzole arşiv işçisi başarısız.", 422)));
-      worker.once("exit", () => { if (!completed) finish(new ForgeError("archive_worker_failed", "Arşiv işçisi sonuç üretmeden kapandı.", 422)); });
-    });
-  } finally { activeImports--; }
+    const { Worker } = await import("node:worker_threads"),
+      { existsSync } = await import("node:fs"),
+      { fileURLToPath } = await import("node:url");
+    const built = new URL("./archive-worker.js", import.meta.url),
+      source = new URL("./archive-worker.ts", import.meta.url);
+    const worker = new Worker(
+      existsSync(fileURLToPath(built)) ? built : source,
+      {
+        workerData: archive,
+        resourceLimits: {
+          maxOldGenerationSizeMb: 32,
+          maxYoungGenerationSizeMb: 8,
+          stackSizeMb: 2,
+        },
+      },
+    );
+    return await new Promise<{ name: string; files: Record<string, Buffer> }>(
+      (resolve, reject) => {
+        let completed = false;
+        const finish = (
+          error?: Error,
+          value?: { name: string; files: Record<string, Buffer> },
+        ) => {
+          if (completed) return;
+          completed = true;
+          clearTimeout(timer);
+          void worker.terminate();
+          if (error) reject(error);
+          else resolve(value!);
+        };
+        const timer = setTimeout(
+          () =>
+            finish(
+              new ForgeError(
+                "archive_timeout",
+                "ZIP açma CPU/süre sınırını aştı.",
+                422,
+              ),
+            ),
+          3000,
+        );
+        worker.once("message", (value) => {
+          if (!value.ok) finish(new ForgeError(value.code, value.message));
+          else
+            finish(undefined, {
+              name: value.name,
+              files: Object.fromEntries(
+                Object.entries(value.files).map(([path, bytes]) => [
+                  path,
+                  Buffer.from(bytes as Uint8Array),
+                ]),
+              ),
+            });
+        });
+        worker.once("error", () =>
+          finish(
+            new ForgeError(
+              "archive_worker_failed",
+              "İzole arşiv işçisi başarısız.",
+              422,
+            ),
+          ),
+        );
+        worker.once("exit", () => {
+          if (!completed)
+            finish(
+              new ForgeError(
+                "archive_worker_failed",
+                "Arşiv işçisi sonuç üretmeden kapandı.",
+                422,
+              ),
+            );
+        });
+      },
+    );
+  } finally {
+    activeImports--;
+  }
 }

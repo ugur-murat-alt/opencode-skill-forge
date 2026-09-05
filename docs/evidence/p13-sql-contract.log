@@ -1,0 +1,19 @@
+bun test v1.3.14 (0d9b296a)
+
+test/benchmark-measure.test.ts:
+(pass) catalog measurement includes transport, tool and malformed response failures [2.89ms]
+(pass) catalog measurement preserves actual response and separates scheduling delay [0.19ms]
+
+test/benchmark-setup.test.ts:
+(pass) catalog setup rejects bad arguments and cleans a failed runtime copy [903.26ms]
+
+test/benchmark-runtime.test.ts:
+(pass) Node benchmark diagnostics bound each window and release observers [207.13ms]
+
+test/benchmark-sql.test.ts:
+(pass) SQL diagnostics preserve real Node SQLite results, rollback, privacy and connection restoration [383.56ms]
+
+ 5 pass
+ 0 fail
+ 54 expect() calls
+Ran 5 tests across 4 files. [1.59s]

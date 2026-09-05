@@ -1,3 +1,4 @@
+import { DeletionService } from "./deletion.js";
 import { createHash, randomUUID } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
@@ -17,13 +18,16 @@ export const maintenanceSchema = z
   .object({
     project_ref: z.string().min(1).max(100),
     operation_id: z.string().min(1).max(200),
-    action: z.enum(["archive", "restore"]),
+    action: z.enum(["archive", "restore", "delete"]),
     items: z.array(itemSchema).min(1).max(100),
   })
   .strict();
 /** Bounded, deterministic, private observation report and replay-safe item transactions. */
 export class MaintenanceService {
-  constructor(readonly storage: DatabaseHandle) {}
+  constructor(
+    readonly storage: DatabaseHandle,
+    readonly dataDir?: string,
+  ) {}
   private async skill(
     db: Kysely<DB>,
     actor: Identity,
@@ -194,6 +198,11 @@ export class MaintenanceService {
   }
   async preview(actor: Identity, raw: unknown) {
     const input = maintenanceSchema.parse(raw);
+    if (input.action === "delete")
+      return new DeletionService(this.storage, this.dataDir).preview(actor, {
+        ...input,
+        action: "delete",
+      });
     await new IdentityService(this.storage.db).authorize(
       actor,
       "write",
@@ -235,6 +244,12 @@ export class MaintenanceService {
   }
   async apply(actor: Identity, raw: unknown) {
     const input = maintenanceSchema.parse(raw);
+    if (input.action === "delete")
+      return new DeletionService(this.storage, this.dataDir).apply(actor, {
+        ...input,
+        action: "delete",
+      });
+    const action = input.action;
     if (new Set(input.items.map((i) => i.skill_id)).size !== input.items.length)
       throw new ForgeError("duplicate_item", "Aynı paket iki kez seçilemez.");
     await new IdentityService(this.storage.db).authorize(
@@ -247,12 +262,11 @@ export class MaintenanceService {
       try {
         items.push(
           await this.storage.db.transaction().execute(async (tx) => {
-            // Same actor operations serialize; skill CAS arbitrates other editors.
+            // Serialize with membership/project revocation before authorization and mutation.
             await tx
-              .updateTable("memberships")
-              .set({ role: sql`role` })
-              .where("tenant_id", "=", actor.tenantId)
-              .where("user_id", "=", actor.userId)
+              .updateTable("tenants")
+              .set({ name: sql`name` })
+              .where("id", "=", actor.tenantId)
               .execute();
             await new IdentityService(tx).authorize(
               actor,
@@ -260,7 +274,7 @@ export class MaintenanceService {
               input.project_ref,
             );
             const hash = createHash("sha256")
-              .update(JSON.stringify({ action: input.action, item }))
+              .update(JSON.stringify({ action: action, item }))
               .digest("hex");
             const receipt = await tx
               .selectFrom("maintenance_items")
@@ -296,13 +310,13 @@ export class MaintenanceService {
               tx,
               actor,
               input.project_ref,
-              input.action,
+              action,
               item,
             );
             const updated = await tx
               .updateTable("skills")
               .set({
-                archived: input.action === "archive" ? 1 : 0,
+                archived: action === "archive" ? 1 : 0,
                 updated_at: Math.max(Date.now(), row.updated_at + 1),
               })
               .where("tenant_id", "=", actor.tenantId)
@@ -320,7 +334,7 @@ export class MaintenanceService {
             const result = {
               skill_id: row.id,
               status: "completed",
-              action: input.action,
+              action: action,
             };
             await tx
               .insertInto("maintenance_items")
@@ -342,7 +356,7 @@ export class MaintenanceService {
                 user_id: actor.userId,
                 project_id: input.project_ref,
                 id: randomUUID(),
-                kind: `maintenance.${input.action}`,
+                kind: `maintenance.${action}`,
                 detail: JSON.stringify({
                   ...result,
                   operation_id: input.operation_id,

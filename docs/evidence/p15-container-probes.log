@@ -1,0 +1,13 @@
+bun test v1.3.14 (0d9b296a)
+
+test/service.test.ts:
+(pass) independent service > concurrent initialization converges on one owner credential and endpoint [11.36ms]
+(pass) independent service > public probes reveal only readiness while detailed health remains private [415.36ms]
+(pass) independent service > health and MCP require owner identity and exact origin/host [351.70ms]
+(pass) independent service > official v2 HTTP client initializes and reconnects [339.45ms]
+(pass) independent service > provider configuration cannot use ambient credentials, paid fallback or arbitrary URLs [1.73ms]
+
+ 5 pass
+ 0 fail
+ 20 expect() calls
+Ran 5 tests across 1 file. [1.63s]

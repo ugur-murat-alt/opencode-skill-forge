@@ -1,0 +1,7 @@
+{
+  "test/fixtures/legacy/skillforge-core.js": true,
+  "test/fixtures/legacy/skillforge-core.d.ts": true,
+  "test/fixtures/legacy/spr-agent.jsonc": true,
+  "test/fixtures/legacy/prompt-editor-agent.jsonc": true,
+  "test/fixtures/legacy/SPR_SKILL_AUTHORING.md": true
+}

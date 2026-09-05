@@ -2,18 +2,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setupPromptEditor } from "../../src/prompt-editor/index.js";
-import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
+import { setupPromptEditor } from "../legacy-runtime/prompt-editor/index.js";
+import { PROMPT_EDITOR_DEFAULTS } from "../legacy-runtime/prompt-editor/config.js";
 import {
   EDITOR_AGENT_ID,
   SUBMIT_TOOL_NAME,
   EDITOR_SESSION_TITLE,
-} from "../../src/prompt-editor/constants.js";
+} from "../legacy-runtime/prompt-editor/constants.js";
 import type {
   ContextHookEvent,
   PluginRuntime,
-} from "../../src/prompt-editor/types.js";
-import { PROMPT_EDITOR_RUNTIME_STATE } from "../../src/prompt-editor/runtime.js";
+} from "../legacy-runtime/prompt-editor/types.js";
+import { PROMPT_EDITOR_RUNTIME_STATE } from "../legacy-runtime/prompt-editor/runtime.js";
 
 // Global-state tests must never write the real home directory (AGENTS.md).
 let sandbox: string;

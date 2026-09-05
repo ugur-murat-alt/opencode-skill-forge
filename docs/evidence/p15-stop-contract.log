@@ -1,0 +1,31 @@
+bun test v1.3.14 (0d9b296a)
+
+test/daemon-stop.test.ts:
+993 |   if (!isURLInstance(fileURLOrPath))
+994 |     return fileURLOrPath;
+995 |   return Bun.fileURLToPath(fileURLOrPath);
+996 | }
+997 | var { Error, TypeError } = globalThis;
+998 |   let err = new Error(message);
+                  ^
+error: Command failed: /home/ugur/.bun/bin/bun /home/ugur/Projects/opencode2-skill-forge-mcp/dist/cli.js stop --data-dir /tmp/forge-stop-hITCDT --port 37807
+{"error":{"code":"stop_unavailable","message":"Servise ulaşılamadı; durmuş olduğu doğrulanamadı."}}
+
+   code: 1,
+ killed: false,
+ signal: null,
+    cmd: "/home/ugur/.bun/bin/bun /home/ugur/Projects/opencode2-skill-forge-mcp/dist/cli.js stop --data-dir /tmp/forge-stop-hITCDT --port 37807",
+ stdout: "",
+ stderr: "{\"error\":{\"code\":\"stop_unavailable\",\"message\":\"Servise ulaşılamadı; durmuş olduğu doğrulanamadı.\"}}\n",
+
+      at genericNodeError (node:child_process:998:13)
+      at exitHandler (node:child_process:103:28)
+      at emit (node:events:98:22)
+      at #maybeClose (node:child_process:766:16)
+      at #handleOnExit (node:child_process:520:72)
+(fail) Node daemon stop: owner-only shutdown, exit, idempotence, restart and retained data [2180.77ms]
+
+ 0 pass
+ 1 fail
+ 6 expect() calls
+Ran 1 test across 1 file. [2.20s]

@@ -7,12 +7,12 @@ import {
   MAX_CONTEXT_PARTS_PER_MESSAGE,
   MAX_SERIALIZED_CONTEXT_CODE_UNITS,
   MAX_TOOL_OUTPUT_CONTEXT_CODE_UNITS,
-} from "../../src/prompt-editor/context-snapshot.js";
+} from "../legacy-runtime/prompt-editor/context-snapshot.js";
 import {
   PROMPT_EDITOR_DEFAULTS,
   resolvePromptEditorOptions,
-} from "../../src/prompt-editor/config.js";
-import type { ChatMessage } from "../../src/prompt-editor/types.js";
+} from "../legacy-runtime/prompt-editor/config.js";
+import type { ChatMessage } from "../legacy-runtime/prompt-editor/types.js";
 
 function user(id: string, text = "user"): ChatMessage {
   return { id, role: "user", content: [{ type: "text", text }] };

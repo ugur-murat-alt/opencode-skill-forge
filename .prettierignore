@@ -1,1 +1,6 @@
 dist/
+# Immutable characterization bytes and captured execution evidence.
+test/fixtures/
+docs/evidence/
+# Append-only execution ledger; preserve historic evidence text.
+SKILL_FORGE_MCP_PLAN.md

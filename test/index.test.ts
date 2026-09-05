@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { setup } from "../src/legacy-plugin.js";
-import type { PluginRuntime } from "../src/prompt-editor/types.js";
+import { setup } from "./legacy-runtime/legacy-plugin.js";
+import type { PluginRuntime } from "./legacy-runtime/prompt-editor/types.js";
 
 test("variant-only SPR override is disposed with the wrapper", async () => {
   let disposed = 0;

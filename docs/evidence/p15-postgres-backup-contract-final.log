@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+test/backup.test.ts:
+(pass) Node SQLite backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [3848.94ms]
+
+test/backup-postgres.test.ts:
+(pass) Node PostgreSQL backup: live snapshot, revision/secret/session restore, corrupt and occupied targets [5307.76ms]
+
+ 2 pass
+ 0 fail
+ 24 expect() calls
+Ran 2 tests across 2 files. [9.28s]

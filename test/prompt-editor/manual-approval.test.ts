@@ -6,22 +6,22 @@ import {
   registerContextHook,
   userText,
   type ContextHookDeps,
-} from "../../src/prompt-editor/context-hook.js";
-import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
+} from "../legacy-runtime/prompt-editor/context-hook.js";
+import { PROMPT_EDITOR_DEFAULTS } from "../legacy-runtime/prompt-editor/config.js";
 import {
   readStates,
   sessionFlagsFile,
   statesFile,
   type PromptEditorRequest,
-} from "../../src/prompt-editor/live.js";
+} from "../legacy-runtime/prompt-editor/live.js";
 import { writeSessionFlags } from "./helpers.js";
-import { EditorRegistry } from "../../src/prompt-editor/runner.js";
-import { readJournal } from "../../src/prompt-editor/journal.js";
+import { EditorRegistry } from "../legacy-runtime/prompt-editor/runner.js";
+import { readJournal } from "../legacy-runtime/prompt-editor/journal.js";
 import type {
   ContextHookEvent,
   PluginRuntime,
   SubmitPayload,
-} from "../../src/prompt-editor/types.js";
+} from "../legacy-runtime/prompt-editor/types.js";
 
 const sandboxes: string[] = [];
 const previousHome = process.env.OC_SKILL_POWER_HOME;

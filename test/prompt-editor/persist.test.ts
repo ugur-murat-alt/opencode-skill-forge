@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findTextPart } from "../../src/prompt-editor/persist.js";
+import { findTextPart } from "../legacy-runtime/prompt-editor/persist.js";
 
 describe("findTextPart", () => {
   const payload = [

@@ -1,4 +1,11 @@
-import { mkdtemp, writeFile, readFile, rm, mkdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  readFile,
+  rm,
+  mkdir,
+  readdir,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,21 +17,30 @@ const root = await mkdtemp(join(tmpdir(), "forge-clean-artifact-"));
 const reportPath =
   process.argv[2] ?? join(repo, "docs/evidence/p15-clean-package.json");
 const run = async (file, args, cwd, timeout = 240000) =>
-  execute(file, args, {
-    cwd,
-    timeout,
-    maxBuffer: 4 * 1024 * 1024,
-    env: {
-      PATH: process.env.PATH,
-      SystemRoot: process.env.SystemRoot,
-      SKILL_FORGE_PROFILE: "local",
-      npm_config_userconfig: join(root, "npmrc"),
-      npm_config_globalconfig: join(root, "global-npmrc"),
-      OC_SKILL_POWER_HOME: join(root, "legacy-home"),
-      SKILL_FORGE_DATA_DIR: join(root, "data"),
-      npm_config_cache: join(root, "npm-cache"),
+  execute(
+    process.platform === "win32" && file === "npm" ? process.execPath : file,
+    process.platform === "win32" && file === "npm"
+      ? [
+          join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
+          ...args,
+        ]
+      : args,
+    {
+      cwd,
+      timeout,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        SKILL_FORGE_PROFILE: "local",
+        npm_config_userconfig: join(root, "npmrc"),
+        npm_config_globalconfig: join(root, "global-npmrc"),
+        OC_SKILL_POWER_HOME: join(root, "legacy-home"),
+        SKILL_FORGE_DATA_DIR: join(root, "data"),
+        npm_config_cache: join(root, "npm-cache"),
+      },
     },
-  });
+  );
 const report = {
   captured_at: new Date().toISOString(),
   platform: process.platform,
@@ -44,6 +60,20 @@ try {
     shasum: artifact.shasum,
     files: artifact.files.map((f) => f.path),
   };
+  const packagedPaths = artifact.files.map((file) => file.path);
+  if (
+    packagedPaths.some((path) =>
+      /^(?:test\/|src\/|(?:dist\/)?(?:spr-agent|prompt-editor-agent)\.jsonc$|dist\/(?:plugin|skillforge-core)\.)/.test(
+        path,
+      ),
+    )
+  )
+    throw Error(
+      "Legacy runtime or agent configuration leaked into distribution",
+    );
+  if (!packagedPaths.includes("docs/tr/temiz-paket-kontrolu.md"))
+    throw Error("Packaged Turkish operating guide missing");
+  report.distribution_boundary = "verified";
   const install = join(root, "install");
   await mkdir(install);
   await writeFile(
@@ -61,6 +91,33 @@ try {
     ],
     install,
   );
+  // Inspect the actual installed tree, including nested dependency copies.
+  const openCodePackages = [];
+  const inspectModules = async (modules) => {
+    let entries;
+    try {
+      entries = await readdir(modules, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const path = join(modules, entry.name);
+      if (entry.name.startsWith("@")) {
+        for (const child of await readdir(path, { withFileTypes: true })) {
+          if (!child.isDirectory()) continue;
+          if (entry.name === "@opencode-ai")
+            openCodePackages.push(entry.name + "/" + child.name);
+          await inspectModules(join(path, child.name, "node_modules"));
+        }
+      } else await inspectModules(join(path, "node_modules"));
+    }
+  };
+  await inspectModules(join(install, "node_modules"));
+  report.production_opencode_packages = openCodePackages;
+  if (openCodePackages.length)
+    throw Error("OpenCode production dependencies remain");
   const metadata = JSON.parse(
     await readFile(join(repo, "package.json"), "utf8"),
   );

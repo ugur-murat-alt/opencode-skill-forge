@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { startRequestPoller } from "../../src/prompt-editor/index.js";
-import type { PromptEditorRequest } from "../../src/prompt-editor/live.js";
-import { EditorRegistry } from "../../src/prompt-editor/runner.js";
+import { startRequestPoller } from "../legacy-runtime/prompt-editor/index.js";
+import type { PromptEditorRequest } from "../legacy-runtime/prompt-editor/live.js";
+import { EditorRegistry } from "../legacy-runtime/prompt-editor/runner.js";
 
 const request = (
   kind: PromptEditorRequest["kind"],

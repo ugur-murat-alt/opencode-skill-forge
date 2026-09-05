@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-09-05T19:51:23.791271+00:00",
+  "probe_pid": 3193061,
+  "proc_io": "rchar: 5528476951\nwchar: 10399015321\nsyscr: 2613996\nsyscw: 5324516\nread_bytes: 172384256\nwrite_bytes: 10596757504\ncancelled_write_bytes: 0\n",
+  "host_io_pressure": "some avg10=12.39 avg60=11.87 avg300=10.42 total=4976537200\nfull avg10=11.98 avg60=11.43 avg300=9.99 total=4424699111\n",
+  "host_cpu_pressure": "some avg10=0.00 avg60=0.00 avg300=0.03 total=10994201499\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  "database_bytes": {
+    "local.sqlite": 197730304,
+    "local.sqlite-wal": 4297192
+  },
+  "top_process_names_cpu": [
+    "COMMAND         %CPU",
+    "python3         66.6",
+    "MainThread      34.9",
+    "bash            28.5",
+    "ChatGPT          8.8",
+    "bun              5.5",
+    "ChatGPT          4.8",
+    "gnome-system-mo  4.4",
+    "chrome           3.3"
+  ],
+  "interpretation": "Passive second observation near minute 15; not proof of causation."
+}

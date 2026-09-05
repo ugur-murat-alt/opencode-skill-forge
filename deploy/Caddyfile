@@ -1,0 +1,4 @@
+# Run Caddy on the host with FORGE_HOST set to the public DNS hostname.
+{$FORGE_HOST} {
+    reverse_proxy 127.0.0.1:38475
+}

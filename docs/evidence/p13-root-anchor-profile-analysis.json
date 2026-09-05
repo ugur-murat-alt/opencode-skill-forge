@@ -1,0 +1,193 @@
+{
+  "profile_sha256": "fb4f2dac03dfd8b462c2028734181f2a3a373293e8001d8e331f61d560fa694e",
+  "interpretation": "Weighted sample intervals over the whole Node lifecycle, not exact CPU accounting or a per-query attribution. SQLite driver line64 is stmt.run; line61 is stmt.all in the inspected installed source.",
+  "sqlite_driver_position_ticks": {
+    "56": 3786,
+    "64": 7028,
+    "61": 666,
+    "59": 2,
+    "65": 2
+  },
+  "top_self_sampled": [
+    {
+      "function": "executeQuery",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/dialect/sqlite/sqlite-driver.js",
+      "line": 56,
+      "sampled_interval_ms": 62246.253
+    },
+    {
+      "function": "(idle)",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 11288.027
+    },
+    {
+      "function": "(program)",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 1669.32
+    },
+    {
+      "function": "prepare",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/better-sqlite3/lib/methods/wrappers.js",
+      "line": 4,
+      "sampled_interval_ms": 1633.408
+    },
+    {
+      "function": "(garbage collector)",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 809.131
+    },
+    {
+      "function": "openFileHandle",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 732.736
+    },
+    {
+      "function": "open",
+      "url": "node:internal/fs/promises",
+      "line": 693,
+      "sampled_interval_ms": 623.075
+    },
+    {
+      "function": "close",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 617.902
+    },
+    {
+      "function": "writev",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 479.437
+    },
+    {
+      "function": "structuredClone",
+      "url": "node:internal/worker/js_transferable",
+      "line": 113,
+      "sampled_interval_ms": 427.141
+    },
+    {
+      "function": "visit",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/@modelcontextprotocol/server/dist/src-CX2iR2pK.mjs",
+      "line": 4562,
+      "sampled_interval_ms": 414.102
+    },
+    {
+      "function": "withPackageDirectory",
+      "url": "file:///tmp/forge-catalog-benchmark-BvDKQc/runtime/dist/index.js",
+      "line": 177,
+      "sampled_interval_ms": 329.691
+    },
+    {
+      "function": "runMicrotasks",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 267.264
+    },
+    {
+      "function": "addEventListener",
+      "url": "node:internal/event_target",
+      "line": 615,
+      "sampled_interval_ms": 235.946
+    },
+    {
+      "function": "promisify",
+      "url": "node:internal/util",
+      "line": 455,
+      "sampled_interval_ms": 191.653
+    },
+    {
+      "function": "input",
+      "url": "file:///tmp/forge-catalog-benchmark-BvDKQc/runtime/dist/index.js",
+      "line": 5685,
+      "sampled_interval_ms": 175.367
+    },
+    {
+      "function": "SdkError",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/@modelcontextprotocol/server/dist/src-CX2iR2pK.mjs",
+      "line": 362,
+      "sampled_interval_ms": 169.301
+    },
+    {
+      "function": "rowFactory",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/better-sqlite3/lib/database.js",
+      "line": 94,
+      "sampled_interval_ms": 163.853
+    },
+    {
+      "function": "join",
+      "url": "node:path",
+      "line": 1332,
+      "sampled_interval_ms": 150.888
+    },
+    {
+      "function": "inst._zod.parse",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/zod/v4/core/schemas.js",
+      "line": 1090,
+      "sampled_interval_ms": 149.677
+    },
+    {
+      "function": "",
+      "url": "",
+      "line": 3,
+      "sampled_interval_ms": 143.2
+    },
+    {
+      "function": "compileSourceTextModule",
+      "url": "node:internal/modules/esm/utils",
+      "line": 316,
+      "sampled_interval_ms": 142.343
+    },
+    {
+      "function": "visitNode",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/kysely/dist/operation-node/operation-node-visitor.js",
+      "line": 110,
+      "sampled_interval_ms": 142.321
+    },
+    {
+      "function": "now",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 126.154
+    },
+    {
+      "function": "finalizeIssue",
+      "url": "file:///home/ugur/Projects/opencode2-skill-forge-mcp/node_modules/zod/v4/core/util.js",
+      "line": 570,
+      "sampled_interval_ms": 125.653
+    },
+    {
+      "function": "fstat",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 118.076
+    },
+    {
+      "function": "",
+      "url": "node:internal/per_context/primordials",
+      "line": 493,
+      "sampled_interval_ms": 110.882
+    },
+    {
+      "function": "set TextDecoder",
+      "url": "",
+      "line": 0,
+      "sampled_interval_ms": 107.861
+    },
+    {
+      "function": "#readImpl",
+      "url": "node:internal/fs/dir",
+      "line": 113,
+      "sampled_interval_ms": 102.458
+    },
+    {
+      "function": "SafePromise",
+      "url": "node:internal/per_context/primordials",
+      "line": 478,
+      "sampled_interval_ms": 101.549
+    }
+  ]
+}

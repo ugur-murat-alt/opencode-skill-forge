@@ -1,0 +1,58 @@
+bun test v1.3.14 (0d9b296a)
+
+test/deletion.test.ts:
+163 |         await mkdir(outside);
+164 |         await writeFile(join(outside, "keep"), "preserved");
+165 |         await rename(pendingPkg.path, pendingPkg.path + "-held");
+166 |         await symlink(outside, pendingPkg.path);
+167 |         const result = await service.apply(actor, input);
+168 |         expect(result.items[0]).toMatchObject({
+                                      ^
+error: expect(received).toMatchObject(expected)
+
+  {
+    "action": "delete",
+-   "status": "completed",
++   "error": {
++     "code": "unsafe_path",
++     "message": "Silme yolu beklenen skill/revision kimliğiyle eşleşmiyor.",
++   },
++   "skill_id": "059436d4-a86d-44d1-83fb-084c6a0eae72",
++   "status": "pending_cleanup",
+  }
+
+- Expected  - 1
++ Received  + 6
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/deletion.test.ts:168:33)
+(fail) permanent deletion sqlite: references, real removal, partial replay and symlink confinement [479.00ms]
+163 |         await mkdir(outside);
+164 |         await writeFile(join(outside, "keep"), "preserved");
+165 |         await rename(pendingPkg.path, pendingPkg.path + "-held");
+166 |         await symlink(outside, pendingPkg.path);
+167 |         const result = await service.apply(actor, input);
+168 |         expect(result.items[0]).toMatchObject({
+                                      ^
+error: expect(received).toMatchObject(expected)
+
+  {
+    "action": "delete",
+-   "status": "completed",
++   "error": {
++     "code": "unsafe_path",
++     "message": "Silme yolu beklenen skill/revision kimliğiyle eşleşmiyor.",
++   },
++   "skill_id": "71d89095-5982-47cd-aa80-351f1af830a4",
++   "status": "pending_cleanup",
+  }
+
+- Expected  - 1
++ Received  + 6
+
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/test/deletion.test.ts:168:33)
+(fail) permanent deletion postgres: references, real removal, partial replay and symlink confinement [263.71ms]
+
+ 0 pass
+ 2 fail
+ 8 expect() calls
+Ran 2 tests across 1 file. [881.00ms]

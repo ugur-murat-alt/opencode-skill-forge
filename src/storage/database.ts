@@ -1,3 +1,7 @@
+import { deletionMigration } from "./deletion-migration.js";
+import { readerMigration } from "./reader-migration.js";
+import { runPinMigration } from "./run-pin-migration.js";
+import { executionPinMigration } from "./execution-pin-migration.js";
 import { flagImportMigration } from "./flag-import-migration.js";
 import { sessionPreferenceMigration } from "./session-preference-migration.js";
 import { rewriteImportMigration } from "./rewrite-import-migration.js";
@@ -74,6 +78,10 @@ export async function openDatabase(options: {
   }
   const db = new Kysely<DB>({ dialect });
   const migrations: Record<string, Migration> = {
+    "019_package_deletion": deletionMigration,
+    "018_revision_readers": readerMigration,
+    "017_run_pins": runPinMigration,
+    "016_execution_pins": executionPinMigration,
     "015_flag_import": flagImportMigration,
     "014_session_preferences": sessionPreferenceMigration,
     "013_rewrite_import": rewriteImportMigration,

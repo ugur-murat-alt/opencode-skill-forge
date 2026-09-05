@@ -1,0 +1,11 @@
+{"published":1000,"total":10000,"elapsed_ms":14555}
+{"published":2000,"total":10000,"elapsed_ms":26545}
+{"published":3000,"total":10000,"elapsed_ms":38498}
+{"published":4000,"total":10000,"elapsed_ms":50480}
+{"published":5000,"total":10000,"elapsed_ms":62452}
+{"published":6000,"total":10000,"elapsed_ms":74464}
+{"published":7000,"total":10000,"elapsed_ms":86389}
+{"published":8000,"total":10000,"elapsed_ms":98359}
+{"published":9000,"total":10000,"elapsed_ms":110398}
+{"published":10000,"total":10000,"elapsed_ms":124345}
+{"status":"measured","context":{"ten_package_application_bytes":2235,"catalog_application_bytes":2240,"items":5,"catalog_count":10000},"load":{"requested_rps":100,"requests":300,"elapsed_ms":3045.3012869999984,"achieved_rps":98.5121558703674,"clients":1,"pattern":"half search, half same-package load; overlapping official MCP calls"},"latency":{"forge_search":{"n":150,"p50_ms":15.026174999999057,"p95_ms":24.817503999998735,"p99_ms":30.696144000001368},"forge_load":{"n":150,"p50_ms":110.96213500000158,"p95_ms":186.18338599999697,"p99_ms":207.1610440000004}},"report":"/home/ugur/Projects/opencode2-skill-forge-mcp/docs/evidence/p11-readers-catalog-shared.json"}

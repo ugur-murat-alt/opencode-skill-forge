@@ -8,20 +8,20 @@ import {
   applyRewrite,
   registerContextHook,
   type ContextHookDeps,
-} from "../../src/prompt-editor/context-hook.js";
+} from "../legacy-runtime/prompt-editor/context-hook.js";
 import type {
   ChatMessage,
   ContextHookEvent,
   MessageContentPart,
   PluginRuntime,
-} from "../../src/prompt-editor/types.js";
+} from "../legacy-runtime/prompt-editor/types.js";
 import {
   agentPermissions,
   resolveAgentModel,
-} from "../../src/prompt-editor/agent.js";
-import type { PromptEditorConfig } from "../../src/prompt-editor/config.js";
-import { PROMPT_EDITOR_DEFAULTS } from "../../src/prompt-editor/config.js";
-import { EditorRegistry } from "../../src/prompt-editor/runner.js";
+} from "../legacy-runtime/prompt-editor/agent.js";
+import type { PromptEditorConfig } from "../legacy-runtime/prompt-editor/config.js";
+import { PROMPT_EDITOR_DEFAULTS } from "../legacy-runtime/prompt-editor/config.js";
+import { EditorRegistry } from "../legacy-runtime/prompt-editor/runner.js";
 
 let sandbox: string;
 let previousSkillPowerHome: string | undefined;

@@ -1,0 +1,24 @@
+{"published":1000,"total":10000,"elapsed_ms":15301}
+{"published":2000,"total":10000,"elapsed_ms":27281}
+{"published":3000,"total":10000,"elapsed_ms":39310}
+{"published":4000,"total":10000,"elapsed_ms":51321}
+{"published":5000,"total":10000,"elapsed_ms":63245}
+{"published":6000,"total":10000,"elapsed_ms":75186}
+{"published":7000,"total":10000,"elapsed_ms":87151}
+{"published":8000,"total":10000,"elapsed_ms":99165}
+{"published":9000,"total":10000,"elapsed_ms":111403}
+{"published":10000,"total":10000,"elapsed_ms":123408}
+{"status":"measured","context":{"ten_package_application_bytes":2235,"catalog_application_bytes":2239,"items":5,"catalog_count":10000},"load":{"requested_rps":100,"requests":300,"elapsed_ms":3214.8692360000023,"achieved_rps":93.31618387998701,"clients":1,"pattern":"half search, half same-package load; overlapping official MCP calls"},"latency":{"forge_search":{"n":150,"p50_ms":10.674874000000273,"p95_ms":32.56777400000283,"p99_ms":47.4309949999988},"forge_load":{"n":150,"p50_ms":46.157869000000574,"p95_ms":340.5670109999992,"p99_ms":407.41016500000114}},"report":"/home/ugur/Projects/opencode2-skill-forge-mcp/docs/evidence/p11-readers-catalog-recheck.json"}
+ 96 |         stdio: "inherit",
+ 97 |       },
+ 98 |     );
+ 99 |     child.once("error", no);
+100 |     child.once("exit", (code) =>
+101 |       code === 0 ? ok() : no(Error(`Probe exit ${code}`)),
+                                   ^
+error: Probe exit 1
+      at <anonymous> (/home/ugur/Projects/opencode2-skill-forge-mcp/scripts/catalog-benchmark.ts:101:30)
+      at emit (node:events:98:22)
+      at #handleOnExit (node:child_process:520:14)
+
+Bun v1.3.14 (Linux x64)

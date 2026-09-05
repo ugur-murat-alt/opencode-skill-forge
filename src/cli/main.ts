@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { backupPostgres, restorePostgres } from "../backup/postgres.js";
+import { backupSqlite, restoreSqlite } from "../backup/sqlite.js";
 import { remoteMigrationUpload } from "../migration/remote.js";
 import { FlagMigration } from "../migration/flags.js";
 import { RewriteMigration } from "../migration/rewrites.js";
@@ -33,13 +35,14 @@ import {
 } from "node:path";
 import { localConfig, PRODUCT_VERSION } from "./config.js";
 import { serve } from "../http/server.js";
-import { ensureDaemon, daemonHealth } from "./daemon.js";
+import { ensureDaemon, daemonHealth, stopDaemon } from "./daemon.js";
 import { bridge } from "../mcp/bridge.js";
 import { errorEnvelope, ForgeError } from "../domain/errors.js";
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
+      "database-name": { type: "string" },
       "data-dir": { type: "string" },
       "server-url": { type: "string" },
       "legacy-home": { type: "string" },
@@ -66,7 +69,7 @@ async function main() {
   }
   if (values.help || !positionals.length) {
     process.stdout.write(
-      "Skill Forge\n  serve   Yerel kimlikli HTTP/MCP servisi\n  worker  Ayrı süreçte kalıcı iş tüketicisi\n  mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)\n  install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu\n  login   Tek kullanımlık web giriş kodu\n  doctor  Servis kimliği/sürüm/sağlık kontrolü\n  migration-scan --project <dizin>  Eski veriyi salt okunur keşfet\n  migration-import --manifest <json> --mapping <json>  Seçilen paketleri aktar\n  migration-rollback --receipt <id>  Değişmemiş aktarımı geri al\n  migration-learning-export / migration-learning-rollback --receipt <id>  Özel öğrenme aktarımı\n  migration-rewrites-export / migration-rewrites-rollback --receipt <id>  Eski rewrite geçmişi\n  migration-flags-export / migration-flags-rollback --receipt <id>  Oturum bayrağı aktarımı\n  migration-upload --server-url <origin> --tenant-id <id> --manifest <json> --mapping <json>  Uzak aktarım\n  --data-dir <dizin> --port <port>\n",
+      "Skill Forge\n  backup / restore --data-dir <kaynak> --output <yeni-dizin>  SQLite/PostgreSQL yedekleme\n  serve   Yerel kimlikli HTTP/MCP servisi\n  stop    Yerel servisi kimlikli ve kontrollü durdur\n  worker  Ayrı süreçte kalıcı iş tüketicisi\n  mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)\n  install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu\n  login   Tek kullanımlık web giriş kodu\n  doctor  Servis kimliği/sürüm/sağlık kontrolü\n  migration-scan --project <dizin>  Eski veriyi salt okunur keşfet\n  migration-import --manifest <json> --mapping <json>  Seçilen paketleri aktar\n  migration-rollback --receipt <id>  Değişmemiş aktarımı geri al\n  migration-learning-export / migration-learning-rollback --receipt <id>  Özel öğrenme aktarımı\n  migration-rewrites-export / migration-rewrites-rollback --receipt <id>  Eski rewrite geçmişi\n  migration-flags-export / migration-flags-rollback --receipt <id>  Oturum bayrağı aktarımı\n  migration-upload --server-url <origin> --tenant-id <id> --manifest <json> --mapping <json>  Uzak aktarım\n  --data-dir <dizin> --port <port>\n",
     );
     return;
   }
@@ -146,6 +149,34 @@ async function main() {
     );
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     if (report.failed) process.exitCode = 1;
+    return;
+  }
+  if (positionals[0] === "backup" || positionals[0] === "restore") {
+    if (!values["data-dir"] || !values.output)
+      throw new ForgeError(
+        "backup_paths_required",
+        "--data-dir kaynak ve --output yeni hedef dizin gerekiyor.",
+      );
+    const url = process.env.SKILL_FORGE_POSTGRES_URL;
+    if (url && positionals[0] === "restore" && !values["database-name"])
+      throw new ForgeError(
+        "database_name_required",
+        "Restore için --database-name yeni DB adı gerekiyor.",
+      );
+    const report = url
+      ? positionals[0] === "backup"
+        ? await backupPostgres(values["data-dir"], values.output, url)
+        : await restorePostgres(
+            values["data-dir"],
+            values.output,
+            url,
+            values["database-name"]!,
+          )
+      : await (positionals[0] === "backup" ? backupSqlite : restoreSqlite)(
+          values["data-dir"],
+          values.output,
+        );
+    process.stdout.write(JSON.stringify(report) + "\n");
     return;
   }
   const config = await localConfig(
@@ -489,6 +520,10 @@ async function main() {
       process.stdout.write(
         `${config.url}\nEşleme kodu (5 dakika, tek kullanım): ${value.code}\n`,
       );
+      break;
+    }
+    case "stop": {
+      process.stdout.write(JSON.stringify(await stopDaemon(config)) + "\n");
       break;
     }
     case "doctor": {

@@ -1,0 +1,3 @@
+scripts/benchmark-sql.mjs 91ms
+scripts/catalog-benchmark.ts 119ms
+scripts/catalog-probe.mjs 103ms
