@@ -1,0 +1,11 @@
+{"published":1000,"total":10000,"elapsed_ms":12568}
+{"published":2000,"total":10000,"elapsed_ms":24714}
+{"published":3000,"total":10000,"elapsed_ms":37792}
+{"published":4000,"total":10000,"elapsed_ms":51310}
+{"published":5000,"total":10000,"elapsed_ms":64387}
+{"published":6000,"total":10000,"elapsed_ms":77582}
+{"published":7000,"total":10000,"elapsed_ms":90726}
+{"published":8000,"total":10000,"elapsed_ms":103823}
+{"published":9000,"total":10000,"elapsed_ms":117174}
+{"published":10000,"total":10000,"elapsed_ms":136253}
+{"status":"measured","context":{"ten_package_application_bytes":2235,"catalog_application_bytes":2240,"items":5,"catalog_count":10000},"load":{"requested_rps":100,"requests":300,"elapsed_ms":3033.833202,"achieved_rps":98.88438918881906,"clients":1,"pattern":"half search, half same-package load; overlapping official MCP calls"},"latency":{"forge_search":{"n":150,"p50_ms":9.979988999999478,"p95_ms":22.473343999999997,"p99_ms":26.086703999999372},"forge_load":{"n":150,"p50_ms":12.350878999999622,"p95_ms":145.76255599999968,"p99_ms":153.22086900000068}},"report":"/home/ugur/Projects/opencode2-skill-forge/docs/evidence/p07-catalog-benchmark.json"}

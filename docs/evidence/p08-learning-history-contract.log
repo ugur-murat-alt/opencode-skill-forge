@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/learning-history.test.ts:
+(pass) learning history sqlite: stable dedup identity, CAS, disabled retrieval and private bounded revisions [333.48ms]
+(pass) learning history postgres: stable dedup identity, CAS, disabled retrieval and private bounded revisions [215.19ms]
+
+ 2 pass
+ 0 fail
+ 26 expect() calls
+Ran 2 tests across 1 file. [679.00ms]

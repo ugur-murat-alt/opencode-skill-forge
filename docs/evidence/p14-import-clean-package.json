@@ -1,0 +1,60 @@
+{
+  "captured_at": "2026-09-05T15:00:13.378Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node": "v24.19.0",
+  "status": "passed",
+  "artifact": {
+    "filename": "vaur94-opencode2-skill-forge-0.5.6.tgz",
+    "integrity": "sha512-PN4GzfB4qNf0md/iB/oWRJw4q11DsOoY+KGylReCnuYq93LqonvFFqgcAPaQEW7xlfj1vzOuUtRGEfCbyJGOjQ==",
+    "shasum": "5aa07e2d08982721fb4c3da8ea5985fa52107097",
+    "files": [
+      "LICENSE",
+      "README.md",
+      "SPR_SKILL_AUTHORING.md",
+      "dist/archive-worker.js",
+      "dist/cli.js",
+      "dist/index.js",
+      "dist/prompts/prompt-edit.md",
+      "dist/prompts/skill-evolve.md",
+      "dist/web/assets/index-Cr0tZ1fQ.css",
+      "dist/web/assets/index-VtrNd0DD.js",
+      "dist/web/assets/inter-latin-400-normal-C38fXH4l.woff2",
+      "dist/web/assets/inter-latin-400-normal-CyCys3Eg.woff",
+      "dist/web/assets/inter-latin-500-normal-BL9OpVg8.woff",
+      "dist/web/assets/inter-latin-500-normal-Cerq10X2.woff2",
+      "dist/web/assets/inter-latin-600-normal-CiBQ2DWP.woff",
+      "dist/web/assets/inter-latin-600-normal-LgqL8muc.woff2",
+      "dist/web/assets/inter-latin-ext-400-normal-77YHD8bZ.woff",
+      "dist/web/assets/inter-latin-ext-400-normal-C1nco2VV.woff2",
+      "dist/web/assets/inter-latin-ext-500-normal-BxGbmqWO.woff",
+      "dist/web/assets/inter-latin-ext-500-normal-CV4jyFjo.woff2",
+      "dist/web/assets/inter-latin-ext-600-normal-CIVaiw4L.woff",
+      "dist/web/assets/inter-latin-ext-600-normal-D2bJ5OIk.woff2",
+      "dist/web/index.html",
+      "package.json",
+      "prompt-editor-agent.jsonc",
+      "spr-agent.jsonc"
+    ]
+  },
+  "cli_version": "0.5.6",
+  "probe": {
+    "health": "healthy",
+    "package_integrity": {
+      "status": "verified",
+      "checked": 0,
+      "issues": 0
+    },
+    "tools": [
+      "forge_handoff",
+      "forge_load",
+      "forge_prepare",
+      "forge_report",
+      "forge_run",
+      "forge_search"
+    ],
+    "web": true,
+    "archive_worker": true,
+    "search_load": true
+  }
+}

@@ -1,0 +1,18 @@
+bun test v1.3.14 (0d9b296a)
+
+test/archive.test.ts:
+(pass) classic package ZIP roundtrip preserves references and binary assets [18.44ms]
+(pass) ZIP import rejects traversal, multiple roots, expansion limit and symlink metadata [83.58ms]
+
+test/prompt-service.test.ts:
+(pass) prompt invariant guards preserve Turkish negation, numbers, units, paths and versions [2.64ms]
+(pass) fixture provider over actual HTTP + Pi: one prompt call, autoApply, private reusable lesson, no SPR [543.02ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [514.14ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.59ms]
+
+ 6 pass
+ 0 fail
+ 52 expect() calls
+Ran 6 tests across 3 files. [1.73s]

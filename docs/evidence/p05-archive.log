@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/archive.test.ts:
+(pass) classic package ZIP roundtrip preserves references and binary assets [16.27ms]
+(pass) ZIP import rejects traversal, multiple roots, expansion limit and symlink metadata [76.22ms]
+
+ 2 pass
+ 0 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [182.00ms]

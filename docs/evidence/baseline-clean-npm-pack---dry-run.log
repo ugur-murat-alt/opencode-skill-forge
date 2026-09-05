@@ -1,0 +1,27 @@
+vaur94-opencode2-skill-forge-0.5.6.tgz
+npm notice
+npm notice 📦  @vaur94/opencode2-skill-forge@0.5.6
+npm notice Tarball Contents
+npm notice 1.1kB LICENSE
+npm notice 14.3kB README.md
+npm notice 26.8kB SPR_SKILL_AUTHORING.md
+npm notice 26.0kB dist/bin/skill-fs-helper-linux-x64
+npm notice 65B dist/bin/skill-fs-helper-linux-x64.sha256
+npm notice 157.0kB dist/plugin.js
+npm notice 390B dist/prompt-editor-agent.jsonc
+npm notice 936B dist/skillforge-core.d.ts
+npm notice 1.5MB dist/skillforge-core.js
+npm notice 7.2kB dist/spr-agent.jsonc
+npm notice 1.1kB package.json
+npm notice 390B prompt-editor-agent.jsonc
+npm notice 7.2kB spr-agent.jsonc
+npm notice Tarball Details
+npm notice name: @vaur94/opencode2-skill-forge
+npm notice version: 0.5.6
+npm notice filename: vaur94-opencode2-skill-forge-0.5.6.tgz
+npm notice package size: 378.7 kB
+npm notice unpacked size: 1.7 MB
+npm notice shasum: fd333f2771dffd63e120d04ad4c45f436e0cc288
+npm notice integrity: sha512-EuAP3d1W3XncW[...]1Jyh/BnhvS/Bg==
+npm notice total files: 13
+npm notice

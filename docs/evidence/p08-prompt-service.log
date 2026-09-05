@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/prompt-service.test.ts:
+(pass) prompt invariant guards preserve Turkish negation, numbers, units, paths and versions [4.54ms]
+(pass) fixture provider over actual HTTP + Pi: one prompt call, autoApply, private reusable lesson, no SPR [507.83ms]
+
+ 2 pass
+ 0 fail
+ 23 expect() calls
+Ran 2 tests across 1 file. [1015.00ms]

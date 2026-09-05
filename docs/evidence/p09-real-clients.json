@@ -1,0 +1,20 @@
+{
+  "fixture": "owned temporary project and service; no live model",
+  "clients": [
+    {
+      "client": "codex",
+      "version": "codex-cli 0.153.3",
+      "config_parsed": true,
+      "hooks": "require client trust review",
+      "live_agent": "not_run"
+    },
+    {
+      "client": "claude",
+      "version": "2.1.261 (Claude Code)",
+      "config_parsed": true,
+      "status": "client_approval_required",
+      "live_agent": "not_run"
+    }
+  ],
+  "status": "passed"
+}

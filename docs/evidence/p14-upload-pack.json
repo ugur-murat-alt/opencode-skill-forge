@@ -1,0 +1,146 @@
+{
+  "@vaur94/opencode2-skill-forge": {
+    "id": "@vaur94/opencode2-skill-forge@0.5.6",
+    "name": "@vaur94/opencode2-skill-forge",
+    "version": "0.5.6",
+    "size": 655525,
+    "unpackedSize": 1405880,
+    "shasum": "7a51c3798779c412d53f932c4d41250922cf5dcf",
+    "integrity": "sha512-PWMTlOyGzwhIvCI/Sug7JZy81ELk4VteqWFXllnwSRGTUFGQRAhxj+lu1kmFRGtPJ4Vs5V1Z9wQbPC+0+1AZ5w==",
+    "filename": "vaur94-opencode2-skill-forge-0.5.6.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 1071,
+        "mode": 420
+      },
+      {
+        "path": "README.md",
+        "size": 14344,
+        "mode": 420
+      },
+      {
+        "path": "SPR_SKILL_AUTHORING.md",
+        "size": 7558,
+        "mode": 384
+      },
+      {
+        "path": "dist/archive-worker.js",
+        "size": 10187,
+        "mode": 420
+      },
+      {
+        "path": "dist/cli.js",
+        "size": 359833,
+        "mode": 493
+      },
+      {
+        "path": "dist/index.js",
+        "size": 306008,
+        "mode": 420
+      },
+      {
+        "path": "dist/prompts/prompt-edit.md",
+        "size": 741,
+        "mode": 420
+      },
+      {
+        "path": "dist/prompts/skill-evolve.md",
+        "size": 1510,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/index-CJUM6Nvp.js",
+        "size": 264695,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/index-Dp2Koay2.css",
+        "size": 12392,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-400-normal-C38fXH4l.woff2",
+        "size": 23664,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-400-normal-CyCys3Eg.woff",
+        "size": 30696,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-500-normal-BL9OpVg8.woff",
+        "size": 31284,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-500-normal-Cerq10X2.woff2",
+        "size": 24272,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-600-normal-CiBQ2DWP.woff",
+        "size": 31260,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-600-normal-LgqL8muc.woff2",
+        "size": 24452,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-400-normal-77YHD8bZ.woff",
+        "size": 47560,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-400-normal-C1nco2VV.woff2",
+        "size": 35000,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-500-normal-BxGbmqWO.woff",
+        "size": 48492,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-500-normal-CV4jyFjo.woff2",
+        "size": 36024,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-600-normal-CIVaiw4L.woff",
+        "size": 48668,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/inter-latin-ext-600-normal-D2bJ5OIk.woff2",
+        "size": 36260,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/index.html",
+        "size": 355,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 2007,
+        "mode": 384
+      },
+      {
+        "path": "prompt-editor-agent.jsonc",
+        "size": 390,
+        "mode": 384
+      },
+      {
+        "path": "spr-agent.jsonc",
+        "size": 7157,
+        "mode": 384
+      }
+    ],
+    "entryCount": 26,
+    "bundled": []
+  }
+}

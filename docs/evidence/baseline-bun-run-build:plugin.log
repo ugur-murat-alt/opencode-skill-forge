@@ -1,0 +1,3 @@
+$ bash scripts/build-plugin.sh
+error: preserved dist/skillforge-core.js is missing
+error: script "build:plugin" exited with code 1

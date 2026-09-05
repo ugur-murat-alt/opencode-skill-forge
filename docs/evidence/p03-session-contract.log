@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/session-preferences.test.ts:
+(pass) session preferences sqlite: scoped CAS and immutable source-aware acceptance [282.11ms]
+(pass) session preferences postgres: scoped CAS and immutable source-aware acceptance [155.02ms]
+
+ 2 pass
+ 0 fail
+ 30 expect() calls
+Ran 2 tests across 1 file. [595.00ms]

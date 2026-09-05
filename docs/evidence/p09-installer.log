@@ -1,0 +1,11 @@
+bun test v1.3.14 (0d9b296a)
+
+test/installer.test.ts:
+(pass) codex parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [90.61ms]
+(pass) claude parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [83.18ms]
+(pass) hook commands quote literal shell metacharacters and Windows uses encoded argv [0.35ms]
+
+ 3 pass
+ 0 fail
+ 20 expect() calls
+Ran 3 tests across 1 file. [216.00ms]

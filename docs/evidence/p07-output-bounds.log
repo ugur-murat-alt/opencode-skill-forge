@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/mcp-output-bounds.test.ts:
+(pass) real script large JSON is an artifact, pages preserve UTF-8 and ledger replay, scope and inventory [1786.58ms]
+(pass) artifact metadata response stays bounded for long Unicode paths and large historical JSON [4.47ms]
+
+ 2 pass
+ 0 fail
+ 59 expect() calls
+Ran 2 tests across 1 file. [1.93s]

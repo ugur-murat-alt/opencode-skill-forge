@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/migration-import.test.ts:
+(pass) migration sqlite: atomic receipt, replay, source guard and conservative rollback [322.80ms]
+(pass) migration postgres: atomic receipt, replay, source guard and conservative rollback [150.01ms]
+
+test/migration-http.test.ts:
+(pass) server migration HTTP sqlite: authenticated bytes, CSRF, private export and package receipt [632.46ms]
+(pass) server migration HTTP postgres: authenticated bytes, CSRF, private export and package receipt [542.98ms]
+
+ 4 pass
+ 0 fail
+ 68 expect() calls
+Ran 4 tests across 2 files. [2.12s]

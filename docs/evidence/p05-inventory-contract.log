@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+test/inventory-bounds.test.ts:
+(pass) inventory bounds empty directories and rejects redirected ancestors [215.23ms]
+
+test/package-integrity.test.ts:
+(pass) real service restart detects indexed package corruption without changing active revision [534.99ms]
+
+ 2 pass
+ 0 fail
+ 13 expect() calls
+Ran 2 tests across 2 files. [1242.00ms]

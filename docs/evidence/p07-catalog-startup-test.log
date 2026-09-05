@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/package-integrity.test.ts:
+(pass) real service restart detects indexed package corruption without changing active revision [577.29ms]
+
+ 1 pass
+ 0 fail
+ 10 expect() calls
+Ran 1 test across 1 file. [1102.00ms]

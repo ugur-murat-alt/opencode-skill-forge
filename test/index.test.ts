@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { setup } from "../src/index.js";
+import { setup } from "../src/legacy-plugin.js";
 import type { PluginRuntime } from "../src/prompt-editor/types.js";
 
 test("variant-only SPR override is disposed with the wrapper", async () => {

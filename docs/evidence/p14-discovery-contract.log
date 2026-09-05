@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/migration-discovery.test.ts:
+(pass) legacy discovery preserves bytes, reports malformed and duplicate data, and keeps home learning private [33.37ms]
+(pass) migration CLI does not initialize daemon data or write into legacy sources [1197.49ms]
+
+ 2 pass
+ 0 fail
+ 16 expect() calls
+Ran 2 tests across 1 file. [1304.00ms]

@@ -1,0 +1,306 @@
+bun test v1.3.14 (0d9b296a)
+[prompt-editor] subsystem ready (model=default, steps=30, timeout=30000ms, learn=/tmp/pe-setup-1Wwbiw/.opencode/.skill-power/prompt-editor/learn.md)
+[prompt-editor] subsystem ready (model=default, steps=30, timeout=30000ms, learn=/tmp/pe-setup-1Wwbiw/.opencode/.skill-power/prompt-editor/learn.md)
+[prompt-editor] subsystem ready (model=default, steps=30, timeout=1000ms, learn=/tmp/pe-setup-1Wwbiw/.opencode/.skill-power/prompt-editor/learn.md)
+[prompt-editor] subsystem ready (model=default, steps=30, timeout=30000ms, learn=/tmp/pe-setup-1Wwbiw/.opencode/.skill-power/prompt-editor/learn.md)
+
+test/index.test.ts:
+(pass) variant-only SPR override is disposed with the wrapper [5.90ms]
+
+test/security-regressions.test.ts:
+(pass) support path confinement > rejects traversal, aliases, backslashes, and directory-only paths [0.34ms]
+(pass) support path confinement > findSkill rejects invalid names instead of traversing [0.68ms]
+(pass) support path confinement > rejects a project skills root redirected by symlink [0.53ms]
+(pass) support path confinement > rejects a global skills root redirected by symlink [0.22ms]
+(pass) support path confinement > support reads and writes reject symlinked files and directories [0.74ms]
+(pass) support path confinement > remove detects a concurrent replacement and preserves it [0.80ms]
+(pass) review session registry identity > pairs source sessions and attempts for concurrent reviews [2519.09ms]
+(pass) transaction isolation > rollback restores only the target skill [50.62ms]
+(pass) transaction isolation > commit rechecks the target after verification [33.91ms]
+(pass) transaction isolation > schema v1 create rollback keeps sibling skills [44.61ms]
+(pass) finalization consistency > no-change rejects an unrecorded disk mutation [12.67ms]
+(pass) finalization consistency > mutation-complete rejects journal and transaction path mismatch [22.43ms]
+(pass) graduation integrity > rejects orphan, missing, and symlinked resources [9.35ms]
+(pass) graduation integrity > validates managed frontmatter for support-only changes [0.52ms]
+(pass) background reviewer policy > requires reading an existing support file before overwrite [4.12ms]
+(pass) background reviewer policy > forbids background script mutations [1.52ms]
+(pass) background reviewer policy > rejects a support file changed after it was viewed [1.84ms]
+(pass) background reviewer policy > rejects a skill changed after it was viewed [1.00ms]
+(pass) background reviewer policy > rolls back when journal persistence fails after mutation [57.18ms]
+(pass) production launch and recovery > waits for review execution start and coalesces duplicate success [0.21ms]
+(pass) production launch and recovery > gates review terminal events through the execution lifecycle [0.42ms]
+(pass) production launch and recovery > uses quality-preserving review opportunity defaults [0.32ms]
+(pass) production launch and recovery > accepts custom trigger cadence [0.04ms]
+(pass) production launch and recovery > end-of-session launch gate requires launchReview + min steps + no blockers [0.13ms]
+(pass) production launch and recovery > keeps low-evidence and unresolved work out of review [0.71ms]
+(pass) production launch and recovery > admits verified tool-heavy work at the tuned threshold [0.11ms]
+(pass) production launch and recovery > normalizes idle events into execution success [0.10ms]
+(pass) production launch and recovery > enables only the configured production evolution modes [0.04ms]
+(pass) production launch and recovery > recovers an incomplete transaction when a workspace is discovered [40.87ms]
+(pass) production launch and recovery > recovers a crash after disk write but before mutation ledger [45.75ms]
+
+test/core-runtime.test.ts:
+(pass) core runtime router > routes shared raw events to exactly one activation [2.23ms]
+(pass) core runtime router > routes a session only to the activation matching its directory [0.27ms]
+(pass) core runtime router > distinguishes workspaces that share the same directory [0.26ms]
+(pass) core runtime router > reassigns a routed session when it moves locations [0.51ms]
+(pass) core runtime router > routes events whose project location differs from the activation scope [0.27ms]
+(pass) core runtime router > stays fail-closed for unmatched locations across multiple activations [0.24ms]
+(pass) core runtime router > fails closed when a shared event has no resolvable project scope [0.30ms]
+(pass) core runtime router > keeps execution lifecycle events with their first owner [0.31ms]
+(pass) core runtime router > blocks a routed session after it switches to an SPR agent [0.48ms]
+(pass) core runtime router > blocks a routed session after it switches to a hidden agent [0.27ms]
+(pass) core runtime router > delivers a created SPR review context only to its creator [0.77ms]
+(pass) core runtime router > quarantines SPR context until its create response records ownership [0.32ms]
+(pass) core runtime router > recognizes the published omni-spr reviewer identity [0.24ms]
+(pass) core runtime router > skips unknown SPR context without changing its tools [0.18ms]
+(pass) core runtime router > skips parented, forked, hidden, and subagent contexts [0.30ms]
+(pass) core runtime router > routes new work after an owner cleanup and tolerates duplicate cleanup [0.28ms]
+(pass) core runtime router > fences an event lookup that finishes after cleanup [0.21ms]
+(pass) core runtime router > fences a context lookup that finishes after cleanup [0.19ms]
+(pass) core runtime router > delivers deletion once and tombstones late events [0.34ms]
+(pass) core runtime router > tombstones deletion before the consumer requests another event [0.36ms]
+(pass) core runtime router > claims a duplicate durable event ID only once [0.30ms]
+(pass) core runtime router > keeps reviews blocked after their owner activation cleans up [0.23ms]
+(pass) core runtime router > bounds review ownership with fail-closed eviction [2.65ms]
+(pass) core runtime router > cleanup removes only undelivered event claims [0.08ms]
+(pass) core runtime router > filters editor sessions for every activation [0.24ms]
+(pass) core runtime router > accepts an array-shaped agent list response [0.20ms]
+(pass) core runtime router > handoff-only mode does not observe normal owner sessions [0.54ms]
+(pass) core runtime router > handoff-only mode emits a bounded virtual source [0.76ms]
+(pass) core runtime router > handoff enqueue fails if its activation closes during capture [0.19ms]
+(pass) core runtime router > handoff-only mode hides owner tool results but keeps review tools [0.36ms]
+(pass) core runtime router > fails closed when another module generation owns an incompatible protocol [0.25ms]
+
+test/spr-handoff.test.ts:
+(pass) SPR handoff > injects the final-step instruction only for configured agents [0.53ms]
+(pass) SPR handoff > queues one bounded handoff without copying session history [0.41ms]
+(pass) SPR handoff > atomically deduplicates concurrent calls from one model turn [0.10ms]
+(pass) SPR handoff > fails closed for disallowed agents and missing locations [0.15ms]
+(pass) SPR handoff > disposes partial registrations when setup fails [0.29ms]
+
+test/core-options.test.ts:
+(pass) normalizeCoreOptions > replaces legacy transcript triggers with the bounded handoff trigger [0.07ms]
+(pass) normalizeCoreOptions > gives nested skills settings precedence over outer settings [0.04ms]
+(pass) normalizeCoreOptions > keeps outer core settings when skills is empty [0.04ms]
+(pass) normalizeCoreOptions > excludes wrapper options without mutating the input [0.07ms]
+(pass) normalizeCoreOptions > maps an explicit spr model onto the core reviewModel [0.06ms]
+(pass) normalizeCoreOptions > leaves options untouched without an spr block [0.02ms]
+(pass) normalizeCoreOptions > returns undefined for non-object and array inputs [0.02ms]
+
+test/spr-authoring-policy.test.ts:
+(pass) SPR skill-authoring contract > root and packaged agent definitions stay byte-identical [0.02ms]
+(pass) SPR skill-authoring contract > encodes deterministic decision, scope, conflict, and evaluation gates [0.08ms]
+(pass) SPR skill-authoring contract > names only the lifecycle tools exposed by the preserved core [0.05ms]
+(pass) SPR skill-authoring contract > keeps the reviewer deny-first and skill-creator in-memory only [0.03ms]
+(pass) SPR skill-authoring contract > ships the maintainer handbook with the package [0.30ms]
+
+test/agent-config.test.ts:
+(pass) packaged hidden-agent defaults > spr-agent.jsonc inherits OpenCode model resolution [0.33ms]
+(pass) packaged hidden-agent defaults > prompt-editor-agent.jsonc inherits OpenCode model resolution [0.08ms]
+(pass) packaged hidden-agent defaults > dist/spr-agent.jsonc inherits OpenCode model resolution [0.25ms]
+(pass) packaged hidden-agent defaults > dist/prompt-editor-agent.jsonc inherits OpenCode model resolution [0.05ms]
+
+test/spr-options.test.ts:
+(pass) parseSprOptions > parses provider/model with optional variant [0.12ms]
+[skill-forge] spr.model "no-slash" is not a valid "provider/model" reference; ignoring
+[skill-forge] spr.model "/leading" is not a valid "provider/model" reference; ignoring
+[skill-forge] spr.allowedAgents must be an array of agent IDs; disabling SPR handoff
+(pass) parseSprOptions > ignores invalid or absent blocks instead of failing setup [0.09ms]
+
+test/prompt-editor/context-hook.test.ts:
+(pass) lastUserMessage > returns the last user message [0.08ms]
+(pass) lastUserMessage > returns null when there is no user message [0.03ms]
+(pass) lastUserMessage > ignores id-less synthetic user context appended after the real message [0.02ms]
+(pass) userText > joins text parts, ignoring media [0.07ms]
+(pass) userText > string content is returned as-is [0.02ms]
+(pass) userText > null for empty text [0.02ms]
+(pass) applyRewrite > replaces text parts and preserves media [0.12ms]
+(pass) applyRewrite > string content becomes a text part [0.03ms]
+(pass) agent permissions > deny-first with allowlist + submit tool always present [0.13ms]
+(pass) agent permissions > model resolution [0.09ms]
+(pass) omni-spr bypasses editing even when agent metadata fails [1.23ms]
+(pass) agent metadata failure passes a primary-looking prompt through [0.83ms]
+(pass) multiple activations process one session message only once [9.09ms]
+(pass) non-user durable messages are never sent to the editor [0.63ms]
+(pass) multiple locations use only the matching activation [1.60ms]
+(pass) an unavailable session inspection is bounded and passes the prompt through [5.31ms]
+
+test/prompt-editor/rewrites.test.ts:
+(pass) rewrites > appends and reads newest-first [0.60ms]
+(pass) rewrites > caps the file to the newest entries [32.29ms]
+(pass) rewrites > skips malformed lines [0.52ms]
+(pass) rewrites > an applied update replaces the pre-dispatch record for one message [0.30ms]
+
+test/prompt-editor/system.test.ts:
+(pass) buildEditorPrompt > renders a snapshot as untrusted JSON and keeps the current user text as the sole target [0.11ms]
+(pass) buildEditorPrompt > default system requires rewriting, writing correction, detail, and learning [0.11ms]
+(pass) buildEditorPrompt > places the effective main-agent tool catalog before the sole rewrite target [0.68ms]
+(pass) buildEditorPrompt > keeps existing re-evaluation calls valid when no snapshot is supplied [0.03ms]
+(pass) buildEditorPrompt > places bounded workspace and plugin context before the rewrite target [0.05ms]
+
+test/prompt-editor/learn.test.ts:
+(pass) appendLearning > appends entries and reads them back, newest last [7.03ms]
+(pass) appendLearning > entries use the configurable character cap [3.35ms]
+(pass) appendLearning > size cap trims the oldest entries [9.16ms]
+(pass) appendLearning > empty text is a no-op [0.14ms]
+(pass) appendLearning > credentials are redacted before persistence and on load [3.02ms]
+
+test/prompt-editor/setup.test.ts:
+(pass) setupPromptEditor wiring > disabled subsystem registers nothing [0.23ms]
+(pass) setupPromptEditor wiring > enabled subsystem registers agent, submit tool and context hook [3.85ms]
+(pass) setupPromptEditor wiring > cleanup is bounded while a registration is stalled [1000.39ms]
+[prompt-editor] incompatible process runtime, subsystem disabled
+(pass) setupPromptEditor wiring > an incompatible process runtime registers no prompt-editor hooks [0.55ms]
+(pass) setupPromptEditor wiring > context hook applies tool hygiene and skips editor sessions [0.72ms]
+(pass) setupPromptEditor wiring > tool hygiene: submit tool stripped from non-editor sessions [10.76ms]
+(pass) setupPromptEditor wiring > tool hygiene follows the configured read-only subset [2.41ms]
+
+test/prompt-editor/runner.test.ts:
+(pass) storedMessageType > accepts direct and API-wrapped message records [0.10ms]
+(pass) EditorRegistry > submit resolves the outcome with the payload [0.32ms]
+(pass) EditorRegistry > session end without submit resolves null (fail-open) [0.10ms]
+(pass) EditorRegistry > a second settle after submit is a no-op [0.08ms]
+(pass) EditorRegistry > unknown session submit is rejected [0.05ms]
+(pass) EditorRegistry > always-rewrite runs reject an unchanged submission without settling [0.12ms]
+(pass) EditorRegistry > deletes the transient session after the editor settles [1.05ms]
+[prompt-editor] editor run failed: Error: prompt failed
+(pass) EditorRegistry > deletes the transient session when prompting fails [0.36ms]
+(pass) EditorRegistry > shutdown settles an active run and waits for session deletion [0.26ms]
+(pass) EditorRegistry > zero timeout fails open instead of leaving a run active [1.32ms]
+(pass) EditorRegistry > an abort signal cancels a run stalled in create [0.33ms]
+(pass) EditorRegistry > an abort signal cancels a run stalled in prompt [0.15ms]
+(pass) EditorRegistry > an abort signal cancels a run stalled in wait [0.09ms]
+(pass) EditorRegistry > reports why a run produced no payload [1.42ms]
+(pass) EditorRegistry > hard timeout also bounds a stalled prompt dispatch [1.32ms]
+(pass) EditorRegistry > hard timeout also bounds a stalled session wait [1.26ms]
+(pass) EditorRegistry > cleanup timeout bounds a stalled session deletion [1.24ms]
+(pass) EditorRegistry > hard timeout starts before session creation [2.87ms]
+(pass) EditorRegistry > a session created after timeout still gets bounded cleanup [2.89ms]
+(pass) EditorRegistry > does not release a submitted rewrite before session.wait reaches idle [0.42ms]
+(pass) EditorRegistry > shutdown releases a submitted run even when session.wait stalls [0.27ms]
+(pass) EditorRegistry > all runs share one shutdown signal without retaining per-run waiters [0.07ms]
+(pass) event loop reports main-session cancellation independently of editor runs [0.22ms]
+[prompt-editor] event loop stopped: Error: stream failed
+(pass) event loop termination invokes the fail-closed controller callback [0.37ms]
+(pass) journal > appends and reads back entries [0.45ms]
+(pass) journal > malformed lines are skipped [0.25ms]
+
+test/prompt-editor/approval-gate.test.ts:
+(pass) ApprovalGateRegistry > accept resolves exactly once and conflicting decisions lose [0.40ms]
+(pass) ApprovalGateRegistry > re-evaluation invalidates old decisions and replaces the candidate [0.11ms]
+(pass) ApprovalGateRegistry > shutdown cancellation releases the waiter without accepting text [0.15ms]
+(pass) ApprovalGateRegistry > a failed editor candidate cannot be accepted but can send the original [0.09ms]
+(pass) ApprovalGateRegistry > a request from a gate before restart cannot authorize a reopened gate [0.07ms]
+
+test/prompt-editor/requests.test.ts:
+(pass) serialized polls preserve decision order [0.54ms]
+(pass) failed request processing is not acknowledged and can be retried [0.23ms]
+(pass) acknowledgement failure leaves a processed request retryable [0.19ms]
+
+test/prompt-editor/persist.test.ts:
+(pass) findTextPart > selects only an exact original text match [0.10ms]
+(pass) findTextPart > never falls back to a different current text part [0.02ms]
+
+test/prompt-editor/live.test.ts:
+(pass) prompt-editor live state > appendState writes newest-last and readStates returns newest-first [0.69ms]
+(pass) prompt-editor live state > latestStatesPerMessage keeps the newest phase per message [0.42ms]
+(pass) prompt-editor live state > session flags default to enabled + autoAccept and persist patches [0.40ms]
+(pass) prompt-editor live state > session flag defaults can come from plugin configuration [0.12ms]
+(pass) prompt-editor live state > corrupt existing flags fail closed to manual approval [0.10ms]
+(pass) prompt-editor live state > valid JSON with malformed flag shapes also fails closed [0.12ms]
+(pass) prompt-editor live state > enqueueRequest then readRequests returns and dedups [0.50ms]
+(pass) prompt-editor live state > legacy requests cannot be replayed into the manual gate [0.12ms]
+(pass) prompt-editor live state > startup cancels orphaned v2 manual gates without dispatching them [0.44ms]
+(pass) prompt-editor live state > startup also cancels a manual editor interrupted before candidate creation [0.41ms]
+(pass) prompt-editor live state > active manual gates survive lifecycle telemetry rollover [162.13ms]
+(pass) prompt-editor live state > unknown request kinds are ignored before reaching the gate [0.24ms]
+
+test/prompt-editor/workspace-context.test.ts:
+(pass) collectWorkspaceContext > collects bounded repository facts and active external plugins [3.49ms]
+(pass) collectWorkspaceContext > falls back to a manifest root when no Git repository exists [1.05ms]
+
+test/prompt-editor/capabilities.test.ts:
+(pass) prompt-editor runtime capabilities > keeps the effective tools readable and infers namespaced providers [0.20ms]
+(pass) prompt-editor runtime capabilities > renders a compact main-agent catalog without presenting it as editor tools [0.08ms]
+
+test/prompt-editor/runtime.test.ts:
+(pass) one process runtime routes a decision only to its owning activation [0.30ms]
+(pass) orphan sweep and request poller are process-global across activations [0.16ms]
+(pass) bootstrap keeps no-owner requests pending until a controller attaches [0.14ms]
+(pass) overlapping teardown and startup cannot reclaim the orphan sweep [0.22ms]
+(pass) replacement poller starts only after the old in-flight tail stops [0.21ms]
+(pass) a pending activation preserves orphan-sweep ownership [0.08ms]
+(pass) aborting the last pending activation releases an idle sweep claim [0.08ms]
+(pass) release is idempotent and stale requests return normally [0.14ms]
+(pass) stop failures reset idle state and allow a later poller [0.23ms]
+(pass) an async undefined stop rejection is reported while handoff recovers [0.29ms]
+(pass) a deferred poller factory failure is observable and retryable [0.24ms]
+(pass) a released replacement never creates a deferred poller [0.18ms]
+
+test/prompt-editor/context-snapshot.test.ts:
+(pass) collectContextSnapshot > returns no snapshot for the first visible user message [0.17ms]
+(pass) collectContextSnapshot > uses the exact directory and keeps the newest three user and assistant messages [0.41ms]
+(pass) collectContextSnapshot > keeps the newest ten tool calls with sanitized inputs and outputs [0.92ms]
+(pass) collectContextSnapshot > normalizes JSON, errors, and text content while omitting unsafe parts [0.32ms]
+(pass) collectContextSnapshot > marks per-field truncation deterministically [0.30ms]
+(pass) collectContextSnapshot > marks truncation when a later assistant text part exceeds the exact limit [0.24ms]
+(pass) collectContextSnapshot > keeps tool-call counts while truncating text to meet the aggregate cap [0.72ms]
+(pass) collectContextSnapshot > resolved aggregate minimum preserves 3+3+10 with long tool names [1.36ms]
+(pass) collectContextSnapshot > bounds deep JSON traversal and redacts common credential material [0.42ms]
+(pass) collectContextSnapshot > redacts and bounds JSON property names and serialized output [0.94ms]
+(pass) collectContextSnapshot > treats an over-budget JSON key as sensitive without scanning its tail [0.19ms]
+(pass) collectContextSnapshot > redacts lowercase assignments and private keys before truncation [0.24ms]
+(pass) collectContextSnapshot > redacts complete Basic authorization and cookie header values [0.09ms]
+(pass) collectContextSnapshot > redacts standalone provider tokens in assistant, text, and JSON output [0.29ms]
+(pass) collectContextSnapshot > redacts secrets split across tool content boundaries [0.12ms]
+(pass) collectContextSnapshot > redacts an unterminated quoted assignment through the scan boundary [0.08ms]
+(pass) collectContextSnapshot > selects the exact current message outside the retained history tail [0.30ms]
+(pass) collectContextSnapshot > uses both ends of a bounded part window [0.31ms]
+(pass) collectContextSnapshot > intentionally omits the unbounded middle of a large part list [0.13ms]
+(pass) collectContextSnapshot > malformed in-window context fails open to no snapshot [0.07ms]
+(pass) collectContextSnapshot > bounds message and part traversal before normalization [0.43ms]
+
+test/prompt-editor/config.test.ts:
+(pass) resolvePromptEditorOptions > defaults enforce thorough rewriting with a finite run deadline [0.09ms]
+(pass) resolvePromptEditorOptions > enabled via options.promptEditor.enabled regardless of master flag [0.11ms]
+(pass) resolvePromptEditorOptions > model/variant are picked up [0.09ms]
+(pass) resolvePromptEditorOptions > blocking defaults true and can be explicitly disabled [0.10ms]
+(pass) resolvePromptEditorOptions > maxSteps preserves valid overrides and clamps to 1..100 [0.12ms]
+(pass) resolvePromptEditorOptions > timeout rejects unbounded values and clamps positive values [0.11ms]
+(pass) resolvePromptEditorOptions > maxChars defaults and clamps [0.08ms]
+(pass) resolvePromptEditorOptions > all rewrite, context, lifecycle, and learning controls are configurable [0.08ms]
+(pass) resolvePromptEditorOptions > aggregate context cap preserves configured item skeletons [0.05ms]
+(pass) resolvePromptEditorOptions > tools are sanitized: write-capable tools are stripped [0.12ms]
+(pass) resolvePromptEditorOptions > malformed tools array falls back to defaults [0.05ms]
+
+test/prompt-editor/manual-approval.test.ts:
+(pass) manual prompt approval > accept holds provider dispatch and applies the selected candidate [9.97ms]
+(pass) manual prompt approval > passes only the main agent's effective tools into the editor prompt [1.93ms]
+(pass) manual prompt approval > reject releases only the original and never persists the candidate [1.86ms]
+(pass) manual prompt approval > accept fails closed if the source changes while approval waits [2.29ms]
+(pass) manual prompt approval > reject fails closed if the source changes while approval waits [1.94ms]
+(pass) manual prompt approval > concurrent hooks accept one shared candidate without false source drift [4.44ms]
+(pass) manual prompt approval > a drifted duplicate cannot cancel an already-applied shared candidate [4.13ms]
+(pass) manual prompt approval > auto-accept cannot bypass a cached manual decision for the same id [2.45ms]
+(pass) manual prompt approval > oversized targets skip editing entirely [0.65ms]
+(pass) manual prompt approval > timeouts are recorded as errors with a reason, not silent passthrough [1.03ms]
+(pass) manual prompt approval > re-evaluate invalidates the old revision and waits for the new decision [2.37ms]
+(pass) manual prompt approval > manual mode overrides non-blocking config and a failed editor needs reject [1.77ms]
+(pass) manual prompt approval > automatic mode keeps its fail-open behavior [0.85ms]
+(pass) manual prompt approval > a stalled workspace snapshot is bounded and falls back [8.05ms]
+(pass) manual prompt approval > default learn path stores an editor lesson [4.94ms]
+(pass) manual prompt approval > a concurrent automatic hook stays fail-open when its inflight run rejects [1.06ms]
+(pass) manual prompt approval > session cancellation aborts an active editor run [1.12ms]
+(pass) manual prompt approval > a rewritten message with the same id is not edited again on a later hook [3.55ms]
+(pass) manual prompt approval > non-blocking auto rewrites are recorded as not applied to dispatch [1.92ms]
+(pass) manual prompt approval > a second manual message in the same session fails closed [2.09ms]
+(pass) manual prompt approval > shutdown cancels a manual gate instead of dispatching text [2.07ms]
+(pass) manual prompt approval > interruption after accept but before apply never persists or dispatches the rewrite [2.36ms]
+(pass) manual prompt approval > manual dispatch fails closed when its actionable state cannot be written [0.85ms]
+(pass) manual prompt approval > an unavailable exact session directory never falls back to service cwd [0.57ms]
+
+ 242 pass
+ 0 fail
+ 724 expect() calls
+Ran 242 tests across 24 files. [4.47s]

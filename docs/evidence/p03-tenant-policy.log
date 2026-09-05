@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/tenant-policy.test.ts:
+(pass) tenant policy: admin setup, operator ceilings, source labels and immutable accepted snapshot [205.46ms]
+
+ 1 pass
+ 0 fail
+ 9 expect() calls
+Ran 1 test across 1 file. [300.00ms]

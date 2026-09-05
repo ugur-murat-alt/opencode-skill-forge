@@ -1,0 +1,11 @@
+src/application/members.ts 93ms
+src/storage/membership-migration.ts 5ms
+src/storage/schema.ts 17ms (unchanged)
+src/storage/database.ts 30ms (unchanged)
+src/application/identity.ts 26ms (unchanged)
+src/http/server.ts 92ms
+web/src/Members.tsx 22ms
+web/src/Projects.tsx 29ms
+web/src/api.ts 5ms (unchanged)
+web/src/main.tsx 12ms (unchanged)
+test/members.test.ts 9ms

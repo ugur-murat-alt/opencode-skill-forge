@@ -1,0 +1,26 @@
+{
+  "commit": "dcbc41e0c15eec0998162be35a204290387f9abc",
+  "license": "MIT; LICENSE at repository root; bundled upstream notices retained",
+  "files": {
+    "dist/skillforge-core.js": {
+      "fixture": "test/fixtures/legacy/skillforge-core.js",
+      "sha256": "60208711e63d613772089c0de14f31a103f96cc58de0c1f7eb293dcc005d354d"
+    },
+    "dist/skillforge-core.d.ts": {
+      "fixture": "test/fixtures/legacy/skillforge-core.d.ts",
+      "sha256": "e1432dcd5ca5fd282e772338c30f5787438f787f9bbc819b9a262a48b02cf922"
+    },
+    "spr-agent.jsonc": {
+      "fixture": "test/fixtures/legacy/spr-agent.jsonc",
+      "sha256": "89afb2f688006ccd7a6536755731c4ba7e15e1487520fee7fd52f3a6e399d379"
+    },
+    "prompt-editor-agent.jsonc": {
+      "fixture": "test/fixtures/legacy/prompt-editor-agent.jsonc",
+      "sha256": "af02ae9ee0edf2fe238a918657ad0b9f5597d2b4e729e6d7e854482cd2e4970d"
+    },
+    "SPR_SKILL_AUTHORING.md": {
+      "fixture": "test/fixtures/legacy/SPR_SKILL_AUTHORING.md",
+      "sha256": "d76e68055c8fbd9eb5c1a7bd0023a2a1fc805dc1377a08db89694d01cc889629"
+    }
+  }
+}

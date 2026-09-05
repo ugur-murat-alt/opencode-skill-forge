@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/dependencies.test.ts:
+(pass) real locked npm dependency: install scripts disabled, sandbox execution, verified cache reuse and corruption denial [1598.48ms]
+(pass) real hashed Python wheel installs, runs offline and rejects modified cache [3204.19ms]
+
+ 2 pass
+ 0 fail
+ 13 expect() calls
+Ran 2 tests across 1 file. [4.91s]

@@ -1,0 +1,25 @@
+{
+  "source_fingerprint": "3987079b333d7adf3fb1c8708ae9fffc3ccaf5b110347419aedbad0e0d725b09",
+  "fixture": "browser-output-bounds",
+  "runtime": "real Node Docker sandbox",
+  "execution_id": "95919bcf-759b-4815-96ca-6196152d8265",
+  "result_bytes": 30014,
+  "artifact_count": 23,
+  "artifact_pages": [
+    10,
+    10,
+    3
+  ],
+  "displayed_result_chunks": [
+    24576,
+    5438
+  ],
+  "last_page_has_next": false,
+  "last_result_chunk_has_next": false,
+  "ui_errors": [],
+  "live_model_quality": "not_verified",
+  "tests": {
+    "pass": 292,
+    "fail": 0
+  }
+}

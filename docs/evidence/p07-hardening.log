@@ -1,0 +1,26 @@
+bun test v1.3.14 (0d9b296a)
+
+test/staging.test.ts:
+(pass) private SPR candidate enforces inventory, read-before-change, exact patch and fenced publication [208.00ms]
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [187.94ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [1.89ms]
+(pass) missing references and script packages without executable contracts are rejected [2.12ms]
+
+test/forge-runner.test.ts:
+(pass) Pi termination closes mixed batches and prevents writes after finalize without another call [6.48ms]
+(pass) call budget bounds non-terminating model loops [0.54ms]
+(pass) deadline cancels provider stream and reports unknown usage [20.34ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [512.64ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.47ms]
+
+test/jobs-contract.test.ts:
+(pass) durable jobs: sqlite dedup, lease fencing, cancellation, reservation and real worker [297.36ms]
+
+ 10 pass
+ 0 fail
+ 81 expect() calls
+Ran 10 tests across 5 files. [1.73s]

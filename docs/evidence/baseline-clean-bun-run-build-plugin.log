@@ -1,0 +1,6 @@
+Bundled 28 modules in 10ms
+
+  plugin.js  157.0 KB  (entry point)
+
+built dist/plugin.js
+$ bash scripts/build-plugin.sh

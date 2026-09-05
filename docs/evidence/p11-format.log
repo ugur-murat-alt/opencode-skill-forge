@@ -1,0 +1,21 @@
+src/application/packages.ts 85ms
+src/application/maintenance.ts 44ms
+src/application/telemetry.ts 43ms
+src/application/forge.ts 32ms
+src/storage/schema.ts 11ms
+src/storage/database.ts 23ms (unchanged)
+src/storage/observation-migration.ts 6ms
+src/telemetry/observations.ts 3ms
+src/http/server.ts 70ms
+src/skills/store.ts 32ms
+src/mcp/schemas.ts 9ms (unchanged)
+web/src/Library.tsx 17ms (unchanged)
+web/src/PackageDetail.tsx 40ms
+web/src/Maintenance.tsx 20ms
+web/src/Logs.tsx 7ms
+web/src/main.tsx 12ms
+web/src/style.css 76ms
+test/maintenance.test.ts 13ms
+test/telemetry.test.ts 8ms
+test/mcp-script-chain.test.ts 10ms
+scripts/evidence-fingerprint.mjs 24ms

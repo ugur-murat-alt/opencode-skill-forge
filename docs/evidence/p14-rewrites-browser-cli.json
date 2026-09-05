@@ -1,0 +1,36 @@
+{
+  "source": "synthetic-owned-browser-fixture",
+  "receipt": "8543a3201d3293bf2e1f52099125d0e9dacab649b1ec5a21a3f7c75498908b10",
+  "records": 2,
+  "export_bytes_equal": true,
+  "report": {
+    "version": 1,
+    "manifest_checksum": "06aa4df60ee9638ab5763a259676e8b16f70203116e95d8431346fbfce7337a9",
+    "project_ref": "b5789d01-7948-4839-a87d-4ffcb87d1e19",
+    "source_truncated": false,
+    "selected": 1,
+    "failed": 0,
+    "results": [
+      {
+        "source_id": "ca32ca5795c15331c2a3a79b250aed26cb7c624bad01c72ae7768e3987c905a9",
+        "status": "recorded",
+        "receipt_id": "8543a3201d3293bf2e1f52099125d0e9dacab649b1ec5a21a3f7c75498908b10",
+        "state": "applied",
+        "replayed": false,
+        "records": [
+          {
+            "line": 1,
+            "status": "created",
+            "entry_id": "45c3b52ddc26c988c4a520d00191c2453030e8a98c559bfd399f8cdbc62c0800"
+          },
+          {
+            "line": 2,
+            "status": "created",
+            "entry_id": "5891e5a5e2a6d116701572bafe10c8665dd1fb1d86ee5c22a8749c6b6cb2e6ca"
+          }
+        ],
+        "review_required": 0
+      }
+    ]
+  }
+}

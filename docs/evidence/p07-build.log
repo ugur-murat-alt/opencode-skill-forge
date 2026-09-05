@@ -1,0 +1,19 @@
+$ node scripts/build.mjs
+Bundled 34 modules in 5ms
+
+  index.js  149.78 KB  (entry point)
+
+Bundled 35 modules in 6ms
+
+  cli.js  153.68 KB  (entry point)
+
+vite v8.2.2 building client environment for production...
+transforming...
+✓ 18 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/web/index.html                   0.35 kB │ gzip:  0.26 kB
+dist/web/assets/index-D3TPk1Ls.css    2.87 kB │ gzip:  1.08 kB
+dist/web/assets/index-CsjB5Qyc.js   195.96 kB │ gzip: 61.68 kB
+
+✓ built in 96ms

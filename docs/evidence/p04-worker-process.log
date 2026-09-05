@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/worker-process.test.ts:
+(pass) independent Node CLI worker recovers a crashed lease owner and preserves fail-open result [1659.45ms]
+
+ 1 pass
+ 0 fail
+ 11 expect() calls
+Ran 1 test across 1 file. [1.76s]

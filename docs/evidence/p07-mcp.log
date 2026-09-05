@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [535.64ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.45ms]
+
+test/service.test.ts:
+(pass) independent service > concurrent initialization converges on one owner credential and endpoint [5.47ms]
+(pass) independent service > health and MCP require owner identity and exact origin/host [249.38ms]
+(pass) independent service > official v2 HTTP client initializes and reconnects [247.17ms]
+(pass) independent service > provider configuration cannot use ambient credentials, paid fallback or arbitrary URLs [2.45ms]
+
+ 6 pass
+ 0 fail
+ 37 expect() calls
+Ran 6 tests across 2 files. [1.54s]

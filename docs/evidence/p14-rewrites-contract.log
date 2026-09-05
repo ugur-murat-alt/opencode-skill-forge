@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/rewrite-import.test.ts:
+(pass) rewrite import sqlite: source truth, privacy, paging, replay and shared rollback [351.84ms]
+(pass) rewrite import postgres: source truth, privacy, paging, replay and shared rollback [201.35ms]
+
+ 2 pass
+ 0 fail
+ 36 expect() calls
+Ran 2 tests across 1 file. [660.00ms]

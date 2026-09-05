@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [382.82ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [238.79ms]
+
+ 2 pass
+ 0 fail
+ 48 expect() calls
+Ran 2 tests across 1 file. [785.00ms]

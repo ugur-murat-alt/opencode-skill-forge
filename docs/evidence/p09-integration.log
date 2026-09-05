@@ -1,0 +1,18 @@
+bun test v1.3.14 (0d9b296a)
+
+test/mcp-script-chain.test.ts:
+(pass) real MCP search/load/reference/run pinned TypeScript package with immutable rollback and artifact ACL [2614.99ms]
+
+test/prompt-service.test.ts:
+(pass) prompt invariant guards preserve Turkish negation, numbers, units, paths and versions [1.08ms]
+(pass) fixture provider over actual HTTP + Pi: one prompt call, autoApply, private reusable lesson, no SPR [469.65ms]
+
+test/installer.test.ts:
+(pass) codex parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [97.84ms]
+(pass) claude parser merge preserves existing comments/settings, idempotent reinstall and reversible uninstall [88.18ms]
+(pass) hook commands quote literal shell metacharacters and Windows uses encoded argv [0.26ms]
+
+ 6 pass
+ 0 fail
+ 64 expect() calls
+Ran 6 tests across 3 files. [3.78s]

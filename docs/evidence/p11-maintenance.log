@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [295.83ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [238.45ms]
+
+test/mcp-tools.test.ts:
+(pass) official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report [559.65ms]
+(pass) opaque cursors reject modifications and cross-user/query reuse [0.59ms]
+
+ 4 pass
+ 0 fail
+ 62 expect() calls
+Ran 4 tests across 2 files. [1.60s]

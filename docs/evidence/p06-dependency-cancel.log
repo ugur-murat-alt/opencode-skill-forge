@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+test/script-revocation.test.ts:
+(pass) real sandbox execution aborts on membership revocation and preserves its failed receipt [2448.19ms]
+
+test/dependencies.test.ts:
+(pass) real locked npm dependency: install scripts disabled, sandbox execution, verified cache reuse and corruption denial [1654.99ms]
+
+ 2 pass
+ 0 fail
+ 17 expect() calls
+Ran 2 tests across 2 files. [4.27s]

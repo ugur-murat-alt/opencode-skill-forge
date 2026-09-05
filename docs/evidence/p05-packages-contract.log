@@ -1,0 +1,31 @@
+bun test v1.3.14 (0d9b296a)
+
+test/package-store.test.ts:
+56 |     async executeQuery(compiledQuery) {
+57 |         const { sql, parameters } = compiledQuery;
+58 |         const stmt = this.#db.prepare(sql);
+59 |         if (stmt.reader) {
+60 |             return {
+61 |                 rows: stmt.all(parameters),
+     ^
+SQLiteError: ESCAPE expression must be a single character
+      errno: 1,
+ byteOffset: -1,
+
+      at all (unknown:1:1)
+      at executeQuery (/home/ugur/Projects/opencode2-skill-forge/node_modules/kysely/dist/dialect/sqlite/sqlite-driver.js:61:28)
+      at /home/ugur/Projects/opencode2-skill-forge/node_modules/kysely/dist/query-executor/query-executor-base.js:53:46
+      at provideConnection (/home/ugur/Projects/opencode2-skill-forge/node_modules/kysely/dist/driver/default-connection-provider.js:12:9)
+      at executeQuery (/home/ugur/Projects/opencode2-skill-forge/node_modules/kysely/dist/query-executor/query-executor-base.js:52:19)
+      at execute (/home/ugur/Projects/opencode2-skill-forge/node_modules/kysely/dist/query-builder/select-query-builder.js:349:34)
+      at search (/home/ugur/Projects/opencode2-skill-forge/src/skills/store.ts:81:19)
+      at /home/ugur/Projects/opencode2-skill-forge/test/package-store.test.ts:13:32
+(fail) package store sqlite: complete publication, CAS, pinned revisions and scope [201.27ms]
+(pass) package store postgres: complete publication, CAS, pinned revisions and scope [158.77ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [2.15ms]
+(pass) missing references and script packages without executable contracts are rejected [3.49ms]
+
+ 3 pass
+ 1 fail
+ 29 expect() calls
+Ran 4 tests across 1 file. [485.00ms]

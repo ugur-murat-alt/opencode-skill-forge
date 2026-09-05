@@ -1,0 +1,13 @@
+bun test v1.3.14 (0d9b296a)
+
+test/mcp-script-chain.test.ts:
+(pass) real MCP search/load/reference/run pinned TypeScript package with immutable rollback and artifact ACL [3965.90ms]
+
+test/members.test.ts:
+(pass) members sqlite: revocation, stale update, project ceiling, protected owner and reenable [227.55ms]
+(pass) members postgres: revocation, stale update, project ceiling, protected owner and reenable [158.27ms]
+
+ 3 pass
+ 0 fail
+ 58 expect() calls
+Ran 3 tests across 2 files. [4.86s]

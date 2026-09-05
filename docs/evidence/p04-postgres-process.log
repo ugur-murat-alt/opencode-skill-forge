@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/worker-process.test.ts:
+(pass) independent Node CLI worker sqlite recovers a crashed lease owner and preserves fail-open result [1554.84ms]
+(pass) independent Node CLI worker postgres recovers a crashed lease owner and preserves fail-open result [2286.97ms]
+
+ 2 pass
+ 0 fail
+ 26 expect() calls
+Ran 2 tests across 1 file. [3.95s]

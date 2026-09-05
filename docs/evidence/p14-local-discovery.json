@@ -1,0 +1,39 @@
+{
+  "captured_at": "2026-09-05T14:32:31.121Z",
+  "mode": "read_only",
+  "manifest": "/tmp/forge-legacy-discovery-1vyYev/manifest.json",
+  "checksum": "00123750bb0f992bca0d7cadae5bd5b0ef6a83b16336fad8c38769eefb3a3f9e",
+  "items": 2047,
+  "total_bytes_read": 3115249,
+  "truncated": true,
+  "statuses": {
+    "review_required": 2010,
+    "ready": 37
+  },
+  "roots": [
+    {
+      "id": "project-skills",
+      "status": "absent"
+    },
+    {
+      "id": "home-config-skills",
+      "status": "scanned"
+    },
+    {
+      "id": "home-skills",
+      "status": "absent"
+    },
+    {
+      "id": "project-state",
+      "status": "scanned"
+    },
+    {
+      "id": "home-state",
+      "status": "scanned"
+    },
+    {
+      "id": "home-config-state",
+      "status": "absent"
+    }
+  ]
+}

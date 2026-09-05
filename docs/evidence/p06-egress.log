@@ -1,0 +1,9 @@
+bun test v1.3.14 (0d9b296a)
+
+test/egress.test.ts:
+(pass) real isolated egress: allowlisted HTTPS succeeds; other origins and direct sockets are blocked [1707.50ms]
+
+ 1 pass
+ 0 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [1.81s]

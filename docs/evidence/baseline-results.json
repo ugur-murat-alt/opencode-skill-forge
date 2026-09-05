@@ -1,0 +1,45 @@
+{
+  "time": "2026-09-05T09:31:38.773954+00:00",
+  "head": "dcbc41e0c15eec0998162be35a204290387f9abc",
+  "commands": [
+    {
+      "command": [
+        "bun",
+        "run",
+        "typecheck"
+      ],
+      "exitCode": 2,
+      "log": "baseline-bun-run-typecheck.log",
+      "tail": "$ tsc --noEmit\nsrc/index.ts(8,44): error TS2307: Cannot find module '../dist/skillforge-core.js' or its corresponding type declarations.\nsrc/prompt-editor/editor-session.ts(3,35): error TS2307: Cannot find module '@opencode-ai/client/service' or its corresponding type declarations.\nsrc/prompt-editor/persist.ts(1,35): error TS2307: Cannot find module '@opencode-ai/client/service' or its corresponding type declarations.\n"
+    },
+    {
+      "command": [
+        "bun",
+        "test"
+      ],
+      "exitCode": 1,
+      "log": "baseline-bun-test.log",
+      "tail": "tor/config.test.ts:\n(pass) resolvePromptEditorOptions > defaults enforce thorough rewriting with a finite run deadline [1.06ms]\n(pass) resolvePromptEditorOptions > enabled via options.promptEditor.enabled regardless of master flag [0.24ms]\n(pass) resolvePromptEditorOptions > model/variant are picked up [0.09ms]\n(pass) resolvePromptEditorOptions > blocking defaults true and can be explicitly disabled [0.11ms]\n(pass) resolvePromptEditorOptions > maxSteps preserves valid overrides and clamps to 1..100 [0.16ms]\n(pass) resolvePromptEditorOptions > timeout rejects unbounded values and clamps positive values [0.14ms]\n(pass) resolvePromptEditorOptions > maxChars defaults and clamps [0.11ms]\n(pass) resolvePromptEditorOptions > all rewrite, context, lifecycle, and learning controls are configurable [0.13ms]\n(pass) resolvePromptEditorOptions > aggregate context cap preserves configured item skeletons [0.07ms]\n(pass) resolvePromptEditorOptions > tools are sanitized: write-capable tools are stripped [0.20ms]\n(pass) resolvePromptEditorOptions > malformed tools array falls back to defaults [0.06ms]\n\ntest/prompt-editor/manual-approval.test.ts:\n\n# Unhandled error between tests\n-------------------------------\n-------------------------------\n\n\n12 tests failed:\n(fail) (unnamed) [1.36ms]\n(fail) packaged hidden-agent defaults > dist/spr-agent.jsonc inherits OpenCode model resolution [0.04ms]\n(fail) packaged hidden-agent defaults > dist/prompt-editor-agent.jsonc inherits OpenCode model resolution [0.02ms]\n\n 119 pass\n 12 fail\n 9 errors\n 354 expect() calls\nRan 131 tests across 24 files. [330.00ms]\n"
+    },
+    {
+      "command": [
+        "bun",
+        "run",
+        "build:plugin"
+      ],
+      "exitCode": 1,
+      "log": "baseline-bun-run-build:plugin.log",
+      "tail": "$ bash scripts/build-plugin.sh\nerror: preserved dist/skillforge-core.js is missing\nerror: script \"build:plugin\" exited with code 1\n"
+    },
+    {
+      "command": [
+        "npm",
+        "pack",
+        "--dry-run"
+      ],
+      "exitCode": 0,
+      "log": "baseline-npm-pack-dry-run.log",
+      "tail": "npm notice\nnpm notice \ud83d\udce6  @vaur94/opencode2-skill-forge@0.5.6\nnpm notice Tarball Contents\nnpm notice 1.1kB LICENSE\nnpm notice 14.3kB README.md\nnpm notice 26.8kB SPR_SKILL_AUTHORING.md\nnpm notice 1.1kB package.json\nnpm notice 390B prompt-editor-agent.jsonc\nnpm notice 7.2kB spr-agent.jsonc\nnpm notice Tarball Details\nnpm notice name: @vaur94/opencode2-skill-forge\nnpm notice version: 0.5.6\nnpm notice filename: vaur94-opencode2-skill-forge-0.5.6.tgz\nnpm notice package size: 18.7 kB\nnpm notice unpacked size: 50.8 kB\nnpm notice shasum: e405b54e1f3ea2ebe4791f8b1ba7eb3709474afa\nnpm notice integrity: sha512-QuM9XQWs4y8AF[...]CW6NigJveb+aw==\nnpm notice total files: 6\nnpm notice\nvaur94-opencode2-skill-forge-0.5.6.tgz\n"
+    }
+  ]
+}

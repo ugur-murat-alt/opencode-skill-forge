@@ -1,0 +1,11 @@
+bun test v1.3.14 (0d9b296a)
+
+test/storage-contract.test.ts:
+(pass) storage contract: sqlite > migration, scope FK, ACL, one-use pairing, config CAS and persistence [123.14ms]
+(pass) storage contract: postgres > migration, scope FK, ACL, one-use pairing, config CAS and persistence [169.09ms]
+(pass) specific settings cannot broaden policy and cannot smuggle unknown permission keys [1.66ms]
+
+ 3 pass
+ 0 fail
+ 29 expect() calls
+Ran 3 tests across 1 file. [388.00ms]

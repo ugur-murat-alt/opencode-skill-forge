@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/staging.test.ts:
+(pass) private SPR candidate enforces inventory, read-before-change, exact patch and fenced publication [237.06ms]
+
+test/forge-runner.test.ts:
+(pass) Pi termination closes mixed batches and prevents writes after finalize without another call [8.04ms]
+(pass) call budget bounds non-terminating model loops [0.71ms]
+(pass) deadline cancels provider stream and reports unknown usage [20.48ms]
+
+ 4 pass
+ 0 fail
+ 17 expect() calls
+Ran 4 tests across 2 files. [568.00ms]

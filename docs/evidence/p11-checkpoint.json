@@ -1,0 +1,56 @@
+{
+  "source_fingerprint": "c6066a8ef0d2b04eabb366d7bd5e428a56db36445d7b564fa3bec91b9a457051",
+  "checks": {
+    "typecheck": "passed",
+    "tests": {
+      "passed": 286,
+      "failed": 0,
+      "expectations": 1103,
+      "files": 43
+    },
+    "build": "passed",
+    "pack_dry_run": {
+      "passed": true,
+      "bytes": 617117,
+      "files": 26,
+      "clean_install": "not_yet_verified"
+    }
+  },
+  "browser": {
+    "service_pid": 2000994,
+    "authenticated_health": "healthy",
+    "url": "http://127.0.0.1:38552",
+    "fixture_skill": "browser-acceptance-helper",
+    "scenarios": [
+      "model_missing preserves exact Turkish original",
+      "reference edit publishes a new tested revision",
+      "archive removes new discovery",
+      "restore preserves identity and revision",
+      "revision comparison displays old/new actual file contents",
+      "fresh retention deletes zero records"
+    ],
+    "execution": {
+      "id": "dfab4e51-1f2e-4e16-a522-ecb2aa422354",
+      "input": {
+        "value": 7.5
+      },
+      "output": {
+        "doubled": 15
+      },
+      "runtime": "real Docker Node sandbox"
+    },
+    "screenshots": [
+      "design/package-browser.png",
+      "design/maintenance-browser.png"
+    ]
+  },
+  "not_certified": [
+    "all P01-P16 / K01-K30",
+    "benchmark quality",
+    "live four providers",
+    "live ChatGPT OAuth",
+    "permanent package deletion",
+    "complete ten UI surfaces",
+    "macOS / Windows acceptance"
+  ]
+}

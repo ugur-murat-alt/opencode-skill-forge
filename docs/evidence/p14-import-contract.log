@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+test/migration-import.test.ts:
+(pass) migration sqlite: atomic receipt, replay, source guard and conservative rollback [503.64ms]
+(pass) migration postgres: atomic receipt, replay, source guard and conservative rollback [184.69ms]
+
+ 2 pass
+ 0 fail
+ 24 expect() calls
+Ran 2 tests across 1 file. [828.00ms]

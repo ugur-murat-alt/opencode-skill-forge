@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveOptions } from "../dist/skillforge-core.js";
+import { resolveOptions } from "./fixtures/legacy/skillforge-core.js";
 import { normalizeCoreOptions } from "../src/core-options.js";
 
 const HANDOFF_TRIGGER = {

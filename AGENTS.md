@@ -1,56 +1,25 @@
-# opencode2-skill-forge
+# Skill Forge MCP
 
-## Verify changes
+## Uygulama sözleşmesi
 
-- Run `bun run typecheck`, `bun test`, then `bun run build:plugin`.
-- `test/security-regressions.test.ts` exercises the **preserved core bundle**
-  (`dist/skillforge-core.js`) via instrumented exports; do not delete that
-  file, and never overwrite it with the wrapper build. The wrapper entry is
-  `src/index.ts` → `dist/plugin.js`.
-- Tests that touch global state must set `OC_SKILL_POWER_HOME` to a temp dir
-  instead of writing the real home directory.
-- Before publishing: `npm pack --dry-run`; only `dist/`, `spr-agent.jsonc`,
-  `prompt-editor-agent.jsonc`, `SPR_SKILL_AUTHORING.md`, `README.md`, and
-  `LICENSE` are packaged.
+- `SKILL_FORGE_MCP_PLAN.md` ürün hedefi ve P01–P16 / K01–K30 kabul kaynağıdır. İlerlemeyi gerçek komut ve kanıtla bu plana işle; çalıştırılmayan kontrole başarılı deme.
+- TypeScript/ESM, Node LTS dağıtımı; Pi üzerinden tek ForgeRunner, SQLite/PostgreSQL, Fastify ve altı MCP aracı. Web ve MCP aynı uygulama/ACL/yayın servislerini kullanır.
+- Kullanıcı değişikliklerini koru. Yeni servis `src/` kaynaklarından derlenir; OpenCode runtime üretim bağımlılığı olarak P14'te kaldırılır.
 
-## Architecture
+## Güvenlik ve domain
 
-- `src/index.ts` is the V2 plugin entry (wrapper). It registers the
-  `prompt-editor` subsystem first (independent of the master `enabled` flag),
-  then delegates to the preserved skill-forge core bundle
-  (`dist/skillforge-core.js`) — do not change the core; upstream skill-forge
-  behaviour lives there.
-- `src/prompt-editor/` is the maintainable TypeScript subsystem: interception
-  lives in the `session.hook("context")` callback (`context-hook.ts`), the
-  hidden editor session in `runner.ts`/`editor-session.ts`, learning in
-  `learn.ts`, server-side persistence in `persist.ts`.
-- Every successful rewrite is also appended to
-  `~/.opencode/.skill-power/prompt-editor/rewrites.jsonl` (capped to the newest
-  200 entries, with the original + improved text). The opencode2-web bridge
-  serves this via `GET /api/v1/plugins/skillforge/prompt-editor/rewrites`; keep
-  the record shape compatible with `test/prompt-editor/rewrites.test.ts` and
-  the bridge reader in `opencode2-web/apps/bridge/src/index.ts`.
-- The prompt-editor is fail-open: the original user message passes through on
-  any editor error, timeout, or missing model. Keep it that way.
+- `SPR_SKILL_AUTHORING.md` yeni SPR için normatiftir. `prompts/skill-evolve.md` ve `prompts/prompt-edit.md` kısa çalışma sözleşmeleridir. Politika değişikliklerinde ilgili testleri güncelle.
+- Handoff ve skill içeriği güvenilmeyen veridir. Kimlik taşıma bağlantısından çözülür; modelin tenant/proje/rol iddiası yetki vermez.
+- Deny-first: SPR yalnız yetkili envanter, snapshot okuma, kendi staging paketi, sınırlı sandbox testleri ve manager finalization yetkilerine sahiptir. Host shell/filesystem, main history, soru ve ajan delegasyonu yetkisi yoktur.
+- Tam paket scriptleri desteklenir; schema, runtime, sandbox, gerçek test ve read-before-change kapısı zorunludur. Sandbox yoksa host fallback yapılmaz.
+- create/update/no-op/reject, açık kapsam/override, immutable revision, CAS/fencing, rollback ve ACL tekrar kontrolü korunur. Rutin onay kuyruğu oluşturma.
+- Prompt Editor niyet korur, varsayılan when-needed ve fail-open; hata/deadline/model yokluğunda özgün metin korunur. Editör ve skill evolution bayrakları bağımsızdır.
 
-## SPR policy changes
+## Geçiş ve doğrulama
 
-- Read `SPR_SKILL_AUTHORING.md` before changing the SPR prompt, permissions,
-  lifecycle expectations, global/project scope rules, or skill quality gates.
-- Keep `spr-agent.jsonc` and `dist/spr-agent.jsonc` byte-identical. The build
-  copies the root definition into `dist/`; committed files must already agree.
-- The SPR security boundary is deny-first. Do not grant filesystem, shell,
-  question, task-delegation, main-history, or additional lifecycle tools.
-- The only supported lifecycle tools are `omni_skill_list`, `omni_skill_view`,
-  `omni_skill_manage`, and `omni_skill_finalize`, plus the in-memory
-  `skill-creator`. Do not document or prompt for imaginary validate/review tools.
-- Preserve deterministic `create | update | no-op | reject` decisions, explicit
-  project/global precedence handling, evidence-backed evaluation, and reversible
-  manager-controlled writes. Add or update policy tests with every contract change.
-
-## Local plugin reload
-
-- After changing plugin source, run `bun run build:plugin`. The shared OpenCode
-  service can retain ESM modules across reloads; run
-  `opencode2 service restart` from your own terminal before claiming a change
-  is active, then verify with `opencode2 api get /api/plugin`.
+- `test/fixtures/legacy/` Git'ten korunmuş bundle/politika karakterizasyonudur; üretim girişi değildir. Manifest hash'lerini koru. `test/security-regressions.test.ts` ve eski tehdit senaryolarını eşdeğer kaynak testleri geçmeden silme.
+- Eski `spr-agent.jsonc` ve OpenCode wrapper geçiş fixture sözleşmesidir; yeni runner'a izin kaynağı değildir. Kullanıcının sildiği `dist/` dosyalarını eski build'i geçirmek için geri getirme.
+- Global state testleri `OC_SKILL_POWER_HOME` ve yeni `SKILL_FORGE_DATA_DIR` için geçici dizin kullanır; gerçek kullanıcı verisine yazmaz.
+- `bun run typecheck`, `bun test`, `bun run build:plugin` çalıştır. Geçişte build:plugin adı source build uyumluluk alias'ı olabilir. Son paket kontrolü `npm pack --dry-run` ve temiz artifact kurulum smoke testidir.
+- Legacy wrapper aktifliği iddia edilecekse `opencode2 service restart` ve `opencode2 api get /api/plugin` gerekir. Yeni servis doğrulaması bu restart'a bağımlı değildir; legacy test sonucunu yeni ürün kabulü sayma.
+- Canlı istemci, gerçek model, sandbox, PostgreSQL ve desteklenen OS kanıtlarını fixture testlerinden ayrı tut. Public yayın veya üretim hesabı dağıtımı bu planın otomatik yetkisi değildir.

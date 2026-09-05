@@ -1,0 +1,36 @@
+{
+  "captured_at": "2026-09-05T14:19:13.407Z",
+  "status": "running",
+  "bundle_sha256": "937270f5c974ec3b3ee678f546ef46c9c4924e99ab9b7592e5d9fcdde5d1f82b",
+  "soak": {
+    "minutes": 1,
+    "requested_rps": 100,
+    "windows": [
+      {
+        "minute": 1,
+        "requests": 6000,
+        "errors": 0,
+        "elapsed_ms": 60001.304559,
+        "latency": {
+          "forge_search": {
+            "n": 3000,
+            "p50_ms": 6.431099999994331,
+            "p95_ms": 10.061646000001929,
+            "p99_ms": 13.468489999999292
+          },
+          "forge_load": {
+            "n": 3000,
+            "p50_ms": 7.425357000000076,
+            "p95_ms": 10.887794000002032,
+            "p99_ms": 16.83364100000017
+          }
+        },
+        "rss_bytes": 438288384,
+        "heap_used_bytes": 182652960
+      }
+    ],
+    "errors": 0,
+    "requests": 6000,
+    "status": "running"
+  }
+}

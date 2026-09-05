@@ -1,0 +1,41 @@
+[
+  {
+    "command": [
+      "bun",
+      "run",
+      "typecheck"
+    ],
+    "exitCode": 0,
+    "log": "baseline-clean-bun-run-typecheck.log",
+    "tail": "$ tsc --noEmit\n"
+  },
+  {
+    "command": [
+      "bun",
+      "test"
+    ],
+    "exitCode": 0,
+    "log": "baseline-clean-bun-test.log",
+    "tail": " hook stays fail-open when its inflight run rejects [1.06ms]\n(pass) manual prompt approval > session cancellation aborts an active editor run [1.12ms]\n(pass) manual prompt approval > a rewritten message with the same id is not edited again on a later hook [3.55ms]\n(pass) manual prompt approval > non-blocking auto rewrites are recorded as not applied to dispatch [1.92ms]\n(pass) manual prompt approval > a second manual message in the same session fails closed [2.09ms]\n(pass) manual prompt approval > shutdown cancels a manual gate instead of dispatching text [2.07ms]\n(pass) manual prompt approval > interruption after accept but before apply never persists or dispatches the rewrite [2.36ms]\n(pass) manual prompt approval > manual dispatch fails closed when its actionable state cannot be written [0.85ms]\n(pass) manual prompt approval > an unavailable exact session directory never falls back to service cwd [0.57ms]\n\n 242 pass\n 0 fail\n 724 expect() calls\nRan 242 tests across 24 files. [4.47s]\n"
+  },
+  {
+    "command": [
+      "bun",
+      "run",
+      "build:plugin"
+    ],
+    "exitCode": 0,
+    "log": "baseline-clean-bun-run-build-plugin.log",
+    "tail": "Bundled 28 modules in 10ms\n\n  plugin.js  157.0 KB  (entry point)\n\nbuilt dist/plugin.js\n$ bash scripts/build-plugin.sh\n"
+  },
+  {
+    "command": [
+      "npm",
+      "pack",
+      "--dry-run"
+    ],
+    "exitCode": 0,
+    "log": "baseline-clean-npm-pack---dry-run.log",
+    "tail": "e-0.5.6.tgz\nnpm notice\nnpm notice \ud83d\udce6  @vaur94/opencode2-skill-forge@0.5.6\nnpm notice Tarball Contents\nnpm notice 1.1kB LICENSE\nnpm notice 14.3kB README.md\nnpm notice 26.8kB SPR_SKILL_AUTHORING.md\nnpm notice 26.0kB dist/bin/skill-fs-helper-linux-x64\nnpm notice 65B dist/bin/skill-fs-helper-linux-x64.sha256\nnpm notice 157.0kB dist/plugin.js\nnpm notice 390B dist/prompt-editor-agent.jsonc\nnpm notice 936B dist/skillforge-core.d.ts\nnpm notice 1.5MB dist/skillforge-core.js\nnpm notice 7.2kB dist/spr-agent.jsonc\nnpm notice 1.1kB package.json\nnpm notice 390B prompt-editor-agent.jsonc\nnpm notice 7.2kB spr-agent.jsonc\nnpm notice Tarball Details\nnpm notice name: @vaur94/opencode2-skill-forge\nnpm notice version: 0.5.6\nnpm notice filename: vaur94-opencode2-skill-forge-0.5.6.tgz\nnpm notice package size: 378.7 kB\nnpm notice unpacked size: 1.7 MB\nnpm notice shasum: fd333f2771dffd63e120d04ad4c45f436e0cc288\nnpm notice integrity: sha512-EuAP3d1W3XncW[...]1Jyh/BnhvS/Bg==\nnpm notice total files: 13\nnpm notice\n"
+  }
+]

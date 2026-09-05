@@ -1,0 +1,4 @@
+src/application/forge.ts 142ms
+web/src/Jobs.tsx 27ms
+web/src/ui.tsx 18ms (unchanged)
+test/mcp-output-bounds.test.ts 36ms

@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test/package-store.test.ts:
+(pass) package store sqlite: complete publication, CAS, pinned revisions and scope [270.81ms]
+(pass) package paths reject traversal, Windows aliases, symlinks, hardlinks and Unicode collisions [3.11ms]
+(pass) missing references and script packages without executable contracts are rejected [3.32ms]
+
+test/execution.test.ts:
+(pass) real Docker node: JSON contract, artifact, validation and container cleanup [1673.34ms]
+(pass) real Docker python: JSON contract, artifact, validation and container cleanup [1170.81ms]
+(pass) real sandbox timeout kills the container and all descendants [500.98ms]
+
+ 6 pass
+ 0 fail
+ 38 expect() calls
+Ran 6 tests across 2 files. [3.81s]

@@ -1,0 +1,4 @@
+$ tsc --noEmit
+src/index.ts(8,44): error TS2307: Cannot find module '../dist/skillforge-core.js' or its corresponding type declarations.
+src/prompt-editor/editor-session.ts(3,35): error TS2307: Cannot find module '@opencode-ai/client/service' or its corresponding type declarations.
+src/prompt-editor/persist.ts(1,35): error TS2307: Cannot find module '@opencode-ai/client/service' or its corresponding type declarations.

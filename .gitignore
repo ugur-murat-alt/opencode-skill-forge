@@ -1,6 +1,6 @@
 node_modules/
-bun.lock
 .opencode/
 .opencode/.skill-power/
 dist/.plugin.js.tmp
 *.log
+!docs/evidence/*.log

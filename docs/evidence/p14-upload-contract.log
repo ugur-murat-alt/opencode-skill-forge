@@ -1,0 +1,15 @@
+bun test v1.3.14 (0d9b296a)
+
+test/migration-cli.test.ts:
+(pass) Node migration CLI: explicit personal mapping, per-item failure, replay and reversible receipt [2911.28ms]
+(pass) Node learning migration CLI preserves the source and exports exact bytes [2234.01ms]
+(pass) Node flag migration CLI maps one legacy session and preserves original bytes [2146.87ms]
+
+test/migration-upload.test.ts:
+(pass) Node migration upload sends four selected sources over actual HTTP without creating client state [2778.85ms]
+(pass) remote upload rejects insecure destinations and never forwards credentials through redirects [7.82ms]
+
+ 5 pass
+ 0 fail
+ 41 expect() calls
+Ran 5 tests across 2 files. [10.61s]

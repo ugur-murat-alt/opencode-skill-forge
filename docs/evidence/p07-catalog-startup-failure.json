@@ -1,0 +1,22 @@
+{
+  "captured_at": "2026-09-05T13:58:11.167Z",
+  "status": "failed",
+  "kind": "real-local-mcp-catalog-fixture-no-model",
+  "hardware": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.19.0",
+    "cpu": "AMD Ryzen 7 5700G with Radeon Graphics",
+    "logical_cpus": 16,
+    "available_parallelism": 16,
+    "memory_bytes": 46169206784,
+    "disk_media": "not_measured"
+  },
+  "dataset": {
+    "count": 10000,
+    "sha256": "6a996406a11c07565b2f47b812eb74ca61c7ccb57fe2a9c639ec5099808af7b4",
+    "seed_ms": 143120.58602699998
+  },
+  "samples": [],
+  "error": "FastifyError [FST_ERR_HOOK_TIMEOUT]: A callback for 'onReady' hook timed out. You may have forgotten to call 'done' function or to resolve a Promise"
+}

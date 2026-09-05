@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/flag-import.test.ts:
+(pass) flags sqlite: explicit sessions, legacy fallback, monotonic rollback and source preservation [304.10ms]
+(pass) flags postgres: explicit sessions, legacy fallback, monotonic rollback and source preservation [162.82ms]
+
+test/session-preferences.test.ts:
+(pass) session preferences sqlite: scoped CAS and immutable source-aware acceptance [296.12ms]
+(pass) session preferences postgres: scoped CAS and immutable source-aware acceptance [139.69ms]
+
+ 4 pass
+ 0 fail
+ 66 expect() calls
+Ran 4 tests across 2 files. [1067.00ms]

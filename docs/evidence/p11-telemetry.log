@@ -1,0 +1,14 @@
+bun test v1.3.14 (0d9b296a)
+
+test/telemetry.test.ts:
+(pass) telemetry sqlite: bounded retention preserves live jobs, usage/dedup, private isolation and redacted support [262.00ms]
+(pass) telemetry postgres: bounded retention preserves live jobs, usage/dedup, private isolation and redacted support [176.23ms]
+
+test/maintenance.test.ts:
+(pass) maintenance sqlite: observations, partial replay, protection race, restore and private scope [282.93ms]
+(pass) maintenance postgres: observations, partial replay, protection race, restore and private scope [190.71ms]
+
+ 4 pass
+ 0 fail
+ 84 expect() calls
+Ran 4 tests across 2 files. [1077.00ms]
