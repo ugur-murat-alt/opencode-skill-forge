@@ -1,0 +1,129 @@
+{
+  "action": "Runtime operability harness: real artifact + real MCP client + real Pi runner + scripted loopback model",
+  "passed": 18,
+  "failed": 0,
+  "results": [
+    {
+      "name": "fake-model-up",
+      "ok": true,
+      "detail": "http://127.0.0.1:46007"
+    },
+    {
+      "name": "serve-boots",
+      "ok": true,
+      "detail": "port 36885"
+    },
+    {
+      "name": "project-create",
+      "ok": true,
+      "detail": "43ed6d8a-9d81-44b0-b530-dfaa8fc59ef7"
+    },
+    {
+      "name": "provider-profile",
+      "ok": true,
+      "detail": "{\"revision\":1,\"profile\":{\"provider\":\"ollama\",\"model\":\"harness-fake\",\"baseUrl\":\"http://127.0.0.1:46007\",\"allowPaid\":false"
+    },
+    {
+      "name": "settings-allowlist",
+      "ok": true,
+      "detail": "status 200"
+    },
+    {
+      "name": "seed-import",
+      "ok": true,
+      "detail": "{\"skill_id\":\"a4162120-38bb-4f88-9ae4-7b0fabcd637b\",\"revision\":\"a4067f2bd4b8e3fd5586000ab6964c9badffeb59af4e937e1e48b8095"
+    },
+    {
+      "name": "prompt-fresh",
+      "ok": true,
+      "detail": "fresh db: packaged file fallback mode"
+    },
+    {
+      "name": "prompt-cas",
+      "ok": true,
+      "detail": "v1->v2 live"
+    },
+    {
+      "name": "unauthenticated-wall",
+      "ok": true,
+      "detail": "status 401"
+    },
+    {
+      "name": "mcp-five-tools",
+      "ok": true,
+      "detail": "forge_handoff,forge_load,forge_report,forge_run,forge_search"
+    },
+    {
+      "name": "mcp-search",
+      "ok": true,
+      "detail": "1 items"
+    },
+    {
+      "name": "mcp-load",
+      "ok": true,
+      "detail": "encoding utf8, sha af6cba9c9edb"
+    },
+    {
+      "name": "mcp-handoff",
+      "ok": true,
+      "detail": "accepted"
+    },
+    {
+      "name": "pi-run-completes",
+      "ok": true,
+      "detail": "status completed error - calls via fake: 5"
+    },
+    {
+      "name": "born-searchable",
+      "ok": true,
+      "detail": "1 items"
+    },
+    {
+      "name": "born-content",
+      "ok": true,
+      "detail": "patch applied through the Pi loop"
+    },
+    {
+      "name": "run-fail-closed",
+      "ok": true,
+      "detail": "status failed"
+    },
+    {
+      "name": "fake-model-script",
+      "ok": true,
+      "detail": "5 model calls"
+    }
+  ],
+  "modelRequests": [
+    {
+      "n": 0,
+      "stream": true,
+      "toolMsgs": 0,
+      "toolCount": 7
+    },
+    {
+      "n": 1,
+      "stream": true,
+      "toolMsgs": 1,
+      "toolCount": 7
+    },
+    {
+      "n": 2,
+      "stream": true,
+      "toolMsgs": 2,
+      "toolCount": 7
+    },
+    {
+      "n": 3,
+      "stream": true,
+      "toolMsgs": 3,
+      "toolCount": 7
+    },
+    {
+      "n": 4,
+      "stream": true,
+      "toolMsgs": 4,
+      "toolCount": 7
+    }
+  ]
+}

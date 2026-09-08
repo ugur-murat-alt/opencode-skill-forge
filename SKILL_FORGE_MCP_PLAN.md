@@ -5,10 +5,11 @@
 P18 rol-araç matrisi, P19 ortam/kapsam/bağ, P20 skorlu arama, P21 ajan prompt zinciri, P22 prompt çıkarma,
 P23 web yenileme, P24 denetim + teslim notu) + 2 tur bağımsız inceleme kapatmaları. Son kapılar:
 typecheck/build/pack temiz, `bun test` 354 pass / 1 skip / 10 fail / 365 test / 83 dosya
-(10 fail yalnızca çevresel gerçek-Docker sandbox testleri), web kabul 28/28. Kanıtlar
+(10 fail yalnızca çevresel gerçek-Docker sandbox testleri), web kabul 28/28,
+runtime harness 18/18. Kanıtlar
 `docs/evidence/p17-*`, `p18-*`, `p19-*`, `p20-*`, `p21-*`, `p22-*`, `p23-web-acceptance.json`,
 `p24-delivery.md`, `p25-review-round1.json`, `p26-review-round2-p19p20.json`,
-`p27-review-round2-p23.json`. Değişiklikler commitlenmedi.
+`p27-review-round2-p23.json`, `p28-runtime-harness.json`. Değişiklikler commitlenmedi.
 **Hazırlanma tarihi:** 5 Eylül 2026  
 **Depo:** `ugur-murat-alt/opencode-skill-forge`  
 **İncelenen başlangıç:** `main`, commit `ed4c4b42b198ab8ae1088847e1b6ea0aa38ee048`, paket sürümü `0.5.6`  
@@ -1422,6 +1423,20 @@ TDD sırası izlendi: `test/agent-prompts.test.ts` (4 test: çözüm önceliği,
 ### P23 web yenileme — uygulama kaydı (2026-09-08)
 
 TDD sırası izlendi: `scripts/web-acceptance.mjs` (Playwright, gerçek derlenmiş servis + gerçek Chromium) önce yazıldı, olmayan ekranlarda kırmızı verdi, sonra yeşillendi: 28/28 kontrol (giriş, 12 sayfa, org kur/seç/rozet, skorlu arama görünümü, rol oluştur/sil/geri-yükle, davet oluştur/iptal, prompt düzenle/çift-marker geri al, yetkisiz giriş, sıfır sayfa hatası). `playwright-core@1.63.0` sabitlendi. Yeni ekranlar: Organizasyonlar (kur/seç/devir teklifi+kabul/silme iste+onay+vazgeç), Roller (liste/oluştur/sil + matris görünümü), Davetler (oluştur/anahtar/iptal), Ajan promptları (kapsam seçici, CAS düzenleme, geçmiş + geri alma). Kabuk: org/ortam seçici + kapsam rozeti (`OrgScope`), projesiz açılan yönetim sayfaları; Library skor sütunu + gerekçe + kapsam filtresi. Tasarım standardı: token değişkenleri + compact yoğunluk; `prettier`/`oxlint` temiz. Yeni uçlar: `POST /api/tenants/switch`, `GET /api/organization/transfer/offers`, `GET /api/organization/deletion/status`, `POST /api/projects` artık `environment_id` kabul eder. Kanıt `docs/evidence/p23-web-acceptance.json` + `docs/evidence/design/p23-*.png` (12 ekran).
+
+### Runtime harness — gerçeklik bağı (2026-09-09)
+
+Birim testleri + derleme "çalışır" demez; bu yüzden `scripts/runtime-harness.mjs`
+gerçek derlenmiş artifact'ı (`dist/cli.js serve`) açar, gerçek MCP SDK istemcisiyle
+5 aracı yoklar ve gömülü worker + GERÇEK Pi runner üzerinden uçtan uca skill_evolve
+koşar: senaryolu loopback OpenAI-uyumlu sahte model (sıfır ücret) inventory → select →
+patch → validate → finalize(create) adımlarını oynar, doğan skill aranır + okunur.
+18/18 yeşil (3 koşu). Kanıt `docs/evidence/p28-runtime-harness.json`. Harness yolunda
+bulunan tek gerçek davranış: allowlist yalnız operatör `policy.json` ile genişler
+(workspace katmanı daraltır) — tasarım kararı, `provider_endpoint_denied` ile
+fail-closed kanıtlandı. Kapsam dışı kalan gerçeklik: Docker gerektiren script
+çalıştırma (bu makinede fail-closed zarf döndürür), ücretli sağlayıcılar, PostgreSQL
+yolu, soak/performans (P02–P16 açık maddeleri).
 
 ### 2. tur bağımsız inceleme bulgu kapatmaları (2026-09-08)
 
