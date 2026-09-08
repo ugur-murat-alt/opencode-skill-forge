@@ -1,12 +1,12 @@
 import {
-  sanitizePromptEditorText,
+  sanitizeUntrustedText,
   CONTEXT_TRUNCATION_MARKER,
   SANITIZER_LOOKAHEAD_CODE_UNITS,
-} from "../../../src/prompt/sanitize.js";
+} from "../../../src/telemetry/sanitize.js";
 export {
-  sanitizePromptEditorText,
+  sanitizeUntrustedText as sanitizePromptEditorText,
   CONTEXT_TRUNCATION_MARKER,
-} from "../../../src/prompt/sanitize.js";
+} from "../../../src/telemetry/sanitize.js";
 import type { ChatMessage, MessageContentPart } from "./types.js";
 import { PROMPT_EDITOR_DEFAULTS, type PromptEditorConfig } from "./config.js";
 
@@ -106,7 +106,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * Convert only JSON data with plain object prototypes. Reject accessors,
  * circular data, functions, and arbitrary object prototypes.
  */
-const sanitizeText = sanitizePromptEditorText;
+const sanitizeText = sanitizeUntrustedText;
 
 function takeInputText(
   value: string,

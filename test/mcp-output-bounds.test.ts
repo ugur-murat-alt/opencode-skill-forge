@@ -250,7 +250,7 @@ test("job lists omit private result bodies; chunk cursors reject changed result 
       forge = new ForgeService(storage, root, "test-key");
     const accepted = await forge.queue.accept(actor, {
       projectId: project.id,
-      kind: "prompt_edit",
+      kind: "skill_evolve",
       key: "large-private-result",
       payload: { original: "Small input" },
     });

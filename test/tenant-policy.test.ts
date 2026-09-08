@@ -38,7 +38,7 @@ test("tenant policy: admin setup, operator ceilings, source labels and immutable
     expect(limited.values.dependencyInstall).toBe(false);
     const accepted = await new JobQueue(storage).accept(owner, {
       projectId: project.id,
-      kind: "prompt_edit",
+      kind: "skill_evolve",
       key: "snapshot",
       payload: { original: "Preserve 3 units." },
     });
@@ -48,19 +48,19 @@ test("tenant policy: admin setup, operator ceilings, source labels and immutable
     await storage.db
       .insertInto("users")
       .values({
-        id: "viewer",
-        subject: "viewer",
-        display_name: "Viewer",
+        id: "reader",
+        subject: "reader",
+        display_name: "Reader",
         created_at: Date.now(),
       })
       .execute();
     await storage.db
       .insertInto("memberships")
-      .values({ tenant_id: owner.tenantId, user_id: "viewer", role: "viewer" })
+      .values({ tenant_id: owner.tenantId, user_id: "reader", role: "reader" })
       .execute();
     await expect(
       settings.update(
-        { tenantId: owner.tenantId, userId: "viewer" },
+        { tenantId: owner.tenantId, userId: "reader" },
         "policy",
         2,
         { allowPaid: true },

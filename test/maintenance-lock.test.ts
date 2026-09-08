@@ -30,14 +30,14 @@ for (const backend of [
         const member = await new MemberService(storage.db).create(owner, {
           subject: `fixture|${crypto.randomUUID()}`,
           display_name: "Maintenance editor",
-          role: "editor",
+          role: "writer",
         });
         const actor = { ...owner, userId: member.user_id };
         const grant = {
           tenant_id: actor.tenantId,
           user_id: actor.userId,
           project_id: project.id,
-          role: "editor" as const,
+          role: "writer" as const,
         };
         await storage.db.insertInto("project_members").values(grant).execute();
         const packages = new PackageStore(storage, root),

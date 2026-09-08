@@ -63,7 +63,7 @@ for (const backend of [
           .values({
             tenant_id: actor.tenantId,
             user_id: actor.userId,
-            role: "owner",
+            role: "founder",
           })
           .execute();
         const auth = new IdentityService(storage.db),

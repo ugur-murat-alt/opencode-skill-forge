@@ -10,7 +10,7 @@ for (const backend of [
   "sqlite",
   ...(process.env.FORGE_TEST_POSTGRES_URL ? ["postgres"] : []),
 ])
-  test(`members ${backend}: revocation, stale update, project ceiling, protected owner and reenable`, async () => {
+  test(`members ${backend}: revocation, stale update, project ceiling, protected founder and reenable`, async () => {
     const root = await mkdtemp(join(tmpdir(), "forge-members-")),
       storage = await openDatabase({
         dataDir: root,
@@ -26,8 +26,8 @@ for (const backend of [
       const subject = `fixture|${crypto.randomUUID()}`,
         added = await service.create(owner, {
           subject,
-          display_name: "Contract viewer",
-          role: "viewer",
+          display_name: "Contract reader",
+          role: "reader",
         }),
         actor = { ...owner, userId: added.user_id };
       const token = await identity.issueSession(actor.userId, "session", 60000);
@@ -35,13 +35,13 @@ for (const backend of [
         project_ref: project.id,
         generation: 0,
         project_generation: null,
-        role: "viewer",
+        role: "reader",
         disabled: false,
-        project_role: "editor",
+        project_role: "writer",
       };
       await service.update(owner, actor.userId, request);
       expect(await identity.authorize(actor, "read", project.id)).toBe(
-        "viewer",
+        "reader",
       );
       await expect(
         identity.authorize(actor, "write", project.id),
@@ -56,7 +56,7 @@ for (const backend of [
         ...request,
         generation: 1,
         project_generation: 0,
-        role: "editor",
+        role: "writer",
         disabled: false,
       });
       const queue = new JobQueue(storage);
@@ -77,7 +77,7 @@ for (const backend of [
         ...request,
         generation: 2,
         project_generation: 1,
-        role: "editor",
+        role: "writer",
         disabled: true,
       });
       const cancelled = await storage.db
@@ -94,7 +94,7 @@ for (const backend of [
       ).rejects.toMatchObject({ code: "stale_worker" });
       await expect(
         identity.authenticate(token, owner.tenantId),
-      ).rejects.toMatchObject({ status: 403 });
+      ).rejects.toMatchObject({ status: 401 });
       await expect(
         identity.authorize(actor, "read", project.id),
       ).rejects.toMatchObject({ status: 403 });
@@ -110,15 +110,15 @@ for (const backend of [
         ...request,
         generation: current.generation,
         project_generation: current.project_generation,
-        role: "editor",
+        role: "writer",
         disabled: false,
       });
       expect(await identity.authorize(actor, "write", project.id)).toBe(
-        "editor",
+        "writer",
       );
       await expect(
         service.update(owner, owner.userId, request),
-      ).rejects.toMatchObject({ code: "owner_protected" });
+      ).rejects.toMatchObject({ code: "founder_protected" });
       expect(
         (
           await service.create(owner, {
@@ -129,7 +129,7 @@ for (const backend of [
         ).created,
       ).toBe(false);
       expect(await identity.authorize(actor, "read", project.id)).toBe(
-        "editor",
+        "writer",
       );
       await expect(
         service.list({ ...owner, tenantId: "foreign" }, project.id),

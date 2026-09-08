@@ -3,7 +3,6 @@ import {
   mkdtemp,
   mkdir,
   writeFile,
-  readFile,
   rm,
   symlink,
   readdir,
@@ -11,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverLegacy } from "../src/migration/discover.js";
-test("legacy discovery preserves bytes, reports malformed and duplicate data, and keeps home learning private", async () => {
+test("legacy discovery finds only skill packages, reports duplicates and stays read-only", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-migration-discovery-")),
     project = join(root, "project"),
     home = join(root, "home");
@@ -31,22 +30,6 @@ test("legacy discovery preserves bytes, reports malformed and duplicate data, an
         "Original reference.",
       );
     }
-    const state = join(home, ".opencode/.skill-power/prompt-editor");
-    await mkdir(state, { recursive: true });
-    const rewrites =
-      JSON.stringify({
-        ts: 1,
-        sessionID: "private-session",
-        messageID: "message",
-        original: "PRIVATE ORIGINAL",
-        rewritten: "PRIVATE RESULT",
-      }) + "\n{broken\n";
-    await writeFile(join(state, "rewrites.jsonl"), rewrites);
-    await writeFile(
-      join(state, "learn.md"),
-      "# Prompt Editor — Learn\n\n## [1234567890123]\nPRIVATE LESSON\n",
-    );
-    await writeFile(join(state, "session-flags.json"), "{}");
     await symlink(
       join(root, "outside"),
       join(project, ".opencode/skills/redirect"),
@@ -70,14 +53,9 @@ test("legacy discovery preserves bytes, reports malformed and duplicate data, an
     expect(report.items.find((i) => i.path === "redirect")?.status).toBe(
       "unreadable",
     );
-    const stateItems = report.items.filter((i) => i.kind === "state");
-    expect(stateItems.every((i) => i.target_scope === "personal")).toBe(true);
-    expect(
-      stateItems.find((i) => i.path.endsWith("rewrites.jsonl"))?.summary,
-    ).toEqual({ records: 1, malformed: 1 });
-    expect(JSON.stringify(report)).not.toContain("PRIVATE");
-    expect(await readFile(join(state, "rewrites.jsonl"), "utf8")).toBe(
-      rewrites,
+    expect(report.items.every((i) => i.kind === "package")).toBe(true);
+    expect(report.roots.map((r) => r.id).sort()).toEqual(
+      ["home-config-skills", "home-skills", "project-skills"].sort(),
     );
     expect(
       (await discoverLegacy({ projectRoot: project, home })).checksum,

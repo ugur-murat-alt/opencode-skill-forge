@@ -27,13 +27,13 @@ for (const backend of [
       const member = await new MemberService(storage.db).create(owner, {
         subject: `fixture|${crypto.randomUUID()}`,
         display_name: "Profile writer",
-        role: "editor",
+        role: "writer",
       });
       const actor = { ...owner, userId: member.user_id },
         vault = await SecretVault.open(root);
       const provider = new ProviderService(auth, vault);
       const body = {
-        role: "prompt",
+        role: "skill",
         base_revision: 0,
         profile: { provider: "ollama", model: "fixture-model" },
         credential: "synthetic-profile-secret",
@@ -91,7 +91,7 @@ for (const backend of [
               actor,
               `personal:${actor.userId}`,
               0,
-              { promptEnabled: false },
+              { evolutionEnabled: false },
             ),
           ]);
           await checked;
@@ -119,7 +119,7 @@ for (const backend of [
       ).rejects.toMatchObject({ status: 403 });
       await expect(
         new SettingsService(auth).update(actor, `personal:${actor.userId}`, 0, {
-          promptEnabled: false,
+          evolutionEnabled: false,
         }),
       ).rejects.toMatchObject({ status: 403 });
       expect(

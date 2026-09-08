@@ -7,7 +7,6 @@ import { IdentityService } from "../src/application/identity.js";
 import { ForgeService } from "../src/application/forge.js";
 import { SettingsService } from "../src/application/settings.js";
 import { TelemetryService } from "../src/application/telemetry.js";
-import { LearningStore } from "../src/prompt/learning.js";
 for (const backend of [
   "sqlite",
   ...(process.env.FORGE_TEST_POSTGRES_URL ? ["postgres"] : []),
@@ -37,30 +36,30 @@ for (const backend of [
           "Private retention canary. Preserve 3 units and do not expand scope.";
       const completed = await forge.queue.accept(owner, {
         projectId: project.id,
-        kind: "prompt_edit",
+        kind: "skill_evolve",
         key: "old-completed",
-        payload: { original },
+        payload: { summary: original },
       });
       const live = await forge.queue.accept(owner, {
         projectId: project.id,
-        kind: "prompt_edit",
+        kind: "skill_evolve",
         key: "live",
-        payload: { original },
+        payload: { summary: original },
       });
       const elsewhere = await forge.queue.accept(owner, {
         projectId: other.id,
-        kind: "prompt_edit",
+        kind: "skill_evolve",
         key: "other",
-        payload: { original },
+        payload: { summary: original },
       });
       const old = Date.now() - 3 * 86400000;
       await storage.db
         .updateTable("runs")
         .set({
-          state: "improved",
+          state: "completed",
           updated_at: old,
           result_json: JSON.stringify({
-            status: "improved",
+            status: "completed",
             original,
             effective: original,
             usage: { input: 12, output: 4, cost: null },
@@ -68,14 +67,22 @@ for (const backend of [
         })
         .where("id", "in", [completed.run.id, elsewhere.run.id])
         .execute();
-      const lesson = await new LearningStore(storage).save(owner, project.id, {
-        content: "Preserve explicit quantities when refining a request.",
-        triggers: "quantity request",
-      });
+      const lessonId = crypto.randomUUID();
       await storage.db
-        .updateTable("learning_entries")
-        .set({ created_at: old })
-        .where("id", "=", lesson.id)
+        .insertInto("learning_entries")
+        .values({
+          tenant_id: owner.tenantId,
+          id: lessonId,
+          user_id: owner.userId,
+          project_id: project.id,
+          scope_key: `project:${project.id}`,
+          content: "Preserve explicit quantities when refining a request.",
+          content_hash: "fixture-hash",
+          trigger_text: "quantity request",
+          run_id: null,
+          disabled: 0,
+          created_at: old,
+        })
         .execute();
       await storage.db
         .insertInto("audit_events")
@@ -113,17 +120,6 @@ for (const backend of [
       expect(
         (await forge.queue.get(owner, elsewhere.run.id)).input_json,
       ).toContain(original);
-      const replay = await forge.invoke("forge_prepare", owner, {
-        project_ref: project.id,
-        original,
-        idempotency_key: "old-completed",
-        wait_ms: 0,
-      });
-      expect(replay.status).toBe("fallback");
-      expect(replay.reason).toBe("content_expired");
-      expect(replay.original).toBe(original);
-      expect(replay.effective).toBe(original);
-      expect(replay.run_id).toBe(completed.run.id);
       expect((await service.retain(owner, project.id)).scrubbed_runs).toBe(0);
       await expect(
         service.retain({ ...owner, tenantId: "foreign" }, project.id),

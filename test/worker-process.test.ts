@@ -24,7 +24,7 @@ for (const backend of [
   "sqlite",
   ...(process.env.FORGE_TEST_POSTGRES_URL ? ["postgres"] : []),
 ]) {
-  test(`independent Node CLI worker ${backend} recovers a crashed lease owner and preserves fail-open result`, async () => {
+  test(`independent Node CLI worker ${backend} recovers a crashed lease owner`, async () => {
     const root = await mkdtemp(join(tmpdir(), "forge-worker-process-"));
     const dataDir = join(root, "data");
     await mkdir(dataDir, { mode: 0o700 });
@@ -49,12 +49,12 @@ for (const backend of [
     let claimant: ChildProcess | undefined, worker: ChildProcess | undefined;
     try {
       const original =
-        "Bu bağımsız süreç kurtarma deneyinde özgün Türkçe isteği ve belirtilen çıktı biçimini aynen koru.";
+        "Bu bağımsız süreç kurtarma deneyinde özet metni ve belirtilen çıktı biçimini aynen koru.";
       const accepted = await queue.accept(owner, {
         projectId: project.id,
         kind: "skill_evolve",
         key: "process-crash",
-        payload: { original },
+        payload: { summary: original },
         deadlineMs: 15000,
       });
       const childPath = join(root, "claim.ts");
@@ -144,29 +144,10 @@ for (const backend of [
         projectId: project.id,
         kind: "skill_evolve",
         key: "process-crash",
-        payload: { original },
+        payload: { summary: original },
       });
       expect(replay.status).toBe("duplicate");
       expect(replay.run.id).toBe(accepted.run.id);
-      const prompt = await queue.accept(owner, {
-        projectId: project.id,
-        kind: "prompt_edit",
-        key: "normal-prompt",
-        payload: { original },
-      });
-      let promptResult = await queue.get(owner, prompt.run.id);
-      const promptDeadline = Date.now() + 5000;
-      while (Date.now() < promptDeadline && promptResult.state !== "fallback") {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        promptResult = await queue.get(owner, prompt.run.id);
-      }
-      expect(promptResult.state).toBe("fallback");
-      expect(JSON.parse(promptResult.result_json!)).toMatchObject({
-        original,
-        effective: original,
-        auto_applied: false,
-        reason: "model_missing",
-      });
       await stop(worker, "SIGTERM");
       expect(worker.exitCode).toBe(0);
     } finally {

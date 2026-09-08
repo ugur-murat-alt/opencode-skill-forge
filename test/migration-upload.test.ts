@@ -17,7 +17,7 @@ import { localConfig } from "../src/cli/config.js";
 import { discoverLegacy } from "../src/migration/discover.js";
 import { remoteMigrationUpload } from "../src/migration/remote.js";
 const exec = promisify(execFile);
-test("Node migration upload sends four selected sources over actual HTTP without creating client state", async () => {
+test("Node migration upload sends one selected package over actual HTTP without creating client state", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-upload-")),
     serverRoot = join(root, "server"),
     home = join(root, "home"),
@@ -40,33 +40,11 @@ test("Node migration upload sends four selected sources over actual HTTP without
         payload: { name: "Remote upload fixture" },
       })
     ).json();
-    const source = join(home, ".opencode/.skill-power/prompt-editor"),
-      skills = join(home, ".config/opencode/skills/remote-helper");
-    await mkdir(source, { recursive: true });
+    const skills = join(home, ".config/opencode/skills/remote-helper");
     await mkdir(skills, { recursive: true });
-    await writeFile(
-      join(skills, "SKILL.md"),
-      "---\nname: remote-helper\ndescription: Preserve remote migration constraints.\n---\nUse the verified method.\n",
-    );
-    const learn =
-      "# Prompt Editor — Learn\n\n## [1700000000000]\nPreserve explicit quantities.\n";
-    await writeFile(join(source, "learn.md"), learn);
-    await writeFile(
-      join(source, "rewrites.jsonl"),
-      JSON.stringify({
-        ts: 1700000000000,
-        sessionID: "old",
-        messageID: "one",
-        outcome: "rewritten",
-        original: "Preserve scope.",
-        rewritten: "Preserve explicit scope.",
-        durationMs: 12,
-      }) + "\n",
-    );
-    await writeFile(
-      join(source, "session-flags.json"),
-      JSON.stringify({ old: { enabled: false, autoAccept: false } }),
-    );
+    const skillMd =
+      "---\nname: remote-helper\ndescription: Preserve remote migration constraints.\n---\nUse the verified method.\n";
+    await writeFile(join(skills, "SKILL.md"), skillMd);
     const manifest = await discoverLegacy({ projectRoot, home }),
       manifestPath = join(root, "manifest.json"),
       mappingPath = join(root, "mapping.json");
@@ -78,22 +56,7 @@ test("Node migration upload sends four selected sources over actual HTTP without
       manifest_checksum: manifest.checksum,
       items: manifest.items.map((item) => ({
         source_id: item.source_id,
-        ...(item.kind === "package"
-          ? { flags: { managed: true, protected: false, pinned: false } }
-          : item.path.endsWith("learn.md")
-            ? { learning: { enabled: false } }
-            : item.path.endsWith("rewrites.jsonl")
-              ? { rewrites: true }
-              : {
-                  sessions: [
-                    {
-                      legacy_session: "old",
-                      target: { client: "codex", session: "new" },
-                      base_revision: 0,
-                      defaults: { enabled: true, autoAccept: true },
-                    },
-                  ],
-                }),
+        flags: { managed: true, protected: false, pinned: false },
       })),
     };
     await writeFile(mappingPath, JSON.stringify(mapping));
@@ -120,16 +83,16 @@ test("Node migration upload sends four selected sources over actual HTTP without
     expect(output.stdout).not.toContain(cfg.token);
     expect(output.stderr).not.toContain(cfg.token);
     const result = JSON.parse(output.stdout);
-    expect(result.selected).toBe(4);
+    expect(result.selected).toBe(1);
     expect(result.failed).toBe(0);
     expect(result.results.every((x: any) => x.state === "applied")).toBe(true);
     await expect(stat(clientData)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readFile(join(source, "learn.md"), "utf8")).toBe(learn);
+    expect(await readFile(join(skills, "SKILL.md"), "utf8")).toBe(skillMd);
     const replay = JSON.parse((await exec("node", args, { env })).stdout);
     expect(replay.results.every((x: any) => x.replayed)).toBe(true);
     await writeFile(
-      join(source, "learn.md"),
-      learn + "Changed after discovery.",
+      join(skills, "SKILL.md"),
+      skillMd + "Changed after discovery.",
     );
     const failed = await exec("node", args, { env }).catch((error) => error);
     expect(failed.code).toBe(1);

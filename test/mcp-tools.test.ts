@@ -9,7 +9,7 @@ import {
 import { localConfig } from "../src/cli/config.js";
 import { createHttpServer } from "../src/http/server.js";
 import { CursorCodec } from "../src/application/cursor.js";
-test("official MCP: only six tools, real daemon worker, prompt fail-open, durable handoff and report", async () => {
+test("official MCP: only five tools, real daemon worker, durable handoff and report", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-mcp-")),
     config = await localConfig(root),
     app = await createHttpServer(config);
@@ -39,7 +39,6 @@ test("official MCP: only six tools, real daemon worker, prompt fail-open, durabl
     expect(names).toEqual([
       "forge_handoff",
       "forge_load",
-      "forge_prepare",
       "forge_report",
       "forge_run",
       "forge_search",
@@ -53,15 +52,6 @@ test("official MCP: only six tools, real daemon worker, prompt fail-open, durabl
       (await invoke("forge_search", { project_ref: project.id, query: "" }))
         .items,
     ).toEqual([]);
-    const original = "Yalnız bu dosyada 3 satırı düzelt, sürümü değiştirme.";
-    const prepared = await invoke("forge_prepare", {
-      project_ref: project.id,
-      original,
-      idempotency_key: "prepare-once",
-    });
-    expect(prepared.status).toBe("fallback");
-    expect(prepared.reason).toBe("model_missing");
-    expect(prepared.effective).toBe(original);
     const args = {
       project_ref: project.id,
       summary: "Real storage test passed; reusable recovery method.",

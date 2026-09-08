@@ -29,14 +29,14 @@ for (const backend of [
       const member = await new MemberService(storage.db).create(admin, {
         subject: `fixture|${crypto.randomUUID()}`,
         display_name: "Reader editor",
-        role: "editor",
+        role: "writer",
       });
       const owner = { ...admin, userId: member.user_id };
       const grant = {
         tenant_id: owner.tenantId,
         user_id: owner.userId,
         project_id: project.id,
-        role: "editor" as const,
+        role: "writer" as const,
       };
       await storage.db.insertInto("project_members").values(grant).execute();
       let reading = 0;

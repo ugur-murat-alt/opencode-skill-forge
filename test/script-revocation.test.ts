@@ -19,15 +19,15 @@ test("real sandbox execution aborts on membership revocation and preserves its f
     const user = await members.create(owner, {
       subject: "revoke-fixture",
       display_name: "Revoke fixture",
-      role: "editor",
+      role: "writer",
     });
     await members.update(owner, user.user_id, {
       project_ref: project.id,
       generation: 0,
       project_generation: null,
-      role: "editor",
+      role: "writer",
       disabled: false,
-      project_role: "editor",
+      project_role: "writer",
     });
     const actor = { ...owner, userId: user.user_id },
       forge = new ForgeService(storage, root, "test-key"),
@@ -93,9 +93,9 @@ test("real sandbox execution aborts on membership revocation and preserves its f
       project_ref: project.id,
       generation: 1,
       project_generation: 0,
-      role: "editor",
+      role: "writer",
       disabled: true,
-      project_role: "editor",
+      project_role: "writer",
     });
     const result = await running;
     expect(result.status).toBe("failed");
@@ -114,9 +114,9 @@ test("real sandbox execution aborts on membership revocation and preserves its f
       project_ref: project.id,
       generation: 2,
       project_generation: 1,
-      role: "editor",
+      role: "writer",
       disabled: false,
-      project_role: "editor",
+      project_role: "writer",
     });
     const duplicate = await forge.invoke("forge_run", actor, {
       project_ref: project.id,

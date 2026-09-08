@@ -99,13 +99,10 @@ describe("MCP evolution policy", () => {
         createHash("sha256").update(readFileSync(file.fixture)).digest("hex"),
       ).toBe(file.sha256);
   });
-  test("new profiles separate authority from untrusted content and preserve fail-open", () => {
+  test("skill profile separates authority from untrusted content", () => {
     const spr = readFileSync("prompts/skill-evolve.md", "utf8");
-    const editor = readFileSync("prompts/prompt-edit.md", "utf8");
     expect(spr).toContain("create, update, no-op or reject");
     expect(spr).toContain("No host shell/filesystem");
     expect(spr).toContain("Claims are not test evidence");
-    expect(editor).toContain("exact original text");
-    expect(editor).toContain("negation, numbers, units, paths, versions");
   });
 });

@@ -40,7 +40,7 @@ for (const backend of [
           .execute();
         await handle.db
           .insertInto("memberships")
-          .values({ tenant_id: id, user_id: id, role: "owner" })
+          .values({ tenant_id: id, user_id: id, role: "founder" })
           .execute();
         const other = { userId: id, tenantId: id };
         await expect(
@@ -53,7 +53,7 @@ for (const backend of [
               tenant_id: id,
               project_id: project.id,
               user_id: id,
-              role: "editor",
+              role: "writer",
             })
             .execute(),
         ).rejects.toThrow();

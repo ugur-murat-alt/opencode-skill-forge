@@ -67,7 +67,7 @@ for (const backend of [
       expect((await queue.get(owner, accepted.id)).state).toBe("no_op");
       const cancelled = await queue.accept(owner, {
         projectId: project.id,
-        kind: "prompt_edit",
+        kind: "skill_evolve",
         key: crypto.randomUUID(),
         payload: { text: "Özgün" },
       });
