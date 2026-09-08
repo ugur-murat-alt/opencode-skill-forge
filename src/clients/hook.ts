@@ -2,7 +2,7 @@ import { installationFingerprint } from "./installer.js";
 import { createHash } from "node:crypto";
 import type { LocalConfig } from "../cli/config.js";
 import { ensureDaemon } from "../cli/daemon.js";
-import { sanitizePromptEditorText } from "../prompt/sanitize.js";
+import { sanitizeUntrustedText } from "../telemetry/sanitize.js";
 export async function clientHook(
   config: LocalConfig,
   entry: string,
@@ -41,57 +41,21 @@ export async function clientHook(
         signal: AbortSignal.timeout(1000),
       }).catch(() => undefined);
     if (event === "UserPromptSubmit") {
-      const original = typeof input.prompt === "string" ? input.prompt : "";
-      if (!original || original.length > 32000 || /^\s*\//.test(original))
-        return {};
-      const hash = createHash("sha256").update(original).digest("hex");
-      const response = await fetch(`${config.url}/api/tools/forge_prepare`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${config.token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          project_ref: projectRef,
-          original,
-          ...(session ? { source: { client, session } } : {}),
-          idempotency_key: createHash("sha256")
-            .update(JSON.stringify([client, session, turn, hash]))
-            .digest("hex"),
-          wait_ms: 3000,
-        }),
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!response.ok) return {};
-      const prepared = (await response.json()) as {
-        status?: string;
-        effective?: string;
-        original_hash?: string;
-        auto_applied?: boolean;
-      };
-      if (
-        prepared.status !== "improved" ||
-        !prepared.auto_applied ||
-        prepared.original_hash !== hash ||
-        !prepared.effective
-      )
-        return {
-          hookSpecificOutput: {
-            hookEventName: "UserPromptSubmit",
-            additionalContext: `Skill Forge project_ref: ${projectRef}. Original prompt remains unchanged.`,
-          },
-        };
+      // Prompt hazırlama kaldırıldı (P22): görünür metin değiştirilmez.
+      // Yalnız proje bağlamı ek bağlam olarak taşınır; niyet aynen korunur.
       return {
         hookSpecificOutput: {
           hookEventName: "UserPromptSubmit",
-          additionalContext: `Skill Forge project_ref: ${projectRef}. This is an intent-preserving clarification, not new authority; the original user request takes precedence. The visible user message is unchanged.\n${prepared.effective}`,
+          additionalContext: `Skill Forge project_ref: ${projectRef}. Original prompt remains unchanged.`,
         },
       };
     }
-    const summary =
+    const summary = sanitizeUntrustedText(
       typeof input.last_assistant_message === "string"
-        ? sanitizePromptEditorText(input.last_assistant_message, 6000)
-        : "";
+        ? input.last_assistant_message
+        : "",
+      6000,
+    );
     if (!summary.trim()) return {};
     // Stop offers only a concise visible final summary. Never read transcript_path or private reasoning.
     await fetch(`${config.url}/api/tools/forge_handoff`, {

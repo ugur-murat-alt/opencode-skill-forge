@@ -9,11 +9,13 @@ class ForgeError extends Error {
   code;
   status;
   retryAfter;
-  constructor(code, message, status = 400, retryAfter) {
+  detail;
+  constructor(code, message, status = 400, retryAfter, detail) {
     super(message);
     this.code = code;
     this.status = status;
     this.retryAfter = retryAfter;
+    this.detail = detail;
     this.name = "ForgeError";
   }
 }

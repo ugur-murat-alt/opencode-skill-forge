@@ -2,9 +2,6 @@
 import { backupPostgres, restorePostgres } from "../backup/postgres.js";
 import { backupSqlite, restoreSqlite } from "../backup/sqlite.js";
 import { remoteMigrationUpload } from "../migration/remote.js";
-import { FlagMigration } from "../migration/flags.js";
-import { RewriteMigration } from "../migration/rewrites.js";
-import { LearningMigration } from "../migration/learning.js";
 import { importDiscovery, readMigrationJson } from "../migration/batch.js";
 import { MigrationImporter } from "../migration/importer.js";
 import { PackageStore } from "../skills/store.js";
@@ -24,6 +21,7 @@ import { JobQueue } from "../jobs/queue.js";
 import { ForgeWorker } from "../jobs/worker.js";
 import { productionHandler } from "../runner/handler.js";
 import { IdentityService } from "../application/identity.js";
+import { ensureDefaultEnvironment } from "../application/environments.js";
 import { parseArgs } from "node:util";
 import {
   resolve,
@@ -69,7 +67,7 @@ async function main() {
   }
   if (values.help || !positionals.length) {
     process.stdout.write(
-      "Skill Forge\n  backup / restore --data-dir <kaynak> --output <yeni-dizin>  SQLite/PostgreSQL yedekleme\n  serve   Yerel kimlikli HTTP/MCP servisi\n  stop    Yerel servisi kimlikli ve kontrollü durdur\n  worker  Ayrı süreçte kalıcı iş tüketicisi\n  mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)\n  install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu\n  login   Tek kullanımlık web giriş kodu\n  doctor  Servis kimliği/sürüm/sağlık kontrolü\n  migration-scan --project <dizin>  Eski veriyi salt okunur keşfet\n  migration-import --manifest <json> --mapping <json>  Seçilen paketleri aktar\n  migration-rollback --receipt <id>  Değişmemiş aktarımı geri al\n  migration-learning-export / migration-learning-rollback --receipt <id>  Özel öğrenme aktarımı\n  migration-rewrites-export / migration-rewrites-rollback --receipt <id>  Eski rewrite geçmişi\n  migration-flags-export / migration-flags-rollback --receipt <id>  Oturum bayrağı aktarımı\n  migration-upload --server-url <origin> --tenant-id <id> --manifest <json> --mapping <json>  Uzak aktarım\n  --data-dir <dizin> --port <port>\n",
+      "Skill Forge\n  backup / restore --data-dir <kaynak> --output <yeni-dizin>  SQLite/PostgreSQL yedekleme\n  serve   Yerel kimlikli HTTP/MCP servisi\n  stop    Yerel servisi kimlikli ve kontrollü durdur\n  worker  Ayrı süreçte kalıcı iş tüketicisi\n  mcp     Bağımsız servise stdio köprüsü (gerekiyorsa başlatır)\n  install / uninstall  Projeye Codex veya Claude resmi MCP/hook kurulumu\n  login   Tek kullanımlık web giriş kodu\n  doctor  Servis kimliği/sürüm/sağlık kontrolü\n  migration-scan --project <dizin>  Eski veriyi salt okunur keşfet\n  migration-import --manifest <json> --mapping <json>  Seçilen paketleri aktar\n  migration-rollback --receipt <id>  Değişmemiş aktarımı geri al\n  migration-upload --server-url <origin> --tenant-id <id> --manifest <json> --mapping <json>  Uzak aktarım\n  --data-dir <dizin> --port <port>\n",
     );
     return;
   }
@@ -184,12 +182,6 @@ async function main() {
     values.port === undefined ? undefined : Number(values.port),
   );
   switch (positionals[0]) {
-    case "migration-flags-export":
-    case "migration-flags-rollback":
-    case "migration-rewrites-export":
-    case "migration-rewrites-rollback":
-    case "migration-learning-export":
-    case "migration-learning-rollback":
     case "migration-import":
     case "migration-rollback": {
       if (config.profile === "server")
@@ -198,20 +190,7 @@ async function main() {
           "Bu komut yerel cihaz sahibinin aktarımı içindir; server kimliği taklit edilemez.",
           403,
         );
-      const flagExport = positionals[0] === "migration-flags-export",
-        flagRollback = positionals[0] === "migration-flags-rollback";
-      const rewriteExport = positionals[0] === "migration-rewrites-export";
-      const rewriteRollback = positionals[0] === "migration-rewrites-rollback";
-      const learningExport = positionals[0] === "migration-learning-export";
-      const learningRollback = positionals[0] === "migration-learning-rollback";
-      const rollback =
-        positionals[0] === "migration-rollback" ||
-        learningExport ||
-        learningRollback ||
-        rewriteExport ||
-        rewriteRollback ||
-        flagExport ||
-        flagRollback;
+      const rollback = positionals[0] === "migration-rollback";
       if (
         rollback
           ? !/^[a-f0-9]{64}$/.test(values.receipt ?? "")
@@ -244,49 +223,7 @@ async function main() {
             }).validate(path, manifest);
           }),
         );
-        if (flagExport)
-          process.stdout.write(
-            await new FlagMigration(storage).original(actor, values.receipt!),
-          );
-        else if (flagRollback)
-          process.stdout.write(
-            JSON.stringify(
-              await new FlagMigration(storage).rollback(actor, values.receipt!),
-            ) + "\n",
-          );
-        else if (rewriteExport)
-          process.stdout.write(
-            await new RewriteMigration(storage).original(
-              actor,
-              values.receipt!,
-            ),
-          );
-        else if (rewriteRollback)
-          process.stdout.write(
-            JSON.stringify(
-              await new RewriteMigration(storage).rollback(
-                actor,
-                values.receipt!,
-              ),
-            ) + "\n",
-          );
-        else if (learningExport)
-          process.stdout.write(
-            await new LearningMigration(storage).original(
-              actor,
-              values.receipt!,
-            ),
-          );
-        else if (learningRollback)
-          process.stdout.write(
-            JSON.stringify(
-              await new LearningMigration(storage).rollback(
-                actor,
-                values.receipt!,
-              ),
-            ) + "\n",
-          );
-        else if (rollback)
+        if (rollback)
           process.stdout.write(
             JSON.stringify(await importer.rollback(actor, values.receipt!)) +
               "\n",
@@ -368,11 +305,12 @@ async function main() {
             .executeTakeFirstOrThrow();
           await tx
             .insertInto("memberships")
-            .values({ tenant_id: tenantId, user_id: user.id, role: "owner" })
+            .values({ tenant_id: tenantId, user_id: user.id, role: "founder" })
             .onConflict((oc) =>
               oc.columns(["tenant_id", "user_id"]).doNothing(),
             )
             .execute();
+          await ensureDefaultEnvironment(tx, tenantId);
           return {
             tenant_id: tenantId,
             user_id: user.id,

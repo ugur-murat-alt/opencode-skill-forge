@@ -1,4 +1,5 @@
 import type { Generated } from "kysely";
+import type { MemberRole, ProjectRole } from "../domain/roles.js";
 export interface Tenant {
   id: string;
   name: string;
@@ -15,12 +16,13 @@ export interface Membership {
   generation: Generated<number>;
   tenant_id: string;
   user_id: string;
-  role: "owner" | "admin" | "editor" | "viewer";
+  role: MemberRole;
 }
 export interface Project {
   tenant_id: string;
   id: string;
   name: string;
+  environment_id: string | null;
   created_at: number;
 }
 export interface ProjectMember {
@@ -28,7 +30,7 @@ export interface ProjectMember {
   tenant_id: string;
   project_id: string;
   user_id: string;
-  role: "editor" | "viewer";
+  role: ProjectRole;
 }
 export interface Binding {
   tenant_id: string;
@@ -36,6 +38,14 @@ export interface Binding {
   user_id: string;
   client_id: string;
   path: string;
+  local_name: string | null;
+  fs_fingerprint: string | null;
+}
+export interface Environment {
+  tenant_id: string;
+  id: string;
+  name: string;
+  created_at: number;
 }
 export interface ConfigRevision {
   tenant_id: string;
@@ -62,6 +72,51 @@ export interface AuditEvent {
   project_id: string | null;
   kind: string;
   detail: string;
+  created_at: number;
+}
+export interface Invitation {
+  tenant_id: string;
+  id: string;
+  token_hash: string;
+  role: string;
+  invited_by: string;
+  expires_at: number;
+  accepted_at: number | null;
+  revoked: Generated<number>;
+  created_at: number;
+}
+export interface TenantLifecycle {
+  tenant_id: string;
+  frozen: Generated<number>;
+  deletion_requested_at: number | null;
+  deletion_requested_by: string | null;
+}
+export interface TransferOffer {
+  tenant_id: string;
+  id: string;
+  to_user_id: string;
+  created_by: string;
+  expires_at: number;
+  accepted_at: number | null;
+  created_at: number;
+}
+export interface RoleDefinition {
+  tenant_id: string;
+  name: string;
+  kind: "builtin" | "custom";
+  base: string | null;
+  tools_json: string | null;
+  deleted: Generated<number>;
+  created_by: string;
+  created_at: number;
+}
+export interface AgentPrompt {
+  tenant_id: string;
+  profile: string;
+  scope: string;
+  version: number;
+  content: string;
+  created_by: string;
   created_at: number;
 }
 export interface Skill {
@@ -263,7 +318,7 @@ export interface DB {
     tenant_id: string;
     id: string;
     user_id: string;
-    role: "prompt" | "skill" | "evaluation";
+    role: "skill" | "evaluation";
     revision: number;
     profile_json: string;
     secret_ref: string | null;
@@ -308,12 +363,18 @@ export interface DB {
   tenants: Tenant;
   users: User;
   memberships: Membership;
+  environments: Environment;
   projects: Project;
   project_members: ProjectMember;
   project_bindings: Binding;
   config_revisions: ConfigRevision;
   auth_sessions: AuthSession;
   audit_events: AuditEvent;
+  invitations: Invitation;
+  tenant_lifecycle: TenantLifecycle;
+  transfer_offers: TransferOffer;
+  role_registry: RoleDefinition;
+  agent_prompts: AgentPrompt;
 }
 
 export type RunState =
@@ -335,7 +396,7 @@ export interface Run {
   session_id: string;
   user_id: string;
   project_id: string;
-  kind: "skill_evolve" | "prompt_edit";
+  kind: "skill_evolve";
   state: RunState;
   idempotency_key: string;
   input_hash: string;

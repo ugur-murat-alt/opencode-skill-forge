@@ -1,4 +1,5 @@
 import { DeletionService } from "./deletion.js";
+import { scopeWritePermission } from "../skills/store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
@@ -63,7 +64,7 @@ export class MaintenanceService {
     const row = await this.skill(db, actor, project, item.skill_id);
     await new IdentityService(db).authorize(
       actor,
-      row.scope_key === "workspace" ? "admin" : "write",
+      scopeWritePermission(row.scope_key),
       project,
     );
     if (
@@ -295,7 +296,7 @@ export class MaintenanceService {
               );
               await new IdentityService(tx).authorize(
                 actor,
-                skill.scope_key === "workspace" ? "admin" : "write",
+                scopeWritePermission(skill.scope_key),
                 input.project_ref,
               );
               if (receipt.input_hash !== hash)

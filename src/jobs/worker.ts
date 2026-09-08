@@ -32,7 +32,7 @@ export class ForgeWorker {
         process.stderr.write("pg-boss queue error\n");
       });
       await this.boss.start();
-      for (const kind of ["prompt_edit", "skill_evolve"] as const) {
+      for (const kind of ["skill_evolve"] as const) {
         await this.boss.createQueue(kind, {
           retryLimit: 3,
           retryDelay: 1,
@@ -70,11 +70,7 @@ export class ForgeWorker {
         );
       }
       this.loops.push(this.outboxLoop());
-    } else
-      this.loops.push(
-        this.localLoop("prompt_edit"),
-        this.localLoop("skill_evolve"),
-      );
+    } else this.loops.push(this.localLoop("skill_evolve"));
   }
   private async pause() {
     await new Promise((resolve) =>
@@ -137,6 +133,17 @@ export class ForgeWorker {
             "r.state",
           ])
           .where("o.delivered", "=", 0)
+          .where((eb) =>
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom("tenant_lifecycle as l")
+                  .select("l.tenant_id")
+                  .whereRef("l.tenant_id", "=", "r.tenant_id")
+                  .where("l.frozen", "=", 1),
+              ),
+            ),
+          )
           .limit(100)
           .execute();
         for (const run of pending) {

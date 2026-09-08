@@ -2,15 +2,28 @@ import { DirectoryReaders } from "./directory-readers.js";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, open, rename, lstat } from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
-import { sql } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
-import type { Run, Skill, SkillRevision } from "../storage/schema.js";
+import type { DB, Run, Skill, SkillRevision } from "../storage/schema.js";
 import { IdentityService, type Identity } from "../application/identity.js";
+import { SettingsService } from "../application/settings.js";
+import type { Settings } from "../domain/settings.js";
+import { EnvironmentService } from "../application/environments.js";
+import { scoreSkill, scopePriority } from "./scoring.js";
 import { JobQueue } from "../jobs/queue.js";
 import { ForgeError } from "../domain/errors.js";
 import { validatePackage, type PackageManifest } from "./validate.js";
 import { secureRead, packageInventory } from "./paths.js";
-export type SkillScope = "workspace" | "personal" | "project";
+export type SkillScope = "workspace" | "personal" | "project" | "environment";
+
+/** Environment- and workspace-scoped skills require admin to change. */
+export function scopeWritePermission(scopeKey: string): "admin" | "write" {
+  return scopeKey === "workspace" ||
+    scopeKey === "environment" ||
+    scopeKey.startsWith("environment:")
+    ? "admin"
+    : "write";
+}
 export interface ScriptValidation {
   hash: string;
   passed: boolean;
@@ -40,13 +53,24 @@ export class PackageStore {
       path: string,
       manifest: PackageManifest,
     ) => Promise<ScriptValidation>,
+    readonly policy: Settings = {},
   ) {}
-  private scope(identity: Identity, scope: SkillScope, projectId?: string) {
-    if (scope === "project" && !projectId)
+  private async scope(
+    identity: Identity,
+    scope: SkillScope,
+    projectId?: string,
+  ) {
+    if ((scope === "project" || scope === "environment") && !projectId)
       throw new ForgeError(
         "project_required",
-        "Proje kapsamı açık project_ref gerektirir.",
+        "Proje/ortam kapsamı açık project_ref gerektirir.",
       );
+    if (scope === "environment") {
+      const resolved = await new EnvironmentService(
+        this.storage.db,
+      ).resolveProject(identity.tenantId, projectId!);
+      return `environment:${resolved.environment_id}`;
+    }
     return scope === "personal"
       ? `personal:${identity.userId}`
       : scope === "project"
@@ -70,12 +94,49 @@ export class PackageStore {
         "Skill bulunamadı veya yetkiniz yok.",
         404,
       );
+    await this.assertEnvAccess(this.storage.db, identity, skill.scope_key);
     await new IdentityService(this.storage.db).authorize(
       identity,
-      write ? (skill.scope_key === "workspace" ? "admin" : "write") : "read",
+      write ? scopeWritePermission(skill.scope_key) : "read",
       skill.project_id ?? undefined,
     );
     return skill;
+  }
+  /** Environment skills load only for actors with a project in that environment. */
+  private async assertEnvAccess(
+    db: Kysely<DB>,
+    identity: Identity,
+    scopeKey: string,
+  ) {
+    if (!scopeKey.startsWith("environment:")) return;
+    const envId = scopeKey.slice("environment:".length);
+    const member = await db
+      .selectFrom("memberships")
+      .select("role")
+      .where("tenant_id", "=", identity.tenantId)
+      .where("user_id", "=", identity.userId)
+      .executeTakeFirst();
+    if (member && (member.role === "founder" || member.role === "admin"))
+      return;
+    const access = await db
+      .selectFrom("project_members as pm")
+      .innerJoin("projects as p", (join) =>
+        join
+          .onRef("p.tenant_id", "=", "pm.tenant_id")
+          .onRef("p.id", "=", "pm.project_id"),
+      )
+      .select("pm.project_id")
+      .where("pm.tenant_id", "=", identity.tenantId)
+      .where("pm.user_id", "=", identity.userId)
+      .where("p.environment_id", "=", envId)
+      .limit(1)
+      .executeTakeFirst();
+    if (!access)
+      throw new ForgeError(
+        "skill_unavailable",
+        "Skill bulunamadı veya yetkiniz yok.",
+        404,
+      );
   }
   private canonicalPath(path: string) {
     const root = resolve(this.dataDir),
@@ -129,6 +190,7 @@ export class PackageStore {
             "Paket bulunamadı veya yetkiniz yok.",
             404,
           );
+        await this.assertEnvAccess(tx, identity, skill.scope_key);
         await new IdentityService(tx).authorize(
           identity,
           audit ? "admin" : "read",
@@ -165,11 +227,31 @@ export class PackageStore {
     entry.count++;
     try {
       const snapshot = await entry.ready;
+      // TOCTOU close: re-resolve current access; the queued snapshot may
+      // predate an env move, personal transfer or membership change.
+      const current = await this.storage.db
+        .selectFrom("skills")
+        .select(["scope_key", "owner_id", "project_id"])
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", skillId)
+        .executeTakeFirst();
+      if (
+        !current ||
+        (!audit &&
+          current.scope_key.startsWith("personal:") &&
+          current.owner_id !== identity.userId)
+      )
+        throw new ForgeError(
+          "skill_unavailable",
+          "Paket bulunamadı veya yetkiniz yok.",
+          404,
+        );
+      await this.assertEnvAccess(this.storage.db, identity, current.scope_key);
       // Share only the lifetime guard; each request rechecks authorization and reads real bytes.
       await new IdentityService(this.storage.db).authorize(
         identity,
         audit ? "admin" : "read",
-        audit ? undefined : (snapshot.skill.project_id ?? undefined),
+        audit ? undefined : (current.project_id ?? undefined),
       );
       return await read(snapshot.skill, snapshot.row);
     } finally {
@@ -314,11 +396,25 @@ export class PackageStore {
       };
     },
   ) {
-    const scope = this.scope(identity, input.scope, input.projectId);
+    const scope = await this.scope(identity, input.scope, input.projectId);
+    let resolvedScope = scope;
+    if (input.scope === "environment" && !input.projectId && input.skillId) {
+      // Update of an environment skill after its last project left the
+      // environment: keep the stored scope_key instead of requiring a
+      // representative project. New environment skills still need one.
+      const current = await this.storage.db
+        .selectFrom("skills")
+        .select("scope_key")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", input.skillId)
+        .executeTakeFirst();
+      if (current?.scope_key.startsWith("environment:"))
+        resolvedScope = current.scope_key;
+    }
     const auth = new IdentityService(this.storage.db);
     await auth.authorize(
       identity,
-      input.scope === "workspace" ? "admin" : "write",
+      scopeWritePermission(input.scope),
       input.projectId,
     );
     const manifest = validatePackage(input.name, input.files);
@@ -328,12 +424,12 @@ export class PackageStore {
           .selectFrom("skills")
           .selectAll()
           .where("tenant_id", "=", identity.tenantId)
-          .where("scope_key", "=", scope)
+          .where("scope_key", "=", resolvedScope)
           .where("name", "=", input.name)
           .executeTakeFirst();
     if (
       existing &&
-      (existing.name !== input.name || existing.scope_key !== scope)
+      (existing.name !== input.name || existing.scope_key !== resolvedScope)
     )
       throw new ForgeError(
         "scope_change_denied",
@@ -424,7 +520,7 @@ export class PackageStore {
       "tenants",
       createHash("sha256").update(identity.tenantId).digest("hex"),
       "packages",
-      createHash("sha256").update(scope).digest("hex").slice(0, 20),
+      createHash("sha256").update(resolvedScope).digest("hex").slice(0, 20),
       id,
       "revisions",
       manifest.hash,
@@ -472,7 +568,7 @@ export class PackageStore {
           .execute();
         await new IdentityService(tx).authorize(
           identity,
-          input.scope === "workspace" ? "admin" : "write",
+          scopeWritePermission(input.scope),
           input.projectId,
         );
         if (input.run)
@@ -484,7 +580,7 @@ export class PackageStore {
             .values({
               tenant_id: identity.tenantId,
               id,
-              scope_key: scope,
+              scope_key: resolvedScope,
               project_id: input.scope === "project" ? input.projectId! : null,
               owner_id: identity.userId,
               name: input.name,
@@ -613,6 +709,125 @@ export class PackageStore {
       throw error;
     }
   }
+  /** Explicit scope move with CAS, re-authorization and audit. Pins survive. */
+  async setScope(
+    identity: Identity,
+    skillId: string,
+    input: {
+      scope: SkillScope;
+      projectId?: string;
+      expectedRevision: string | null;
+    },
+  ) {
+    const target = await this.scope(identity, input.scope, input.projectId);
+    return this.storage.db.transaction().execute(async (tx) => {
+      await tx
+        .updateTable("tenants")
+        .set({ name: sql`name` })
+        .where("id", "=", identity.tenantId)
+        .execute();
+      const auth = new IdentityService(tx);
+      const skill = await tx
+        .selectFrom("skills")
+        .selectAll()
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", skillId)
+        .executeTakeFirst();
+      if (
+        !skill ||
+        (skill.scope_key.startsWith("personal:") &&
+          skill.owner_id !== identity.userId)
+      )
+        throw new ForgeError(
+          "skill_unavailable",
+          "Skill bulunamadı veya yetkiniz yok.",
+          404,
+        );
+      await auth.authorize(
+        identity,
+        scopeWritePermission(skill.scope_key),
+        skill.project_id ?? undefined,
+      );
+      await auth.authorize(
+        identity,
+        scopeWritePermission(target),
+        input.scope === "project" ? input.projectId : undefined,
+      );
+      if ((skill.active_revision ?? null) !== input.expectedRevision)
+        throw new ForgeError(
+          "revision_conflict",
+          "Kapsam taşınırken sürüm değişti; güncel sürümü okuyun.",
+          409,
+        );
+      const clash = await tx
+        .selectFrom("skills")
+        .select("id")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("scope_key", "=", target)
+        .where("name", "=", skill.name)
+        .where("id", "!=", skill.id)
+        .executeTakeFirst();
+      if (clash)
+        throw new ForgeError(
+          "scope_change_conflict",
+          "Hedef kapsamda aynı adlı skill var.",
+          409,
+        );
+      const now = Date.now();
+      const moved =
+        input.expectedRevision === null
+          ? await tx
+              .updateTable("skills")
+              .set({
+                scope_key: target,
+                project_id: input.scope === "project" ? input.projectId! : null,
+                updated_at: now,
+              })
+              .where("tenant_id", "=", identity.tenantId)
+              .where("id", "=", skill.id)
+              .where("active_revision", "is", null)
+              .executeTakeFirst()
+          : await tx
+              .updateTable("skills")
+              .set({
+                scope_key: target,
+                project_id: input.scope === "project" ? input.projectId! : null,
+                updated_at: now,
+              })
+              .where("tenant_id", "=", identity.tenantId)
+              .where("id", "=", skill.id)
+              .where("active_revision", "=", input.expectedRevision)
+              .executeTakeFirst();
+      if (Number(moved.numUpdatedRows ?? 0) < 1)
+        throw new ForgeError(
+          "revision_conflict",
+          "Kapsam taşınırken sürüm değişti; güncel sürümü okuyun.",
+          409,
+        );
+      await tx
+        .insertInto("audit_events")
+        .values({
+          tenant_id: identity.tenantId,
+          id: randomUUID(),
+          user_id: identity.userId,
+          project_id: skill.project_id,
+          kind: "skill.scope_changed",
+          detail: JSON.stringify({
+            skill_id: skill.id,
+            from: skill.scope_key,
+            to: target,
+            revision: skill.active_revision,
+          }),
+          created_at: now,
+        })
+        .execute();
+      return {
+        id: skill.id,
+        scope_key: target,
+        active_revision: skill.active_revision,
+      };
+    });
+  }
   async search(
     identity: Identity,
     input: {
@@ -629,13 +844,33 @@ export class PackageStore {
       input.projectId,
     );
     const scopes = input.scope
-      ? [this.scope(identity, input.scope, input.projectId)]
+      ? [await this.scope(identity, input.scope, input.projectId)]
       : [
           "workspace",
           `personal:${identity.userId}`,
           `project:${input.projectId}`,
+          `environment:${
+            (
+              await new EnvironmentService(this.storage.db).resolveProject(
+                identity.tenantId,
+                input.projectId,
+              )
+            ).environment_id
+          }`,
         ];
-    const limit = Math.max(1, Math.min(20, input.limit ?? 5));
+    const effective = await new SettingsService(
+      new IdentityService(this.storage.db),
+      this.policy,
+    ).effective(identity, input.projectId);
+    const minScore = effective.values.searchMinScore ?? 0;
+    const limit = Math.max(
+      1,
+      Math.min(20, effective.values.searchMaxResults ?? 20, input.limit ?? 5),
+    );
+    const terms = searchText(input.query ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 10);
     let query = this.storage.db
       .selectFrom("skills")
       .selectAll()
@@ -643,32 +878,105 @@ export class PackageStore {
       .where("scope_key", "in", scopes)
       .where("archived", "=", 0)
       .where("active_revision", "is not", null);
-    for (const term of searchText(input.query ?? "")
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 10))
+    for (const term of terms)
       query = query.where(
         sql<boolean>`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`,
       );
-    if (input.after) query = query.where("id", ">", input.after);
-    const rows = await query
-      .orderBy("id")
-      .limit(limit + 1)
-      .execute();
+    const rows = await query.orderBy("id").limit(100).execute();
+    const since = Date.now() - 30 * 86400000;
+    const usageRows = rows.length
+      ? await this.storage.db
+          .selectFrom("skill_observations")
+          .select(["skill_id", (eb) => eb.fn.countAll<number>().as("n")])
+          .where("tenant_id", "=", identity.tenantId)
+          .where(
+            "skill_id",
+            "in",
+            rows.map((r) => r.id),
+          )
+          .where("kind", "in", ["loaded", "entrypoint_executed"])
+          .where("created_at", ">", since)
+          .groupBy("skill_id")
+          .execute()
+      : [];
+    const usage = new Map(usageRows.map((r) => [r.skill_id, Number(r.n)]));
+    type Ranked = { row: (typeof rows)[number]; score: number; why: string[] };
+    const ranked: Ranked[] = rows
+      .map((row) => ({
+        row,
+        ...scoreSkill(input.query ?? "", {
+          name: row.name,
+          description: row.description,
+          updatedAt: row.updated_at,
+          usage: usage.get(row.id) ?? 0,
+        }),
+      }))
+      .filter((r) => r.score >= minScore && (!input.query || r.score > 0))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          scopePriority(b.row.scope_key) - scopePriority(a.row.scope_key) ||
+          b.row.updated_at - a.row.updated_at ||
+          (a.row.id < b.row.id ? -1 : 1),
+      );
+    const merged: (Ranked & { other_scopes: string[]; other_ids: string[] })[] =
+      [];
+    for (const item of ranked) {
+      const key = item.row.name.normalize("NFKC").toLowerCase();
+      const existing = merged.find(
+        (m) => m.row.name.normalize("NFKC").toLowerCase() === key,
+      );
+      if (existing) {
+        existing.other_scopes.push(item.row.scope_key);
+        existing.other_ids.push(item.row.id);
+      } else merged.push({ ...item, other_scopes: [], other_ids: [] });
+    }
+    let start = 0;
+    // Cursor resume is best-effort under concurrent writes: the ranking is
+    // recomputed (score desc, scope priority, recency, id) and reading
+    // continues after the anchor; a deleted anchor falls back to the nearest
+    // position, which may skip or repeat entries on a changed dataset.
+    if (input.after) {
+      const sep = input.after.indexOf(":");
+      const score = Number(input.after.slice(0, sep));
+      const id = input.after.slice(sep + 1);
+      if (sep <= 0 || !id || !Number.isFinite(score) || score < 0 || score > 1)
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+      const anchor = merged.findIndex(
+        (m) => m.score.toFixed(3) === score.toFixed(3) && m.row.id === id,
+      );
+      if (anchor >= 0) start = anchor + 1;
+      else
+        start = merged.findIndex(
+          (m) =>
+            m.score < score ||
+            (m.score.toFixed(3) === score.toFixed(3) && m.row.id > id),
+        );
+      if (start < 0) start = merged.length;
+    }
+    const page = merged.slice(start, start + limit);
+    const last = page[page.length - 1];
     return {
-      items: rows.slice(0, limit).map((skill: Skill) => ({
-        skill_id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        scope: skill.scope_key,
-        revision: skill.active_revision,
-        updated_at: skill.updated_at,
-        managed: Boolean(skill.managed),
-        pinned: Boolean(skill.pinned),
-        protected: Boolean(skill.protected),
+      items: page.map((item) => ({
+        skill_id: item.row.id,
+        name: item.row.name,
+        description: item.row.description,
+        scope: item.row.scope_key,
+        revision: item.row.active_revision,
+        updated_at: item.row.updated_at,
+        managed: Boolean(item.row.managed),
+        pinned: Boolean(item.row.pinned),
+        protected: Boolean(item.row.protected),
         reason: input.query ? "metadata_match" : "inventory",
+        score: item.score,
+        why: item.why,
+        other_scopes: item.other_scopes,
+        other_skill_ids: item.other_ids,
       })),
-      next: rows.length > limit ? rows[limit - 1]!.id : null,
+      next:
+        start + limit < merged.length && last
+          ? `${last.score.toFixed(3)}:${last.row.id}`
+          : null,
     };
   }
   async reconcile(

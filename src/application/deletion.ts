@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { scopeWritePermission } from "../skills/store.js";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
 import type { DB } from "../storage/schema.js";
@@ -38,7 +39,7 @@ export class DeletionService {
       throw new ForgeError("skill_unavailable", "Paket bulunamadı.", 404);
     await new IdentityService(db).authorize(
       actor,
-      row.scope_key === "workspace" ? "admin" : "write",
+      scopeWritePermission(row.scope_key),
       project,
     );
     if (
@@ -223,7 +224,7 @@ export class DeletionService {
       throw new ForgeError("skill_unavailable", "Silme kaydı bulunamadı.", 404);
     await new IdentityService(this.storage.db).authorize(
       actor,
-      row.scope_key === "workspace" ? "admin" : "write",
+      scopeWritePermission(row.scope_key),
       project,
     );
     if (!this.dataDir || process.platform !== "linux")
@@ -336,7 +337,7 @@ export class DeletionService {
               .executeTakeFirstOrThrow();
             await new IdentityService(tx).authorize(
               actor,
-              tombstone.scope_key === "workspace" ? "admin" : "write",
+              scopeWritePermission(tombstone.scope_key),
               input.project_ref,
             );
             return;

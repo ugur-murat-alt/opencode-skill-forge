@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { PackageStore, type SkillScope } from "../skills/store.js";
+import { scopeWritePermission } from "../skills/store.js";
 import { exportPackage, importPackageBounded } from "../skills/archive.js";
 import type { Identity } from "./identity.js";
 import { IdentityService } from "./identity.js";
@@ -25,7 +26,7 @@ export class PackageManager {
   ) {
     await new IdentityService(this.store.storage.db).authorize(
       identity,
-      scope === "workspace" ? "admin" : "write",
+      scopeWritePermission(scope),
       projectId,
     );
     const { name, files } = await importPackageBounded(archive);
@@ -102,16 +103,32 @@ export class PackageManager {
     )(identity, {
       name: skill.name,
       skillId,
-      scope:
-        skill.scope_key === "workspace"
-          ? "workspace"
-          : skill.project_id
-            ? "project"
-            : "personal",
-      projectId: skill.project_id ?? undefined,
+      ...(await this.scopeForSkill(identity, skill)),
       baseRevision: input.base_revision,
       files: loaded.files,
     });
+  }
+
+  private async scopeForSkill(
+    identity: Identity,
+    skill: { scope_key: string; project_id: string | null },
+  ): Promise<{ scope: SkillScope; projectId?: string }> {
+    if (skill.scope_key === "workspace") return { scope: "workspace" };
+    if (skill.scope_key.startsWith("project:"))
+      return { scope: "project", projectId: skill.project_id ?? undefined };
+    if (skill.scope_key.startsWith("environment:")) {
+      const envId = skill.scope_key.slice("environment:".length);
+      const rep = await this.store.storage.db
+        .selectFrom("projects")
+        .select("id")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("environment_id", "=", envId)
+        .orderBy("created_at")
+        .limit(1)
+        .executeTakeFirst();
+      return { scope: "environment", projectId: rep?.id };
+    }
+    return { scope: "personal" };
   }
   async configure(identity: Identity, skillId: string, raw: unknown) {
     const input = z
@@ -144,7 +161,7 @@ export class PackageManager {
     return this.store.storage.db.transaction().execute(async (tx) => {
       await new IdentityService(tx).authorize(
         identity,
-        skill.scope_key === "workspace" ? "admin" : "write",
+        scopeWritePermission(skill.scope_key),
         skill.project_id ?? undefined,
       );
       const patch = Object.fromEntries(
@@ -198,13 +215,7 @@ export class PackageManager {
     return this.store.publish(identity, {
       name: skill.name,
       skillId,
-      scope:
-        skill.scope_key === "workspace"
-          ? "workspace"
-          : skill.project_id
-            ? "project"
-            : "personal",
-      projectId: skill.project_id ?? undefined,
+      ...(await this.scopeForSkill(identity, skill)),
       baseRevision,
       files: loaded.files,
     });

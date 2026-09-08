@@ -144,8 +144,8 @@ try {
  if(!page.includes('Skill Forge') || !page.includes('/assets/')) throw Error('packaged web missing');
  await client.connect(new StreamableHTTPClientTransport(new URL(config.url+'/mcp'),{requestInit:{headers}}));
  const names = (await client.listTools()).tools.map(t=>t.name).sort();
- const expected = ['forge_search','forge_load','forge_run','forge_prepare','forge_handoff','forge_report'].sort();
- if(JSON.stringify(names)!==JSON.stringify(expected)) throw Error('six-tool contract mismatch');
+ const expected = ['forge_search','forge_load','forge_run','forge_handoff','forge_report'].sort();
+ if(JSON.stringify(names)!==JSON.stringify(expected)) throw Error('five-tool contract mismatch');
  const post = async (path, body) => { const r = await fetch(config.url+path,{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify(body)}); const data = await r.json(); if(!r.ok) throw Error('HTTP '+r.status+' '+JSON.stringify(data)); return data; };
  const project = await post('/api/projects',{name:'Clean artifact acceptance'});
  const content = ${JSON.stringify("---\nname: clean-artifact-helper\ndescription: Verify portable packaged references.\n---\nRead the registered package.\n")};

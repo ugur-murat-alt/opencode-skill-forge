@@ -1,4 +1,4 @@
-import { mkdir, cp, chmod } from "node:fs/promises";
+import { mkdir, cp, chmod, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
 for (const [entry, output] of [
@@ -26,6 +26,10 @@ await cp(
   new URL("../dist/prompts/", import.meta.url),
   { recursive: true },
 );
+// P22 removed prompt-edit; drop copies left by older builds.
+await rm(new URL("../dist/prompts/prompt-edit.md", import.meta.url), {
+  force: true,
+});
 await chmod(new URL("../dist/cli.js", import.meta.url), 0o755);
 
 const web = spawnSync(

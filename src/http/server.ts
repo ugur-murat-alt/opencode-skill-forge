@@ -1,12 +1,12 @@
 import { DeletionService } from "../application/deletion.js";
+import { Throttle } from "./throttle.js";
 import { registerMigrationHttp } from "../migration/http.js";
-import {
-  SessionPreferences,
-  sessionSourceSchema,
-  sessionValuesSchema,
-} from "../application/session-preferences.js";
-import { RewriteMigration } from "../migration/rewrites.js";
 import { MemberService } from "../application/members.js";
+import { OrganizationService } from "../application/organization.js";
+import { RoleService } from "../application/roles.js";
+import { AgentPromptService } from "../application/agent-prompts.js";
+import { EnvironmentService } from "../application/environments.js";
+import { BindingService } from "../application/bindings.js";
 import { TelemetryService } from "../application/telemetry.js";
 import { MaintenanceService } from "../application/maintenance.js";
 import { terminalStates } from "../jobs/queue.js";
@@ -14,7 +14,6 @@ import { redact as redactMetadata } from "../telemetry/redact.js";
 import { PackageManager } from "../application/packages.js";
 import { PackageStore } from "../skills/store.js";
 import { DockerExecutor } from "../execution/docker.js";
-import { LearningStore } from "../prompt/learning.js";
 import { basename } from "node:path";
 import { ForgeService } from "../application/forge.js";
 import { ForgeWorker } from "../jobs/worker.js";
@@ -42,6 +41,7 @@ import { openDatabase } from "../storage/database.js";
 import { IdentityService, type Identity } from "../application/identity.js";
 import { SettingsService } from "../application/settings.js";
 import { OidcIdentity } from "./oidc.js";
+import { GithubIdentity } from "./github.js";
 const identities = new WeakMap<FastifyRequest, Identity>();
 export function requestIdentity(request: FastifyRequest) {
   const identity = identities.get(request);
@@ -63,6 +63,7 @@ export async function createHttpServer(config: LocalConfig) {
     postgresUrl: config.postgresUrl,
   });
   const identityService = new IdentityService(storage.db);
+  const publicThrottle = new Throttle(30, 60000);
   const settings = new SettingsService(identityService, config.policy);
   const vault = await SecretVault.open(config.dataDir);
   const providers = new ProviderService(identityService, vault);
@@ -86,6 +87,9 @@ export async function createHttpServer(config: LocalConfig) {
     config.profile !== "server" ? await identityService.bootstrapLocal() : null;
   const oidc = config.oidc
     ? await OidcIdentity.create(config.oidc, identityService)
+    : null;
+  const github = config.github
+    ? new GithubIdentity(config.github, identityService)
     : null;
   const app = Fastify({
     logger: false,
@@ -186,6 +190,9 @@ export async function createHttpServer(config: LocalConfig) {
         "/health/ready",
         "/auth/start",
         "/auth/callback",
+        "/auth/github/start",
+        "/auth/github/callback",
+        "/api/invitations/accept",
         "/.well-known/oauth-protected-resource",
       ].includes(path) || path.startsWith("/assets/");
     if (publicRoute) return;
@@ -302,6 +309,7 @@ export async function createHttpServer(config: LocalConfig) {
     };
   });
   app.post("/auth/pair", async (request, reply) => {
+    publicThrottle.check(request, "auth-pair");
     if (!localOwner)
       throw new ForgeError(
         "pairing_disabled",
@@ -331,7 +339,8 @@ export async function createHttpServer(config: LocalConfig) {
       expires_in: 300,
     };
   });
-  app.get("/auth/start", async (_request, reply) => {
+  app.get("/auth/start", async (request, reply) => {
+    publicThrottle.check(request, "oidc-start");
     if (!oidc)
       throw new ForgeError(
         "oidc_unconfigured",
@@ -348,6 +357,7 @@ export async function createHttpServer(config: LocalConfig) {
     return reply.redirect(pending.url);
   });
   app.get("/auth/callback", async (request, reply) => {
+    publicThrottle.check(request, "oidc-callback");
     if (!oidc)
       throw new ForgeError("oidc_unconfigured", "OIDC yapılandırılmamış.", 422);
     const value = request.unsignCookie(request.cookies.forge_oidc ?? "");
@@ -360,6 +370,67 @@ export async function createHttpServer(config: LocalConfig) {
       );
     const userId = await oidc.callback(
       new URL(request.url, config.url),
+      JSON.parse(value.value),
+    );
+    const membership = await storage.db
+      .selectFrom("memberships")
+      .select("tenant_id")
+      .where("user_id", "=", userId)
+      .orderBy("tenant_id")
+      .executeTakeFirst();
+    if (!membership)
+      throw new ForgeError(
+        "membership_required",
+        "Çalışma alanı üyeliği gerekiyor.",
+        403,
+      );
+    const token = await identityService.issueSession(
+      userId,
+      "session",
+      12 * 60 * 60 * 1000,
+    );
+    reply
+      .setCookie("forge_session", token, cookieOptions)
+      .setCookie("forge_tenant", membership.tenant_id, cookieOptions);
+    return reply.redirect("/");
+  });
+  app.get("/auth/github/start", async (request, reply) => {
+    publicThrottle.check(request, "github-start");
+    if (!github)
+      throw new ForgeError(
+        "github_unconfigured",
+        "GitHub girişi yapılandırılmamış.",
+        422,
+      );
+    const pending = github.begin();
+    reply.setCookie("forge_github", JSON.stringify(pending), {
+      ...cookieOptions,
+      signed: true,
+      sameSite: "lax",
+      maxAge: 300,
+    });
+    return reply.redirect(pending.url);
+  });
+  app.get("/auth/github/callback", async (request, reply) => {
+    publicThrottle.check(request, "github-callback");
+    if (!github)
+      throw new ForgeError(
+        "github_unconfigured",
+        "GitHub girişi yapılandırılmamış.",
+        422,
+      );
+    const value = request.unsignCookie(request.cookies.forge_github ?? "");
+    reply.clearCookie("forge_github", { path: "/" });
+    if (!value.valid || !value.value)
+      throw new ForgeError(
+        "invalid_login_state",
+        "Giriş durumu geçersiz.",
+        401,
+      );
+    const query = request.query as { code?: string; state?: string };
+    const userId = await github.callback(
+      query.code ?? "",
+      query.state ?? "",
       JSON.parse(value.value),
     );
     const membership = await storage.db
@@ -421,12 +492,19 @@ export async function createHttpServer(config: LocalConfig) {
   app.get("/api/projects", async (request) => ({
     items: await identityService.listProjects(requestIdentity(request)),
   }));
-  app.post("/api/projects", async (request) =>
-    identityService.createProject(
+  app.post("/api/projects", async (request) => {
+    const body = z
+      .object({
+        name: z.string().min(1).max(200),
+        environment_id: z.string().min(1).max(100).optional(),
+      })
+      .parse(request.body);
+    return identityService.createProject(
       requestIdentity(request),
-      z.object({ name: z.string() }).strict().parse(request.body).name,
-    ),
-  );
+      body.name,
+      body.environment_id,
+    );
+  });
   app.get("/api/settings", async (request) => {
     const query = z
       .object({ scope: z.string().default("workspace") })
@@ -457,45 +535,35 @@ export async function createHttpServer(config: LocalConfig) {
   });
   app.post("/api/projects/:id/bindings", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const body = z
-      .object({
-        client_id: z.string().min(1).max(200),
-        path: z.string().min(1).max(4096),
-      })
-      .strict()
-      .parse(request.body);
-    const identity = requestIdentity(request);
-    await identityService.authorize(identity, "write", id);
-    await storage.db
-      .insertInto("project_bindings")
-      .values({
-        tenant_id: identity.tenantId,
-        user_id: identity.userId,
-        project_id: id,
-        client_id: body.client_id,
-        path: body.path,
-      })
-      .onConflict((oc) =>
-        oc.columns(["tenant_id", "user_id", "client_id", "path"]).doNothing(),
-      )
-      .execute();
-    const bound = await storage.db
-      .selectFrom("project_bindings")
-      .select("project_id")
-      .where("tenant_id", "=", identity.tenantId)
-      .where("user_id", "=", identity.userId)
-      .where("client_id", "=", body.client_id)
-      .where("path", "=", body.path)
-      .executeTakeFirstOrThrow();
-    if (bound.project_id !== id)
-      throw new ForgeError(
-        "binding_conflict",
-        "Bu istemci yolu başka projeye bağlı.",
-        409,
-      );
-    return { bound: true };
+    return bindings.bind(requestIdentity(request), {
+      ...(request.body as Record<string, unknown>),
+      project_id: id,
+    });
   });
+  app.post("/api/bindings/verify", async (request) =>
+    bindings.verify(requestIdentity(request), request.body),
+  );
+  app.get("/api/bindings", async (request) =>
+    bindings.list(requestIdentity(request)),
+  );
+  app.get("/api/environments", async (request) =>
+    environments.list(requestIdentity(request)),
+  );
+  app.post("/api/environments", async (request) =>
+    environments.create(requestIdentity(request), request.body as never),
+  );
+  app.delete("/api/environments/:id", async (request) =>
+    environments.remove(
+      requestIdentity(request),
+      (request.params as { id: string }).id,
+    ),
+  );
   const members = new MemberService(storage.db);
+  const organizations = new OrganizationService(storage.db);
+  const roles = new RoleService(storage.db);
+  const environments = new EnvironmentService(storage.db);
+  const bindings = new BindingService(storage.db);
+  const agentPrompts = new AgentPromptService(storage.db);
   app.get("/api/members", async (request) => {
     const q = z
       .object({
@@ -514,6 +582,116 @@ export async function createHttpServer(config: LocalConfig) {
       (request.params as { id: string }).id,
       request.body,
     ),
+  );
+  app.get("/api/tenants", async (request) =>
+    organizations.listTenants(requestIdentity(request).userId),
+  );
+  app.post("/api/tenants/switch", async (request, reply) => {
+    const body = z.object({ tenant_id: z.string().min(1) }).parse(request.body);
+    const identity = requestIdentity(request);
+    const mine = await organizations.listTenants(identity.userId);
+    if (!mine.some((m) => m.tenant_id === body.tenant_id && !m.disabled))
+      throw new ForgeError(
+        "tenant_unavailable",
+        "Organizasyon bulunamadı.",
+        404,
+      );
+    reply.setCookie("forge_tenant", body.tenant_id, cookieOptions);
+    return { tenant_id: body.tenant_id };
+  });
+  app.post("/api/organizations", async (request) => {
+    const body = z
+      .object({ name: z.string().min(1).max(200) })
+      .parse(request.body);
+    return organizations.createOrganization(
+      requestIdentity(request).userId,
+      body.name,
+    );
+  });
+  app.post("/api/invitations", async (request) =>
+    organizations.createInvite(requestIdentity(request), request.body as never),
+  );
+  app.get("/api/invitations", async (request) =>
+    organizations.listInvites(requestIdentity(request)),
+  );
+  app.post("/api/invitations/:id/revoke", async (request) =>
+    organizations.revokeInvite(
+      requestIdentity(request),
+      (request.params as { id: string }).id,
+    ),
+  );
+  app.post("/api/invitations/accept", async (request) => {
+    publicThrottle.check(request, "invite-accept");
+    return organizations.acceptInvite(request.body as never);
+  });
+  app.post("/api/organization/transfer", async (request) => {
+    const body = z
+      .object({ to_user_id: z.string().min(1) })
+      .parse(request.body);
+    return organizations.offerTransfer(
+      requestIdentity(request),
+      body.to_user_id,
+    );
+  });
+  app.post("/api/organization/transfer/:id/accept", async (request) =>
+    organizations.acceptTransfer(
+      requestIdentity(request),
+      (request.params as { id: string }).id,
+    ),
+  );
+  app.post("/api/organization/deletion/request", async (request) => {
+    const body = z.object({ name: z.string().min(1) }).parse(request.body);
+    return organizations.requestDeletion(requestIdentity(request), body.name);
+  });
+  app.post("/api/organization/deletion/confirm", async (request) => {
+    const body = z.object({ name: z.string().min(1) }).parse(request.body);
+    return organizations.confirmDeletion(requestIdentity(request), body.name);
+  });
+  app.post("/api/organization/deletion/cancel", async (request) =>
+    organizations.cancelDeletion(requestIdentity(request)),
+  );
+  app.get("/api/organization/transfer/offers", async (request) =>
+    organizations.listOffers(requestIdentity(request)),
+  );
+  app.get("/api/organization/deletion/status", async (request) =>
+    organizations.deletionStatus(requestIdentity(request)),
+  );
+  app.get("/api/roles", async (request) =>
+    roles.list(requestIdentity(request)),
+  );
+  app.post("/api/roles", async (request) =>
+    roles.create(requestIdentity(request), request.body as never),
+  );
+  app.delete("/api/roles/:name", async (request) =>
+    roles.remove(
+      requestIdentity(request),
+      (request.params as { name: string }).name,
+    ),
+  );
+  app.post("/api/roles/:name/restore", async (request) =>
+    roles.restore(
+      requestIdentity(request),
+      (request.params as { name: string }).name,
+    ),
+  );
+  app.get("/api/agent-prompts", async (request) => {
+    const q = z
+      .object({
+        scope: z.string().min(1).max(200),
+        profile: z.string().max(64).optional(),
+      })
+      .parse(request.query);
+    const actor = requestIdentity(request);
+    return {
+      active: await agentPrompts.active(actor, q.scope, q.profile),
+      history: await agentPrompts.history(actor, q.scope, q.profile),
+    };
+  });
+  app.put("/api/agent-prompts", async (request) =>
+    agentPrompts.update(requestIdentity(request), request.body as never),
+  );
+  app.post("/api/agent-prompts/rollback", async (request) =>
+    agentPrompts.rollback(requestIdentity(request), request.body as never),
   );
   app.get("/api/packages/integrity", async (request) => {
     const query = z
@@ -538,7 +716,6 @@ export async function createHttpServer(config: LocalConfig) {
         : undefined,
     );
   });
-  const learning = new LearningStore(storage);
   const packageManager = (actor: Identity, projectId?: string) => {
     return new PackageManager(
       new PackageStore(storage, config.dataDir, async (path, manifest) => {
@@ -810,15 +987,10 @@ export async function createHttpServer(config: LocalConfig) {
       directory: body.directory,
       capabilities_json: JSON.stringify({
         mcp: true,
-        prepare_mode:
-          body.client === "chatgpt"
-            ? "best_effort_tool"
-            : "additional_context_hook",
         handoff:
           body.client === "chatgpt"
             ? "best_effort_tool"
             : "final_tool_and_stop_fallback",
-        visible_prompt_replacement: false,
       }),
       last_seen: body.event === "installed" ? null : Date.now(),
       last_event: body.event,
@@ -929,6 +1101,25 @@ export async function createHttpServer(config: LocalConfig) {
       request.body,
     ),
   );
+  app.put("/api/skills/:id/scope", async (request) => {
+    const body = z
+      .object({
+        scope: z.enum(["personal", "project", "workspace", "environment"]),
+        project_ref: z.string().min(1).max(100).optional(),
+        expected_revision: z.string().nullable(),
+      })
+      .strict()
+      .parse(request.body);
+    return forge.packages.setScope(
+      requestIdentity(request),
+      (request.params as { id: string }).id,
+      {
+        scope: body.scope,
+        projectId: body.project_ref,
+        expectedRevision: body.expected_revision,
+      },
+    );
+  });
   app.post(
     "/api/skills/import",
     { bodyLimit: 8 * 1024 * 1024 },
@@ -936,7 +1127,7 @@ export async function createHttpServer(config: LocalConfig) {
       const body = z
         .object({
           archive: z.string().max(7 * 1024 * 1024),
-          scope: z.enum(["personal", "project", "workspace"]),
+          scope: z.enum(["personal", "project", "workspace", "environment"]),
           project_ref: z.string(),
           base_revision: z.string().nullable().default(null),
         })
@@ -1016,106 +1207,6 @@ export async function createHttpServer(config: LocalConfig) {
       )
       .send(artifact.bytes);
   });
-  app.get("/api/settings/session", async (request) => {
-    const q = z
-      .object({
-        project_ref: z.string(),
-        client: z.string(),
-        session: z.string(),
-      })
-      .strict()
-      .parse(request.query);
-    return new SessionPreferences(new IdentityService(storage.db)).get(
-      requestIdentity(request),
-      q.project_ref,
-      { client: q.client, session: q.session },
-    );
-  });
-  app.put("/api/settings/session", async (request) => {
-    const body = z
-      .object({
-        project_ref: z.string(),
-        source: sessionSourceSchema,
-        base_revision: z.number().int().nonnegative(),
-        values: sessionValuesSchema,
-      })
-      .strict()
-      .parse(request.body);
-    return new SessionPreferences(new IdentityService(storage.db)).update(
-      requestIdentity(request),
-      body.project_ref,
-      body.source,
-      body.base_revision,
-      body.values,
-    );
-  });
-  app.get("/api/prompts/imported-rewrites", async (request) => {
-    const query = z
-      .object({ project_ref: z.string(), after: z.string().optional() })
-      .parse(request.query);
-    return new RewriteMigration(storage).list(
-      requestIdentity(request),
-      query.project_ref,
-      query.after,
-    );
-  });
-  app.get("/api/prompts/imported-rewrites/:id", async (request) =>
-    new RewriteMigration(storage).detail(
-      requestIdentity(request),
-      z.object({ project_ref: z.string() }).parse(request.query).project_ref,
-      (request.params as { id: string }).id,
-    ),
-  );
-  app.get("/api/prompts/learning", async (request) => ({
-    items: await learning.list(
-      requestIdentity(request),
-      z.object({ project_ref: z.string() }).parse(request.query).project_ref,
-    ),
-  }));
-  app.post("/api/prompts/learning", async (request) => {
-    const body = z
-      .object({
-        project_ref: z.string(),
-        content: z.string(),
-        triggers: z.string(),
-        personal: z.boolean().optional(),
-      })
-      .strict()
-      .parse(request.body);
-    return learning.save(requestIdentity(request), body.project_ref, body);
-  });
-  app.get("/api/prompts/learning/:id/history", async (request) => ({
-    items: await learning.history(
-      requestIdentity(request),
-      z.object({ project_ref: z.string() }).parse(request.query).project_ref,
-      (request.params as { id: string }).id,
-    ),
-  }));
-  app.patch("/api/prompts/learning/:id", async (request) => {
-    const { project_ref, ...input } = z
-      .object({
-        project_ref: z.string(),
-        base_revision: z.number().int().positive(),
-        content: z.string(),
-        triggers: z.string(),
-        disabled: z.boolean(),
-      })
-      .strict()
-      .parse(request.body);
-    return learning.update(
-      requestIdentity(request),
-      project_ref,
-      (request.params as { id: string }).id,
-      input,
-    );
-  });
-  app.delete("/api/prompts/learning/:id", async (request) =>
-    learning.remove(
-      requestIdentity(request),
-      z.object({ project_ref: z.string() }).parse(request.query).project_ref,
-      (request.params as { id: string }).id,
-    ),
-  );
   app.post("/api/tools/:name", async (request) => {
     const name = (request.params as { name: string }).name;
     if (!Object.hasOwn(toolSchemas, name))
@@ -1135,7 +1226,7 @@ export async function createHttpServer(config: LocalConfig) {
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      const mcp = createMcpServer(
+      const mcp = await createMcpServer(
         forge,
         requestIdentity(request),
         config.profile === "server",

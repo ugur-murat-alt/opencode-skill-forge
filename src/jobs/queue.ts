@@ -1,7 +1,3 @@
-import {
-  SessionPreferences,
-  sessionSourceSchema,
-} from "../application/session-preferences.js";
 import type { Settings } from "../domain/settings.js";
 import { randomUUID, createHash } from "node:crypto";
 import { sql, type Kysely } from "kysely";
@@ -36,6 +32,8 @@ export class JobQueue {
       deadlineMs?: number;
     },
   ) {
+    if (input.kind !== "skill_evolve")
+      throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     if (
       !input.key ||
       input.key.length > 200 ||
@@ -75,31 +73,22 @@ export class JobQueue {
           );
         return { status: "duplicate" as const, run: old };
       }
-      const sessionPreference =
-        input.kind === "prompt_edit" && input.payload.source
-          ? await new SessionPreferences(auth).get(
-              identity,
-              input.projectId,
-              sessionSourceSchema.parse(input.payload.source),
-            )
-          : null;
       const effective = await new SettingsService(auth, this.policy).effective(
         identity,
         input.projectId,
-        sessionPreference?.values ?? {},
+        {},
       );
       const providerProfile = await tx
         .selectFrom("provider_profiles")
         .selectAll()
         .where("tenant_id", "=", identity.tenantId)
         .where("user_id", "=", identity.userId)
-        .where("role", "=", input.kind === "prompt_edit" ? "prompt" : "skill")
+        .where("role", "=", "skill")
         .orderBy("revision", "desc")
         .limit(1)
         .executeTakeFirst();
       const config = {
         ...effective,
-        sessionPreferenceRevision: sessionPreference?.revision ?? null,
         providerProfile: providerProfile ?? null,
       };
       if (input.kind === "skill_evolve" && !config.values.evolutionEnabled)
@@ -153,20 +142,12 @@ export class JobQueue {
         updated_at: now,
         available_at: now,
         deadline_at:
-          now +
-          Math.max(
-            100,
-            Math.min(
-              input.deadlineMs ??
-                (input.kind === "prompt_edit" ? 15000 : 600000),
-              3600000,
-            ),
-          ),
+          now + Math.max(100, Math.min(input.deadlineMs ?? 600000, 3600000)),
         lease_until: 0,
         worker_id: null,
         fence: 0,
         attempt: 0,
-        max_attempts: input.kind === "prompt_edit" ? 1 : 3,
+        max_attempts: 3,
       };
       await tx.insertInto("runs").values(run).execute();
       await tx
@@ -202,6 +183,8 @@ export class JobQueue {
     kind?: Run["kind"],
     target?: { tenantId: string; runId: string },
   ) {
+    if (kind && kind !== "skill_evolve")
+      throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     return this.storage.db.transaction().execute(async (tx) => {
       if (this.storage.backend === "sqlite")
         await tx
@@ -233,6 +216,18 @@ export class JobQueue {
         .orderBy("r.created_at")
         .orderBy("r.id")
         .limit(32);
+      // Frozen tenants (pending deletion) yield no new work.
+      candidates = candidates.where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("tenant_lifecycle as l")
+              .select("l.tenant_id")
+              .whereRef("l.tenant_id", "=", "r.tenant_id")
+              .where("l.frozen", "=", 1),
+          ),
+        ),
+      );
       if (kind) candidates = candidates.where("r.kind", "=", kind);
       if (target)
         candidates = candidates
@@ -258,7 +253,7 @@ export class JobQueue {
           await tx
             .updateTable("runs")
             .set({
-              state: candidate.kind === "prompt_edit" ? "fallback" : "failed",
+              state: "failed",
               error_code: "deadline_or_attempt_limit",
               updated_at: now,
               lease_until: 0,
@@ -406,12 +401,7 @@ export class JobQueue {
   async fail(run: Run, code: string, retryable: boolean) {
     const now = await this.storage.now();
     if (!retryable || run.attempt >= run.max_attempts || run.deadline_at <= now)
-      return this.finish(
-        run,
-        run.kind === "prompt_edit" ? "fallback" : "failed",
-        null,
-        code,
-      );
+      return this.finish(run, "failed", null, code);
     await this.storage.db.transaction().execute(async (tx) => {
       await this.assertLease(tx, run);
       await tx

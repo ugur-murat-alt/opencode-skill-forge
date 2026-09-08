@@ -19,7 +19,7 @@ export class ProviderService {
     readonly identity: IdentityService,
     readonly vault: SecretVault,
   ) {}
-  async latest(identity: Identity, role: "prompt" | "skill" | "evaluation") {
+  async latest(identity: Identity, role: "skill" | "evaluation") {
     await this.identity.authorize(identity, "read");
     return this.identity.db
       .selectFrom("provider_profiles")
@@ -33,7 +33,7 @@ export class ProviderService {
   }
   async list(identity: Identity) {
     return Promise.all(
-      (["prompt", "skill", "evaluation"] as const).map(async (role) => {
+      (["skill", "evaluation"] as const).map(async (role) => {
         const current = await this.latest(identity, role);
         return {
           role,
@@ -51,7 +51,7 @@ export class ProviderService {
     await this.identity.authorize(identity, "write");
     const body = z
       .object({
-        role: z.enum(["prompt", "skill", "evaluation"]),
+        role: z.enum(["skill", "evaluation"]),
         base_revision: z.number().int().min(0),
         profile: providerProfileSchema,
         credential: z.string().min(1).max(16384).optional(),

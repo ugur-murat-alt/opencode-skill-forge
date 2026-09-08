@@ -6,21 +6,28 @@ import {
   Home,
   BookOpen,
   Briefcase,
-  Pencil,
   Settings,
   Folder,
   Database,
   FileText,
   Menu,
   LogOut,
+  Building2,
+  KeyRound,
+  MailPlus,
+  ScrollText,
 } from "lucide-react";
 import { api, ApiError, type Account } from "./api";
+import { OrgScope } from "./OrgScope";
 import { Login } from "./Login";
 import { Projects } from "./Projects";
 import { Overview } from "./Overview";
 import { Library } from "./Library";
 import { Jobs } from "./Jobs";
-import { PromptEditor } from "./PromptEditor";
+import { Organizations } from "./Organizations";
+import { Roles } from "./Roles";
+import { Invitations } from "./Invitations";
+import { AgentPrompts } from "./AgentPrompts";
 import { Models } from "./Models";
 import { Installations } from "./Installations";
 import { Logs } from "./Logs";
@@ -35,7 +42,10 @@ const navigation = [
   { id: "overview", title: "Genel durum", Icon: Home },
   { id: "library", title: "Skill kütüphanesi", Icon: BookOpen },
   { id: "jobs", title: "İşler", Icon: Briefcase },
-  { id: "prompt", title: "Prompt Editor", Icon: Pencil },
+  { id: "organizations", title: "Organizasyonlar", Icon: Building2 },
+  { id: "roles", title: "Roller", Icon: KeyRound },
+  { id: "invitations", title: "Davetler", Icon: MailPlus },
+  { id: "prompts", title: "Ajan promptları", Icon: ScrollText },
   { id: "maintenance", title: "Bakım", Icon: Archive },
   { id: "installations", title: "Kurulumlar", Icon: Settings },
   { id: "projects", title: "Projeler ve ayarlar", Icon: Folder },
@@ -47,7 +57,12 @@ function App() {
     [error, setError] = useState(""),
     [project, setProject] = useState(""),
     [page, setPage] = useState(location.hash.slice(1) || "overview"),
+    [scopeTick, setScopeTick] = useState(0),
     [menu, setMenu] = useState(false);
+  function reloaded() {
+    setScopeTick((t) => t + 1);
+    void load();
+  }
   async function load() {
     try {
       const next = await api<Account>("/api/me");
@@ -93,7 +108,7 @@ function App() {
   const projects = (
     <Projects
       project={project}
-      admin={account.role === "owner" || account.role === "admin"}
+      admin={account.role === "founder" || account.role === "admin"}
       userId={account.identity.userId}
       onChange={load}
     />
@@ -102,13 +117,33 @@ function App() {
     overview: <Overview project={project} />,
     library: <Library project={project} />,
     jobs: <Jobs project={project} />,
-    prompt: <PromptEditor project={project} />,
+    organizations: (
+      <Organizations userId={account.identity.userId} onSwitch={reloaded} />
+    ),
+    roles: <Roles />,
+    invitations: <Invitations />,
+    prompts: <AgentPrompts />,
     maintenance: <Maintenance key={project} project={project} />,
     installations: <Installations project={project} />,
     projects,
     models: <Models project={project} />,
     logs: <Logs project={project} />,
   };
+  const projectFree = new Set([
+    "organizations",
+    "roles",
+    "invitations",
+    "prompts",
+  ]);
+  const content =
+    !project && !projectFree.has(page)
+      ? projects
+      : (pages[page] ?? (
+          <>
+            <h1>Sayfa bulunamadı</h1>
+            <a href="#overview">Genel duruma dön</a>
+          </>
+        ));
   return (
     <div className={`shell ${menu ? "menu-open" : ""}`}>
       <a
@@ -149,28 +184,14 @@ function App() {
             <Menu size={22} />
           </button>
           <div className="header-controls">
-            <label className="project-switcher">
-              <span className="sr-only">Etkin proje</span>
-              <select
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
-              >
-                {!account.projects.length && (
-                  <option value="">Proje seçin</option>
-                )}
-                {account.projects.map((item) => (
-                  <option value={item.id} key={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="workspace-name">
-              <Briefcase size={17} />
-              {account.identity.tenantId === "local"
-                ? "Kişisel çalışma alanı"
-                : account.identity.tenantId}
-            </span>
+            <OrgScope
+              tenantId={account.identity.tenantId}
+              project={project}
+              projects={account.projects}
+              onProject={setProject}
+              onSwitch={reloaded}
+              tick={scopeTick}
+            />
             <button
               className="icon-button"
               aria-label="Çıkış yap"
@@ -191,14 +212,7 @@ function App() {
           className="content"
           key={`${page}:${project}`}
         >
-          {!project
-            ? projects
-            : (pages[page] ?? (
-                <>
-                  <h1>Sayfa bulunamadı</h1>
-                  <a href="#overview">Genel duruma dön</a>
-                </>
-              ))}
+          {content}
         </main>
       </div>
     </div>

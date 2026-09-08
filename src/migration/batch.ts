@@ -1,9 +1,6 @@
 import type { RemoteMigrationResult } from "./remote.js";
 import { exportPackage } from "../skills/archive.js";
 import { readPackageDirectory } from "../skills/paths.js";
-import { FlagMigration, flagMappingSchema } from "./flags.js";
-import { RewriteMigration } from "./rewrites.js";
-import { LearningMigration } from "./learning.js";
 import { createHash } from "node:crypto";
 import { resolve, dirname, basename } from "node:path";
 import { z } from "zod";
@@ -50,36 +47,52 @@ export async function importDiscovery(
       "Keşif manifest checksum uyuşmuyor.",
       409,
     );
-  const mapping = z
-    .object({
-      version: z.literal(1),
-      owner: z.literal(upload ? "authenticated-user" : "local-owner"),
-      project_ref: z.string().min(1),
-      manifest_checksum: sha,
-      items: z
-        .array(
-          z
-            .object({
-              source_id: sha,
-              flags: z
+  const mapping = (() => {
+    try {
+      return z
+        .object({
+          version: z.literal(1),
+          owner: z.literal(upload ? "authenticated-user" : "local-owner"),
+          project_ref: z.string().min(1),
+          manifest_checksum: sha,
+          items: z
+            .array(
+              z
                 .object({
-                  managed: z.boolean(),
-                  protected: z.boolean(),
-                  pinned: z.boolean(),
+                  source_id: sha,
+                  flags: z
+                    .object({
+                      managed: z.boolean(),
+                      protected: z.boolean(),
+                      pinned: z.boolean(),
+                    })
+                    .strict()
+                    .optional(),
+                  sessions: z.never().optional(),
+                  rewrites: z.never().optional(),
+                  learning: z.never().optional(),
                 })
-                .strict()
-                .optional(),
-              sessions: flagMappingSchema.optional(),
-              rewrites: z.literal(true).optional(),
-              learning: z.object({ enabled: z.boolean() }).strict().optional(),
-            })
-            .strict(),
-        )
-        .min(1)
-        .max(10000),
-    })
-    .strict()
-    .parse(rawMapping);
+                .strict(),
+            )
+            .min(1)
+            .max(10000),
+        })
+        .strict()
+        .parse(rawMapping);
+    } catch (error) {
+      const issues =
+        error && typeof error === "object" && "issues" in error
+          ? (error as { issues: unknown }).issues
+          : undefined;
+      throw new ForgeError(
+        "invalid_mapping",
+        "Eşleme beklenen paket seçim şemasına uymuyor.",
+        400,
+        undefined,
+        issues ?? undefined,
+      );
+    }
+  })();
   if (mapping.manifest_checksum !== manifest.checksum)
     throw new ForgeError(
       "mapping_changed",
@@ -96,7 +109,7 @@ export async function importDiscovery(
     source_id: sha,
     source: z.string(),
     path: z.string(),
-    kind: z.enum(["package", "state"]),
+    kind: z.literal("package"),
     target_scope: z.enum(["project", "personal"]),
     status: z.enum(["ready", "review_required", "unreadable"]),
     checksum: sha.optional(),
@@ -133,130 +146,6 @@ export async function importDiscovery(
           "source_mapping_invalid",
           "Kaynak kök/kimlik eşlemesi geçersiz.",
         );
-      const document = async (
-        kind: "flags" | "rewrites" | "learning",
-        bytes: Buffer,
-        extra: Record<string, unknown>,
-      ) => {
-        if (digest(bytes) !== item.checksum)
-          throw new ForgeError(
-            "source_changed",
-            "Kaynak checksum değişti; yeni keşif gerekiyor.",
-            409,
-          );
-        if (upload)
-          return upload({
-            kind,
-            project_ref: mapping.project_ref,
-            source_id: item.source_id,
-            checksum: item.checksum,
-            content_base64: bytes.toString("base64"),
-            ...extra,
-          });
-        if (kind === "flags")
-          return new FlagMigration(importer!.store.storage).import(
-            actor!,
-            mapping.project_ref,
-            item.source_id,
-            item.checksum!,
-            bytes,
-            extra.sessions,
-          );
-        if (kind === "rewrites")
-          return new RewriteMigration(importer!.store.storage).import(
-            actor!,
-            mapping.project_ref,
-            item.source_id,
-            item.checksum!,
-            bytes,
-          );
-        return new LearningMigration(importer!.store.storage).import(
-          actor!,
-          mapping.project_ref,
-          item.source_id,
-          item.checksum!,
-          bytes,
-          extra.enabled as boolean,
-        );
-      };
-      if (item.kind === "state" && selection.sessions) {
-        if (
-          !["project-state", "home-state", "home-config-state"].includes(
-            item.source,
-          ) ||
-          item.target_scope !== "personal" ||
-          !item.path.endsWith("/session-flags.json") ||
-          selection.learning ||
-          selection.flags ||
-          selection.rewrites
-        )
-          throw new ForgeError(
-            "flag_mapping_required",
-            "Bayrak kaynağı için yalnız açık sessions eşlemesi gerekiyor.",
-          );
-        const result = await document(
-          "flags",
-          await secureRead(root, item.path, 16 * 1024 * 1024),
-          { sessions: selection.sessions },
-        );
-        results.push({
-          source_id: selection.source_id,
-          status: result.review_required ? "review_required" : "recorded",
-          ...result,
-        });
-        continue;
-      }
-      if (item.kind === "state" && selection.rewrites) {
-        if (
-          !["project-state", "home-state", "home-config-state"].includes(
-            item.source,
-          ) ||
-          item.target_scope !== "personal" ||
-          !item.path.endsWith("/rewrites.jsonl") ||
-          selection.learning ||
-          selection.flags
-        )
-          throw new ForgeError(
-            "rewrite_mapping_required",
-            "Rewrite için yalnız açık rewrites:true eşlemesi gerekiyor.",
-          );
-        const result = await document(
-          "rewrites",
-          await secureRead(root, item.path, 16 * 1024 * 1024),
-          {},
-        );
-        results.push({
-          source_id: selection.source_id,
-          status: result.review_required ? "review_required" : "recorded",
-          ...result,
-        });
-        continue;
-      }
-      if (item.kind === "state") {
-        if (
-          !["project-state", "home-state", "home-config-state"].includes(
-            item.source,
-          ) ||
-          item.target_scope !== "personal" ||
-          !item.path.endsWith("/learn.md") ||
-          !selection.learning ||
-          selection.flags
-        )
-          throw new ForgeError(
-            "learning_mapping_required",
-            "Learn kaynağı için açık kişisel learning.enabled eşlemesi gerekiyor.",
-          );
-        const bytes = await secureRead(root, item.path, 16 * 1024 * 1024);
-        const result = await document("learning", bytes, {
-          enabled: selection.learning.enabled,
-        });
-        results.push({
-          source_id: selection.source_id,
-          status: result.review_required ? "review_required" : "recorded",
-          ...result,
-        });
-        continue;
-      }
       if (
         !selection.flags ||
         selection.learning ||

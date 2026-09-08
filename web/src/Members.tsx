@@ -14,7 +14,7 @@ export function Members({ project }: { project: string }) {
   const [after, setAfter] = useState(""),
     [subject, setSubject] = useState(""),
     [name, setName] = useState(""),
-    [role, setRole] = useState("viewer"),
+    [role, setRole] = useState("reader"),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const resource = useResource<{ items: Member[]; next: string | null }>(
@@ -82,9 +82,10 @@ export function Members({ project }: { project: string }) {
             <label>
               Çalışma alanı rolü
               <select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="viewer">Görüntüleyici</option>
-                <option value="editor">Editör</option>
+                <option value="reader">Okuyucu</option>
+                <option value="writer">Yazıcı</option>
                 <option value="admin">Yönetici</option>
+                <option value="auditor">Denetçi</option>
               </select>
             </label>
           </div>
@@ -164,14 +165,14 @@ function MemberRow({
       setBusy(false);
     }
   }
-  if (m.role === "owner")
+  if (m.role === "founder")
     return (
       <tr>
         <td>{m.display_name}</td>
-        <td>Sahip</td>
+        <td>Kurucu</td>
         <td>Tüm projeler</td>
         <td>Aktif</td>
-        <td>Sahip erişimi korunur</td>
+        <td>Kurucu erişimi korunur</td>
       </tr>
     );
   return (
@@ -187,9 +188,10 @@ function MemberRow({
           disabled={busy}
           onChange={(e) => setRole(e.target.value)}
         >
-          <option value="viewer">Görüntüleyici</option>
-          <option value="editor">Editör</option>
+          <option value="reader">Okuyucu</option>
+          <option value="writer">Yazıcı</option>
           <option value="admin">Yönetici</option>
+          <option value="auditor">Denetçi</option>
         </select>
       </td>
       <td>
@@ -200,8 +202,8 @@ function MemberRow({
           onChange={(e) => setProjectRole(e.target.value)}
         >
           <option value="">Üyelik yok</option>
-          <option value="viewer">Görüntüleyici</option>
-          <option value="editor">Editör</option>
+          <option value="reader">Okuyucu</option>
+          <option value="writer">Yazıcı</option>
         </select>
         {role === "admin" && (
           <small className="block">Yönetici olarak erişir</small>

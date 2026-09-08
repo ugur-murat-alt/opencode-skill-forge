@@ -1,4 +1,4 @@
-import { settingsSchema, type Settings } from "../domain/settings.js";
+import { storedSettingsSchema, type Settings } from "../domain/settings.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, open, readFile, lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -20,6 +20,11 @@ export interface LocalConfig {
     clientId: string;
     clientSecret?: string;
     audience: string;
+    publicUrl: string;
+  };
+  github?: {
+    clientId: string;
+    clientSecret: string;
     publicUrl: string;
   };
 }
@@ -108,7 +113,7 @@ export async function localConfig(
         "insecure_policy",
         "Sistem politika dosyası güvenli değil.",
       );
-    policy = settingsSchema.parse(
+    policy = storedSettingsSchema.parse(
       JSON.parse(await readFile(policyPath, "utf8")),
     );
   } catch (error) {
@@ -129,6 +134,8 @@ export async function localConfig(
     const publicUrl = process.env.SKILL_FORGE_PUBLIC_URL;
     const issuer = process.env.SKILL_FORGE_OIDC_ISSUER;
     const clientId = process.env.SKILL_FORGE_OIDC_CLIENT_ID;
+    const githubClientId = process.env.SKILL_FORGE_GITHUB_CLIENT_ID;
+    const githubClientSecret = process.env.SKILL_FORGE_GITHUB_CLIENT_SECRET;
     if (!postgresUrl || !publicUrl || !issuer || !clientId)
       throw new ForgeError(
         "server_config_missing",
@@ -150,6 +157,15 @@ export async function localConfig(
         audience: publicUrl,
         publicUrl,
       },
+      ...(githubClientId && githubClientSecret
+        ? {
+            github: {
+              clientId: githubClientId,
+              clientSecret: githubClientSecret,
+              publicUrl,
+            },
+          }
+        : {}),
     };
   }
   return {

@@ -13,6 +13,9 @@ interface Skill {
   managed: boolean;
   pinned: boolean;
   protected: boolean;
+  score?: number;
+  why?: string[];
+  other_scopes?: string[];
 }
 export function Library({ project }: { project: string }) {
   const [search, setSearch] = useState(""),
@@ -103,6 +106,7 @@ export function Library({ project }: { project: string }) {
             <option value="project">Proje</option>
             <option value="personal">Kişisel</option>
             <option value="workspace">Çalışma alanı</option>
+            <option value="environment">Ortam</option>
           </select>
         </label>
         <button>Ara</button>
@@ -114,6 +118,7 @@ export function Library({ project }: { project: string }) {
             <tr>
               <th>Paket</th>
               <th>Kapsam</th>
+              <th>Skor</th>
               <th>Sürüm</th>
               <th>Yönetim</th>
             </tr>
@@ -130,8 +135,24 @@ export function Library({ project }: { project: string }) {
                     {skill.name}
                   </button>
                   <small className="description">{skill.description}</small>
+                  {!!skill.other_scopes?.length && (
+                    <small className="description">
+                      Ayrıca: {skill.other_scopes.join(", ")}
+                    </small>
+                  )}
                 </td>
                 <td>{skill.scope.split(":")[0]}</td>
+                <td>
+                  {skill.score !== undefined && (
+                    <span
+                      className="mono"
+                      data-testid="skill-score"
+                      title={(skill.why ?? []).join(" · ")}
+                    >
+                      {skill.score.toFixed(3)}
+                    </span>
+                  )}
+                </td>
                 <td className="mono">{skill.revision.slice(0, 10)}</td>
                 <td>
                   {skill.protected

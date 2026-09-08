@@ -11,7 +11,7 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 export interface RunnerInput {
-  profile: "skill_evolve" | "prompt_edit";
+  profile: "skill_evolve";
   sessionId: string;
   model: Model<Api>;
   systemPrompt: string;

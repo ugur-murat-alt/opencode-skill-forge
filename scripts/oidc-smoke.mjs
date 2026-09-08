@@ -472,8 +472,8 @@ const headers={authorization:'Bearer '+process.env.FORGE_ACCEPTANCE_TOKEN,'x-for
 try {
   await client.connect(new StreamableHTTPClientTransport(new URL(${JSON.stringify(publicUrl + "/mcp")}),{requestInit:{headers}}));
   const tools=(await client.listTools()).tools.map(t=>t.name).sort();
-  const expected=['forge_search','forge_load','forge_run','forge_prepare','forge_handoff','forge_report'].sort();
-  if(JSON.stringify(tools)!==JSON.stringify(expected))throw Error('six-tool contract mismatch');
+  const expected=['forge_search','forge_load','forge_run','forge_handoff','forge_report'].sort();
+  if(JSON.stringify(tools)!==JSON.stringify(expected))throw Error('five-tool contract mismatch');
   const call=async(name,args)=>{const r=await client.callTool({name,arguments:args});if(r.isError)throw Error('MCP call failed: '+name);return JSON.parse(r.content.find(c=>c.type==='text').text);};
   const found=await call('forge_search',{project_ref:${JSON.stringify(projectId)},query:'authenticated transport'});
   if(!found.items.some(x=>x.skill_id===${JSON.stringify(published.skill_id)}))throw Error('Imported package missing');

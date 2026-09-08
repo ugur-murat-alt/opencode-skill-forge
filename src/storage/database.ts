@@ -1,4 +1,13 @@
 import { deletionMigration } from "./deletion-migration.js";
+import { promptDrainMigration } from "./prompt-drain-migration.js";
+import { inviteMigration } from "./invite-migration.js";
+import { roleRenameMigration } from "./role-rename-migration.js";
+import { orgLifecycleMigration } from "./org-lifecycle-migration.js";
+import { roleRegistryMigration } from "./role-registry-migration.js";
+import { agentPromptMigration } from "./agent-prompt-migration.js";
+import { environmentMigration } from "./environment-migration.js";
+import { environmentUniquenessMigration } from "./environment-uniqueness-migration.js";
+import { bindingIdentityMigration } from "./binding-identity-migration.js";
 import { readerMigration } from "./reader-migration.js";
 import { runPinMigration } from "./run-pin-migration.js";
 import { executionPinMigration } from "./execution-pin-migration.js";
@@ -78,6 +87,15 @@ export async function openDatabase(options: {
   }
   const db = new Kysely<DB>({ dialect });
   const migrations: Record<string, Migration> = {
+    "028_environment_uniqueness": environmentUniquenessMigration,
+    "027_agent_prompts": agentPromptMigration,
+    "026_binding_identity": bindingIdentityMigration,
+    "025_environments": environmentMigration,
+    "024_role_registry": roleRegistryMigration,
+    "023_org_lifecycle": orgLifecycleMigration,
+    "022_role_rename": roleRenameMigration,
+    "021_invitations": inviteMigration,
+    "020_prompt_drain": promptDrainMigration,
     "019_package_deletion": deletionMigration,
     "018_revision_readers": readerMigration,
     "017_run_pins": runPinMigration,

@@ -2,11 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, opendir } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
-import {
-  readPackageDirectory,
-  secureRead,
-  validatePackagePath,
-} from "../skills/paths.js";
+import { readPackageDirectory, validatePackagePath } from "../skills/paths.js";
 import { validatePackage } from "../skills/validate.js";
 const digest = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
@@ -14,13 +10,12 @@ type DiscoveryItem = {
   source_id: string;
   source: string;
   path: string;
-  kind: "package" | "state";
+  kind: "package";
   target_scope: "project" | "personal";
   status: "ready" | "review_required" | "unreadable";
   checksum?: string;
   files?: { path: string; bytes: number; sha256: string }[];
   reason?: string;
-  summary?: { records: number; malformed: number };
   duplicate_of?: string;
 };
 export async function discoverLegacy(input: {
@@ -50,24 +45,6 @@ export async function discoverLegacy(input: {
       id: "home-skills",
       path: join(home, ".opencode", "skills"),
       kind: "package" as const,
-      scope: "personal" as const,
-    },
-    {
-      id: "project-state",
-      path: join(project, ".opencode", ".skill-power"),
-      kind: "state" as const,
-      scope: "project" as const,
-    },
-    {
-      id: "home-state",
-      path: join(home, ".opencode", ".skill-power"),
-      kind: "state" as const,
-      scope: "personal" as const,
-    },
-    {
-      id: "home-config-state",
-      path: join(home, ".config", "opencode", ".skill-power"),
-      kind: "state" as const,
       scope: "personal" as const,
     },
   ];
@@ -145,13 +122,9 @@ export async function discoverLegacy(input: {
             (!entry.isDirectory() && !entry.isFile())
           )
             throw Error("unsafe_file");
-          if (source.kind === "state" && entry.isDirectory()) {
-            await walk(path, depth + 1);
-            continue;
-          }
-          if (source.kind === "package" && !entry.isDirectory())
+          if (entry.isSymbolicLink() || !entry.isDirectory())
             throw Error("unexpected_root_file");
-          if (source.kind === "package") {
+          {
             const folded = entry.name.normalize("NFKC").toLowerCase();
             const collision = names.has(folded);
             names.add(folded);
@@ -174,53 +147,6 @@ export async function discoverLegacy(input: {
               item.reason =
                 (error as { code?: string }).code ?? "invalid_package";
             }
-          } else {
-            if (/(?:learn\.md|rewrites\.jsonl|session-flags\.json)$/.test(path))
-              item.target_scope = "personal";
-            const bytes = await secureRead(source.path, path, 16 * 1024 * 1024);
-            totalBytes += bytes.length;
-            item.checksum = digest(bytes);
-            item.files = [{ path, bytes: bytes.length, sha256: item.checksum }];
-            item.status = "review_required";
-            if (path.endsWith(".jsonl")) {
-              let records = 0,
-                malformed = 0;
-              for (const line of bytes
-                .toString("utf8")
-                .split(/\r?\n/)
-                .filter((line) => line.trim())) {
-                try {
-                  const value = JSON.parse(line);
-                  if (!value || typeof value !== "object")
-                    throw Error("record");
-                  if (
-                    path.endsWith("rewrites.jsonl") &&
-                    (typeof value.original !== "string" ||
-                      typeof value.rewritten !== "string" ||
-                      typeof value.sessionID !== "string" ||
-                      typeof value.messageID !== "string")
-                  )
-                    throw Error("rewrite");
-                  records++;
-                } catch {
-                  malformed++;
-                }
-              }
-              item.summary = { records, malformed };
-              item.reason = malformed
-                ? "malformed_records"
-                : "explicit_owner_mapping_required";
-            } else if (path.endsWith(".json")) {
-              try {
-                JSON.parse(bytes.toString("utf8"));
-                item.reason = "explicit_flags_mapping_required";
-              } catch {
-                item.reason = "malformed_json";
-              }
-            } else
-              item.reason = path.endsWith("learn.md")
-                ? "private_learning_mapping_required"
-                : "state_mapping_required";
           }
         } catch (error) {
           item.reason =

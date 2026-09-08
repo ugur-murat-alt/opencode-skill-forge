@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DB } from "../storage/schema.js";
+import type { MemberRole } from "../domain/roles.js";
+import { RoleService } from "./roles.js";
 import { IdentityService, type Identity } from "./identity.js";
 import { ForgeError } from "../domain/errors.js";
 export class MemberService {
@@ -42,7 +44,7 @@ export class MemberService {
       .object({
         subject: z.string().min(1).max(1000),
         display_name: z.string().min(1).max(200),
-        role: z.enum(["admin", "editor", "viewer"]),
+        role: z.string().min(1).max(64),
       })
       .strict()
       .parse(raw);
@@ -52,7 +54,13 @@ export class MemberService {
         .set({ name: sql`name` })
         .where("id", "=", actor.tenantId)
         .execute();
-      await new IdentityService(tx).authorize(actor, "admin");
+      const actorRole = await new IdentityService(tx).authorize(actor, "admin");
+      await RoleService.assertGrantable(
+        tx,
+        actor.tenantId,
+        actorRole,
+        input.role,
+      );
       await tx
         .insertInto("users")
         .values({
@@ -73,7 +81,7 @@ export class MemberService {
         .values({
           tenant_id: actor.tenantId,
           user_id: user.id,
-          role: input.role,
+          role: input.role as MemberRole,
         })
         .onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing())
         .returning("user_id")
@@ -102,9 +110,9 @@ export class MemberService {
         project_ref: z.string().min(1).max(100),
         generation: z.number().int().nonnegative(),
         project_generation: z.number().int().nonnegative().nullable(),
-        role: z.enum(["admin", "editor", "viewer"]),
+        role: z.string().min(1).max(64),
         disabled: z.boolean(),
-        project_role: z.enum(["editor", "viewer"]).nullable(),
+        project_role: z.enum(["writer", "reader"]).nullable(),
       })
       .strict()
       .parse(raw);
@@ -115,10 +123,16 @@ export class MemberService {
         .set({ name: sql`name` })
         .where("id", "=", actor.tenantId)
         .execute();
-      await new IdentityService(tx).authorize(
+      const actorRole = await new IdentityService(tx).authorize(
         actor,
         "admin",
         input.project_ref,
+      );
+      await RoleService.assertGrantable(
+        tx,
+        actor.tenantId,
+        actorRole,
+        input.role,
       );
       const member = await tx
         .selectFrom("memberships")
@@ -128,10 +142,10 @@ export class MemberService {
         .executeTakeFirst();
       if (!member)
         throw new ForgeError("member_unavailable", "Üye bulunamadı.", 404);
-      if (member.role === "owner")
+      if (member.role === "founder")
         throw new ForgeError(
-          "owner_protected",
-          "Çalışma alanı sahibinin erişimi bu işlemle kaldırılamaz.",
+          "founder_protected",
+          "Organizasyon kurucusunun erişimi bu işlemle kaldırılamaz.",
           409,
         );
       if (member.generation !== input.generation)
@@ -156,7 +170,7 @@ export class MemberService {
       await tx
         .updateTable("memberships")
         .set({
-          role: input.role,
+          role: input.role as MemberRole,
           disabled: input.disabled ? 1 : 0,
           generation: member.generation + 1,
         })
@@ -200,9 +214,9 @@ export class MemberService {
         .where("user_id", "=", target)
         .where("state", "not in", terminalStates);
       let cancelled: { id: string }[] = [];
-      if (input.disabled || input.role === "viewer")
+      if (input.disabled || input.role === "reader" || input.role === "auditor")
         cancelled = await revoked.returning("id").execute();
-      else if (input.role === "editor")
+      else if (input.role === "writer")
         cancelled = await revoked
           .where(
             "project_id",
@@ -212,9 +226,15 @@ export class MemberService {
               .select("project_id")
               .where("tenant_id", "=", actor.tenantId)
               .where("user_id", "=", target)
-              .where("role", "=", "editor"),
+              .where("role", "=", "writer"),
           )
           .returning("id")
+          .execute();
+      if (input.disabled)
+        await tx
+          .updateTable("auth_sessions")
+          .set({ revoked: 1 })
+          .where("user_id", "=", target)
           .execute();
       if (cancelled.length)
         await tx

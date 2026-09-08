@@ -1,10 +1,10 @@
-import { sanitizePromptEditorText } from "../prompt/sanitize.js";
+import { sanitizeUntrustedText } from "./sanitize.js";
 const sensitive =
   /authorization|cookie|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key/i;
-/** Metadata-only by default; inherited prompt sanitizer remains the text boundary. */
+/** Metadata-only by default; shared text sanitizer remains the text boundary. */
 export function redact(value: unknown, depth = 0): unknown {
   if (depth > 8) return "[depth_limit]";
-  if (typeof value === "string") return sanitizePromptEditorText(value, 4000);
+  if (typeof value === "string") return sanitizeUntrustedText(value, 4000);
   if (Array.isArray(value))
     return value.slice(0, 100).map((item) => redact(item, depth + 1));
   if (value && typeof value === "object") {

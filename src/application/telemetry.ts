@@ -257,7 +257,7 @@ export class TelemetryService {
       .select(["m.tenant_id", "m.user_id", "p.id as project_id"])
       .where((eb) =>
         eb.or([
-          eb("m.role", "in", ["owner", "admin"]),
+          eb("m.role", "in", ["founder", "admin"]),
           eb.exists(
             eb
               .selectFrom("project_members as pm")

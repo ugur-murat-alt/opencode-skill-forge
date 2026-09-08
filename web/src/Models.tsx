@@ -129,13 +129,7 @@ function ProfileForm({
   return (
     <section className="panel">
       <div className="section-heading">
-        <h2>
-          {item.role === "prompt"
-            ? "Prompt Editor"
-            : item.role === "skill"
-              ? "Skill geliştirme"
-              : "Değerlendirme"}
-        </h2>
+        <h2>{item.role === "skill" ? "Skill geliştirme" : "Değerlendirme"}</h2>
         <small>
           Sürüm {item.revision} · Anahtar{" "}
           {item.credential === "configured" ? "kayıtlı" : "yok"} · Bağlantı

@@ -1,6 +1,7 @@
 node_modules/
 .opencode/
 .opencode/.skill-power/
+.codex/
 dist/.plugin.js.tmp
 *.log
 !docs/evidence/*.log

@@ -28,7 +28,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 export type Project = { id: string; name: string };
 export type Account = {
-  role: "owner" | "admin" | "editor" | "viewer";
+  role: "founder" | "admin" | "writer" | "reader" | "auditor";
   identity: { userId: string; tenantId: string };
   projects: Project[];
   csrf: string;

@@ -1,8 +1,8 @@
-/** Bounded secret redaction shared by prompt, client and telemetry boundaries. */
+/** Bounded secret redaction for untrusted text at ingest boundaries. */
 export const CONTEXT_TRUNCATION_MARKER = "[truncated]";
 export const SANITIZER_LOOKAHEAD_CODE_UNITS = 512;
 
-export function sanitizePromptEditorText(
+export function sanitizeUntrustedText(
   value: string,
   maxCodeUnits: number,
   sourceTruncated = false,

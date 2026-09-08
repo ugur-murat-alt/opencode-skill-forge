@@ -15,7 +15,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { sql } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
 import { IdentityService, type Identity } from "./identity.js";
-import { JobQueue, terminalStates } from "../jobs/queue.js";
+import { RoleService } from "./roles.js";
+import { JobQueue } from "../jobs/queue.js";
 import { PackageStore } from "../skills/store.js";
 import { DockerExecutor } from "../execution/docker.js";
 import { ForgeError, errorEnvelope } from "../domain/errors.js";
@@ -117,11 +118,29 @@ export class ForgeService {
     signal?: AbortSignal,
   ): Promise<any> {
     const input = toolSchemas[name].parse(raw);
+    const member = await this.storage.db
+      .selectFrom("memberships")
+      .select("role")
+      .where("tenant_id", "=", identity.tenantId)
+      .where("user_id", "=", identity.userId)
+      .executeTakeFirst();
+    const allowed = await RoleService.allowedTool(
+      this.storage.db,
+      identity.tenantId,
+      member?.role ?? "",
+      name,
+    );
+    if (!allowed)
+      throw new ForgeError(
+        "tool_denied",
+        "Bu rol bu araca erişemez.",
+        403,
+        undefined,
+        { role: member?.role ?? "unknown", tool: name },
+      );
     await new IdentityService(this.storage.db).authorize(
       identity,
-      ["forge_run", "forge_handoff", "forge_prepare"].includes(name)
-        ? "run"
-        : "read",
+      ["forge_run", "forge_handoff"].includes(name) ? "run" : "read",
       input.project_ref,
     );
     const binding = [
@@ -290,52 +309,6 @@ export class ForgeService {
         status: accepted.status,
         run_id: accepted.run.id,
         retry_after_ms: 500,
-      };
-    }
-    if (name === "forge_prepare") {
-      const value = toolSchemas.forge_prepare.parse(input);
-      const accepted = await this.queue.accept(identity, {
-        projectId: value.project_ref,
-        kind: "prompt_edit",
-        key: value.idempotency_key,
-        payload: {
-          original: value.original,
-          ...(value.source ? { source: value.source } : {}),
-        },
-      });
-      const deadline = Date.now() + value.wait_ms;
-      let run = accepted.run;
-      while (
-        !terminalStates.includes(run.state) &&
-        Date.now() < deadline &&
-        !signal?.aborted
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        run = await this.queue.get(identity, run.id);
-      }
-      const prepared = run.result_json ? JSON.parse(run.result_json) : null;
-      if (
-        prepared &&
-        !prepared.content_expired &&
-        typeof prepared === "object" &&
-        typeof prepared.status === "string"
-      )
-        return {
-          run_id: run.id,
-          original_hash: createHash("sha256")
-            .update(value.original)
-            .digest("hex"),
-          ...prepared,
-        };
-      return {
-        run_id: run.id,
-        status: "fallback",
-        reason: prepared?.content_expired
-          ? "content_expired"
-          : (run.error_code ?? "wait_timeout"),
-        original: value.original,
-        effective: value.original,
-        auto_applied: false,
       };
     }
     if (name === "forge_report") {

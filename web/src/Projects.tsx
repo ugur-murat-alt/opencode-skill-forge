@@ -14,7 +14,9 @@ export function Projects({
   onChange: () => Promise<void>;
 }) {
   const projects = useResource<{ items: Project[] }>("/api/projects"),
+    envs = useResource<{ id: string; name: string }[]>("/api/environments"),
     [name, setName] = useState(""),
+    [env, setEnv] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function create(event: FormEvent) {
@@ -24,9 +26,10 @@ export function Projects({
     try {
       await api("/api/projects", {
         method: "POST",
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, ...(env ? { environment_id: env } : {}) }),
       });
       setName("");
+      setEnv("");
       await projects.refresh();
       await onChange();
     } catch (error) {
@@ -54,6 +57,17 @@ export function Projects({
                 required
                 maxLength={200}
               />
+            </label>
+            <label>
+              Ortam
+              <select value={env} onChange={(e) => setEnv(e.target.value)}>
+                <option value="">Varsayılan</option>
+                {(envs.data ?? []).map((e) => (
+                  <option value={e.id} key={e.id}>
+                    {e.name}
+                  </option>
+                ))}
+              </select>
             </label>
             <button className="primary" disabled={busy}>
               {busy ? "Oluşturuluyor…" : "Proje oluştur"}
@@ -97,9 +111,7 @@ const numericFields = [
   { key: "retentionDays", label: "Saklama süresi (gün)", min: 1, max: 3650 },
 ];
 const booleanFields = [
-  { key: "promptEnabled", label: "Prompt Editor" },
   { key: "evolutionEnabled", label: "Skill geliştirme" },
-  { key: "autoApply", label: "Hazırlanan metni otomatik kullan" },
   { key: "allowPaid", label: "Ücretli model çağrıları" },
   { key: "dependencyInstall", label: "Kilitli bağımlılık kurulumu" },
 ];
@@ -196,41 +208,6 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
               </small>
             </label>
           ))}
-          <label>
-            Editör modu
-            <select
-              value={values.promptMode ?? "inherit"}
-              onChange={(e) =>
-                change(
-                  "promptMode",
-                  e.target.value === "inherit" ? undefined : e.target.value,
-                )
-              }
-            >
-              <option value="inherit">Miras al</option>
-              <option value="when-needed">Gerektiğinde</option>
-              <option value="always">Her istekte</option>
-              <option value="off">Kapalı</option>
-            </select>
-          </label>
-          <label>
-            Öğrenme
-            <select
-              value={values.learning ?? "inherit"}
-              onChange={(e) =>
-                change(
-                  "learning",
-                  e.target.value === "inherit" ? undefined : e.target.value,
-                )
-              }
-            >
-              <option value="inherit">Miras al</option>
-              <option value="reusable-only">
-                Tekrar kullanılabilir dersler
-              </option>
-              <option value="off">Kapalı</option>
-            </select>
-          </label>
           {numericFields.map((field) => (
             <label key={field.key}>
               {field.label}

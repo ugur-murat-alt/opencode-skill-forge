@@ -4,6 +4,7 @@ export class ForgeError extends Error {
     message: string,
     public readonly status = 400,
     public readonly retryAfter?: number,
+    public readonly detail?: unknown,
   ) {
     super(message);
     this.name = "ForgeError";
@@ -16,6 +17,7 @@ export function errorEnvelope(error: unknown) {
           code: error.code,
           message: error.message,
           ...(error.retryAfter ? { retry_after: error.retryAfter } : {}),
+          ...(error.detail !== undefined ? { detail: error.detail } : {}),
         },
       }
     : {

@@ -10,7 +10,7 @@ export function Installations({ project }: { project: string }) {
       directory: string;
       health: string;
       last_seen: number | null;
-      capabilities: { prepare_mode: string };
+      capabilities: { handoff: string };
     }[];
   }>(`/api/installations?project_ref=${encodeURIComponent(project)}`);
   const [client, setClient] = useState("codex"),
@@ -66,7 +66,7 @@ export function Installations({ project }: { project: string }) {
           {client === "codex"
             ? "Codex’te /hooks ile yeni hook tanımlarını inceleyip güvenin. Bu istemci denetimi kurulum tarafından atlanmaz."
             : "Claude Code’da proje MCP bağlantısını istemcinin güven ekranından etkinleştirin."}{" "}
-          Prompt hook’u ek bağlam verir; görünür kullanıcı metnini değiştirmez.
+          Hook ek bağlam verir; görünür kullanıcı metnini değiştirmez.
         </p>
       </section>
       <section className="panel">
@@ -77,8 +77,8 @@ export function Installations({ project }: { project: string }) {
           ChatGPT tarafından uzaktan erişilebilir değildir.
         </p>
         <p>
-          Prepare ve handoff araç seçimine bağlıdır; zorunlu bir istemci hook’u
-          olduğu iddia edilmez.
+          Handoff araç seçimine bağlıdır; zorunlu bir istemci hook’u olduğu
+          iddia edilmez.
         </p>
         <a
           className="button"

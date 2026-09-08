@@ -148,17 +148,8 @@ export class OidcIdentity {
     return this.knownUser(result.payload.sub!);
   }
   private async knownUser(subject: string) {
-    const user = await this.identities.db
-      .selectFrom("users")
-      .select("id")
-      .where("subject", "=", `${this.options.issuer}|${subject}`)
-      .executeTakeFirst();
-    if (!user)
-      throw new ForgeError(
-        "membership_required",
-        "Hesap yöneticisi kullanıcı üyeliğini tanımlamalıdır.",
-        403,
-      );
-    return user.id;
+    return this.identities.userIdForSubject(
+      `${this.options.issuer}|${subject}`,
+    );
   }
 }

@@ -152,11 +152,7 @@ export function JobTable({
                   <span className="mono">{job.run_id.slice(0, 8)}</span>
                 )}
               </td>
-              <td>
-                {job.kind === "prompt_edit"
-                  ? "Prompt Editor"
-                  : "Skill geliştirme"}
-              </td>
+              <td>Skill geliştirme</td>
               <td>
                 <Status value={job.status} />
               </td>

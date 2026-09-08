@@ -1,6 +1,8 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import type { Kysely } from "kysely";
-import type { DB, Membership } from "../storage/schema.js";
+import type { DB } from "../storage/schema.js";
+import { normalizeRole } from "./roles.js";
+import { ensureDefaultEnvironment } from "./environments.js";
 import { ForgeError } from "../domain/errors.js";
 export interface Identity {
   userId: string;
@@ -36,10 +38,11 @@ export class IdentityService {
         .values({
           tenant_id: identity.tenantId,
           user_id: identity.userId,
-          role: "owner",
+          role: "founder",
         })
         .onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing())
         .execute();
+      await ensureDefaultEnvironment(tx, identity.tenantId);
     });
     return identity;
   }
@@ -56,10 +59,30 @@ export class IdentityService {
       .executeTakeFirst();
     if (!member || member.disabled)
       throw new ForgeError("forbidden", "Çalışma alanına erişim yok.", 403);
-    const administrator = member.role === "owner" || member.role === "admin";
+    const normalized = await normalizeRole(
+      this.db,
+      identity.tenantId,
+      member.role,
+    );
+    if (!normalized)
+      throw new ForgeError("forbidden", "Rol kullanılamıyor.", 403);
+    if (permission !== "read") {
+      const lifecycle = await this.db
+        .selectFrom("tenant_lifecycle")
+        .select("frozen")
+        .where("tenant_id", "=", identity.tenantId)
+        .executeTakeFirst();
+      if (lifecycle?.frozen)
+        throw new ForgeError(
+          "tenant_frozen",
+          "Organizasyon silinmeyi bekliyor; yazma işlemleri kapalı.",
+          403,
+        );
+    }
+    const administrator = normalized === "founder" || normalized === "admin";
     if (permission === "admin" && !administrator)
       throw new ForgeError("forbidden", "Yönetici yetkisi gerekiyor.", 403);
-    let role: Membership["role"] = member.role;
+    let role: string = normalized;
     if (projectId) {
       const project = await this.db
         .selectFrom("projects")
@@ -83,11 +106,17 @@ export class IdentityService {
           .executeTakeFirst();
         if (!access)
           throw new ForgeError("forbidden", "Proje üyeliği gerekiyor.", 403);
-        // A project editor cannot elevate a workspace viewer.
-        role = member.role === "viewer" ? "viewer" : access.role;
+        // A project reader/auditor cannot elevate through project membership.
+        role =
+          normalized === "reader" || normalized === "auditor"
+            ? normalized
+            : access.role;
       }
     }
-    if ((permission === "write" || permission === "run") && role === "viewer")
+    if (
+      (permission === "write" || permission === "run") &&
+      (role === "reader" || role === "auditor")
+    )
       throw new ForgeError(
         "forbidden",
         "Salt okunur üyelik bu işleme izin vermiyor.",
@@ -95,17 +124,43 @@ export class IdentityService {
       );
     return role;
   }
-  async createProject(identity: Identity, name: string) {
+  async createProject(
+    identity: Identity,
+    name: string,
+    environmentId?: string,
+  ) {
     await this.authorize(identity, "admin");
     if (!name.trim() || name.length > 200)
       throw new ForgeError(
         "invalid_project",
         "Proje adı 1–200 karakter olmalıdır.",
       );
+    let environment_id: string;
+    if (environmentId) {
+      const env = await this.db
+        .selectFrom("environments")
+        .select("id")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", environmentId)
+        .executeTakeFirst();
+      if (!env)
+        throw new ForgeError(
+          "environment_unavailable",
+          "Ortam bulunamadı.",
+          404,
+        );
+      environment_id = env.id;
+    } else {
+      environment_id = await ensureDefaultEnvironment(
+        this.db,
+        identity.tenantId,
+      );
+    }
     const project = {
       tenant_id: identity.tenantId,
       id: randomUUID(),
       name: name.trim(),
+      environment_id,
       created_at: Date.now(),
     };
     await this.db.insertInto("projects").values(project).execute();
@@ -117,7 +172,7 @@ export class IdentityService {
       .selectFrom("projects")
       .selectAll()
       .where("tenant_id", "=", identity.tenantId);
-    if (role !== "owner" && role !== "admin")
+    if (role !== "founder" && role !== "admin")
       query = query.where(
         "id",
         "in",
@@ -203,6 +258,21 @@ export class IdentityService {
         12 * 60 * 60 * 1000,
       );
     });
+  }
+  /** Resolve a provisioned user by namespaced subject (issuer|sub). Invite-gated: unknown subjects are rejected. */
+  async userIdForSubject(subject: string) {
+    const user = await this.db
+      .selectFrom("users")
+      .select("id")
+      .where("subject", "=", subject)
+      .executeTakeFirst();
+    if (!user)
+      throw new ForgeError(
+        "membership_required",
+        "Hesap yöneticisi kullanıcı üyeliğini tanımlamalıdır.",
+        403,
+      );
+    return user.id;
   }
   async revoke(token: string) {
     await this.db

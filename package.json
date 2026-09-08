@@ -1,7 +1,7 @@
 {
   "name": "@vaur94/opencode2-skill-forge",
   "version": "1.0.0",
-  "description": "Bağımsız MCP skill geliştirme, prompt düzenleme ve yönetim servisi",
+  "description": "Bağımsız MCP skill geliştirme ve yönetim servisi",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -58,6 +58,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.7",
     "oxlint": "1.81.0",
+    "playwright-core": "1.63.0",
     "prettier": "3.9.6",
     "typescript": "5.9.3",
     "vite": "8.2.2"

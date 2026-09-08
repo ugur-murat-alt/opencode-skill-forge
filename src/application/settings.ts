@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { IdentityService, type Identity } from "./identity.js";
 import {
   settingsSchema,
+  storedSettingsSchema,
   resolveSettings,
   defaultSettings,
   type Settings,
 } from "../domain/settings.js";
+import { EnvironmentService } from "./environments.js";
 import { ForgeError } from "../domain/errors.js";
 export class SettingsService {
   constructor(
@@ -25,6 +27,16 @@ export class SettingsService {
         write ? "write" : "read",
         scope.slice(8),
       );
+    if (scope.startsWith("environment:")) {
+      const env = await this.identity.db
+        .selectFrom("environments")
+        .select("id")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", scope.slice(12))
+        .executeTakeFirst();
+      if (!env) throw new ForgeError("invalid_scope", "Ortam bulunamadı.", 404);
+      return this.identity.authorize(identity, write ? "admin" : "read");
+    }
     throw new ForgeError(
       "invalid_scope",
       "Kapsam yetkili kullanıcı/proje ile eşleşmiyor.",
@@ -43,7 +55,7 @@ export class SettingsService {
       .executeTakeFirst();
     return {
       revision: row?.revision ?? 0,
-      values: row ? settingsSchema.parse(JSON.parse(row.payload)) : {},
+      values: row ? storedSettingsSchema.parse(JSON.parse(row.payload)) : {},
     };
   }
   async update(
@@ -122,11 +134,21 @@ export class SettingsService {
         values: (await this.get(identity, "workspace")).values,
       },
     ];
-    if (projectId)
+    if (projectId) {
+      const env = await new EnvironmentService(this.identity.db).resolveProject(
+        identity.tenantId,
+        projectId,
+      );
+      layers.push({
+        source: `environment:${env.environment_id}`,
+        values: (await this.get(identity, `environment:${env.environment_id}`))
+          .values,
+      });
       layers.push({
         source: `project:${projectId}`,
         values: (await this.get(identity, `project:${projectId}`)).values,
       });
+    }
     layers.push(
       {
         source: `personal:${identity.userId}`,
@@ -145,7 +167,7 @@ export class SettingsService {
       .limit(1)
       .executeTakeFirst();
     const tenantPolicy = row
-      ? settingsSchema.parse(JSON.parse(row.payload))
+      ? storedSettingsSchema.parse(JSON.parse(row.payload))
       : {};
     const initial = { ...defaultSettings, ...tenantPolicy };
     const upper = resolveSettings({ ...initial, ...this.systemPolicy }, [

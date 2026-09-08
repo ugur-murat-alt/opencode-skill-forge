@@ -1,12 +1,10 @@
 import { z } from "zod";
 export const settingsSchema = z
   .object({
-    promptEnabled: z.boolean().optional(),
     evolutionEnabled: z.boolean().optional(),
-    promptMode: z.enum(["when-needed", "always", "off"]).optional(),
-    autoApply: z.boolean().optional(),
-    learning: z.enum(["off", "reusable-only"]).optional(),
     retentionDays: z.number().int().min(1).max(3650).optional(),
+    searchMinScore: z.number().min(0).max(1).optional(),
+    searchMaxResults: z.number().int().min(1).max(20).optional(),
     maxCalls: z.number().int().min(1).max(100).optional(),
     maxTokens: z.number().int().min(64).max(1_000_000).optional(),
     maxCostMicros: z.number().int().min(0).max(1_000_000_000).optional(),
@@ -18,13 +16,17 @@ export const settingsSchema = z
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
+/**
+ * Kayıtlı satırlar için toleranslı şema: kaldırılmış eski anahtarlar
+ * okumayı bozmaz, sessizce atılır. Yeni yazımlar
+ * `settingsSchema` ile strict doğrulanmaya devam eder.
+ */
+export const storedSettingsSchema = settingsSchema.strip();
 export const defaultSettings: Required<Settings> = {
-  promptEnabled: true,
   evolutionEnabled: true,
-  promptMode: "when-needed",
-  autoApply: true,
-  learning: "reusable-only",
   retentionDays: 30,
+  searchMinScore: 0,
+  searchMaxResults: 20,
   maxCalls: 6,
   maxTokens: 16384,
   maxCostMicros: 0,
@@ -59,9 +61,12 @@ export function resolveSettings(
           "maxCostMicros",
           "concurrency",
           "retentionDays",
+          "searchMaxResults",
         ].includes(key)
       )
         next = Math.min(result.values[key] as number, incoming as number);
+      if (key === "searchMinScore")
+        next = Math.max(result.values[key] as number, incoming as number);
       if (key === "allowPaid" || key === "dependencyInstall")
         next = result.values[key] && Boolean(incoming);
       if (key === "allowedOrigins" || key === "scriptAllowedOrigins")

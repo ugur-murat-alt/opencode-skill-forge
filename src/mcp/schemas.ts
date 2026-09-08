@@ -1,4 +1,3 @@
-import { sessionSourceSchema } from "../application/session-preferences.js";
 import { z } from "zod";
 const ref = z.string().min(1).max(100),
   revision = z.string().regex(/^[a-f0-9]{64}$/),
@@ -8,7 +7,9 @@ export const toolSchemas = {
     .object({
       project_ref: ref,
       query: z.string().max(200).default(""),
-      scope: z.enum(["personal", "project", "workspace"]).optional(),
+      scope: z
+        .enum(["personal", "project", "workspace", "environment"])
+        .optional(),
       limit: z.number().int().min(1).max(20).default(5),
       cursor: z.string().max(3000).optional(),
     })
@@ -31,15 +32,6 @@ export const toolSchemas = {
       entrypoint: z.string().max(64),
       args: z.record(z.string(), z.unknown()),
       idempotency_key: key,
-    })
-    .strict(),
-  forge_prepare: z
-    .object({
-      project_ref: ref,
-      original: z.string().min(1).max(32000),
-      source: sessionSourceSchema.optional(),
-      idempotency_key: key,
-      wait_ms: z.number().int().min(0).max(15000).default(10000),
     })
     .strict(),
   forge_handoff: z
@@ -90,8 +82,6 @@ export const toolDescriptions: Record<ToolName, string> = {
     "Read only a required file from a pinned revision, default SKILL.md. Text/base64 chunks at most 24 KiB; follow cursor for remainder. inventory=true pages all package file metadata without content.",
   forge_run:
     "Execute a registered JSON entrypoint at a pinned revision in an isolated sandbox. Use one stable idempotency key for retries. Results over 8 KiB become an artifact; lists are paginated through forge_report section=execution.",
-  forge_prepare:
-    "Prepare user text with preserved intent. Failure/timeout returns exact original. Never use for internal agent messages.",
   forge_handoff:
     "Durably accept a concise verified reusable experience before your final answer. No raw history or private reasoning. Accepted work continues independently.",
   forge_report:

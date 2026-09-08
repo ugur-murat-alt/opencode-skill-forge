@@ -8,6 +8,13 @@
   --border: #e4e7ec;
   --muted: #667085;
   --accent: #087f8c;
+  /* P23 tasarım standardı: compact yoğunluk + az çizgi. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --radius: 8px;
+  --panel-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
 }
 * {
   box-sizing: border-box;
@@ -158,14 +165,15 @@ header {
   padding: 0 24px;
 }
 .content {
-  padding: 40px 48px;
+  padding: 28px 32px;
   max-width: 1500px;
 }
 .panel {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 24px;
-  margin: 24px 0;
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  padding: var(--space-4);
+  margin: var(--space-4) 0;
   overflow: auto;
 }
 .inline {
@@ -191,7 +199,7 @@ table {
 }
 th,
 td {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 th {
@@ -308,17 +316,42 @@ header {
   align-items: center;
   gap: 14px;
 }
-.workspace-name {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--border);
-  padding: 10px 14px;
-  border-radius: 5px;
-}
 .project-switcher {
   margin: 0;
   max-width: 220px;
+}
+.scope-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.scope-bar .tenant-switch {
+  margin: 0;
+}
+.scope-bar .tenant-switch select {
+  font-size: 12px;
+  padding: 8px;
+  max-width: 200px;
+}
+.scope-badge {
+  font-size: 12px;
+  color: var(--muted);
+  background: #f2f4f7;
+  border-radius: 999px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+.prompt-content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #f8fafc;
+  border-radius: var(--radius);
+  padding: var(--space-3);
 }
 .project-switcher select {
   font-size: 12px;
@@ -654,9 +687,6 @@ button {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.prompt-result {
-  margin-top: 28px;
-}
 .helper {
   display: block;
   font-size: 12px;
@@ -664,25 +694,6 @@ button {
   font-weight: 400;
   margin-top: 14px;
   max-width: 850px;
-}
-.learning-list {
-  list-style: none;
-  padding: 0;
-}
-.learning-list li {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  justify-content: space-between;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--border);
-}
-.learning-list p {
-  margin: 0 0 6px;
-  color: #182230;
-}
-.learning-list small {
-  color: var(--muted);
 }
 .file-list {
   display: flex;
@@ -750,9 +761,6 @@ details pre {
   .metrics .metric-text {
     font-size: 18px;
   }
-  .workspace-name {
-    font-size: 12px;
-  }
   .overview-grid {
     grid-template-columns: minmax(0, 1.6fr) minmax(250px, 1fr);
   }
@@ -787,9 +795,6 @@ details pre {
   }
   .metrics > div:nth-child(-n + 2) {
     border-bottom: 1px solid var(--border);
-  }
-  .workspace-name {
-    display: none;
   }
   .connection-panel .panel-link {
     padding: 14px 24px;
@@ -897,10 +902,11 @@ details pre {
   .comparison-grid {
     grid-template-columns: 1fr;
   }
-}
-
-.imported-rewrite {
-  width: 100%;
-  min-width: 0;
-  overflow-wrap: anywhere;
+  .scope-badge {
+    max-width: 100%;
+  }
+  .scope-bar .tenant-switch select,
+  .project-switcher select {
+    max-width: 140px;
+  }
 }
