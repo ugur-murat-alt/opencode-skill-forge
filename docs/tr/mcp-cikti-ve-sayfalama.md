@@ -1,6 +1,10 @@
 # MCP çıktıları ve sayfalama
 
-Dış araçlar altı adla kalır: `forge_search`, `forge_load`, `forge_run`, `forge_prepare`, `forge_handoff`, `forge_report`. MCP cevabı makinece okunabilir JSON'u tek text content alanında taşır; aynı içerik ikinci bir structuredContent kopyasıyla gönderilmez.
+Dış araçlar beş adla kalır: `forge_search`, `forge_load`, `forge_run`, `forge_handoff`, `forge_report`. MCP cevabı makinece okunabilir JSON'u tek text content alanında taşır; aynı içerik ikinci bir structuredContent kopyasıyla gönderilmez. Rolü yetmeyen istemciye araç listelenmez; listede olmayan araca çağrı SDK `-32601`, sunucuda `tool_denied`/`tool_unavailable` ile sonuçlanır.
+
+## Skorlu arama
+
+`forge_search` sonuçları `score` (0-1) ve `why` (eşleşme gerekçesi) taşır; isim eşleşmesi açıklama-eşleşmesini, kullanım sinyali aynı katmanda öne geçirir. Aynı adlı kapsam kopyaları tek kayda indirgenir (`other_scopes`). Birden çok eşleşmede yalnız en yüksek skorlu ilk birkaç kayıt yüklenmelidir. `searchMinScore`/`searchMaxResults` ayarlarıyla eşik ve adet yapılandırılır; sayfalama `next_cursor` ile skor sırasında ilerler.
 
 ## Paket içeriği
 

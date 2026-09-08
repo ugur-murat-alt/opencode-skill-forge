@@ -20,7 +20,7 @@ Doğrulanan sözleşmeler:
 - OIDC access_denied yanıtının 401 olması.
 - Sağlayıcının imzaladığı access token'da issuer, audience, süre, subject ve forge scope doğrulaması.
 - Bozuk imzanın 401, yabancı tenant'ın 403 ile reddi.
-- Aynı gerçek bearer token ile HTTP ZIP paket import; resmi MCP istemcisinde altı araç listesi, immutable revision search/load ve kayıtlı olmayan proje reddi.
+- Aynı gerçek bearer token ile HTTP ZIP paket import; resmi MCP istemcisinde beş araç listesi, immutable revision search/load ve kayıtlı olmayan proje reddi.
 
 Rapor token veya parola içermez; yalnız sonuçları ve claim adlarını içerir. Varsayılan yol `docs/evidence/p03-live-oidc.json`; farklı rapor yolu ilk argümandır. İlk başarısız denemeler ayrı dosyalarda tutulur.
 

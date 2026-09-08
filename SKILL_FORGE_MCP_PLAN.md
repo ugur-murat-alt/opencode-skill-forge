@@ -1,6 +1,14 @@
 # Skill Forge MCP — Uçtan Uca Uygulama Planı
 
-**Durum:** Uygulanıyor — uzak depo eşitlendi; P01 başlangıç ölçümü ve sözleşme geçişi sürüyor. Hiçbir kabul ölçütü henüz tamamlanmış sayılmıyor.  
+**Durum:** Uygulanıyor — uzak depo eşitlendi; P01 başlangıç ölçümü ve sözleşme geçişi tamamlandı.
+**V2 durumu (2026-09-08):** 1.0.0 yayımlandı. P17–P24 tamamlandı (P17 roller/davet/devir/silme/GitHub,
+P18 rol-araç matrisi, P19 ortam/kapsam/bağ, P20 skorlu arama, P21 ajan prompt zinciri, P22 prompt çıkarma,
+P23 web yenileme, P24 denetim + teslim notu) + 2 tur bağımsız inceleme kapatmaları. Son kapılar:
+typecheck/build/pack temiz, `bun test` 354 pass / 1 skip / 10 fail / 365 test / 83 dosya
+(10 fail yalnızca çevresel gerçek-Docker sandbox testleri), web kabul 28/28. Kanıtlar
+`docs/evidence/p17-*`, `p18-*`, `p19-*`, `p20-*`, `p21-*`, `p22-*`, `p23-web-acceptance.json`,
+`p24-delivery.md`, `p25-review-round1.json`, `p26-review-round2-p19p20.json`,
+`p27-review-round2-p23.json`. Değişiklikler commitlenmedi.
 **Hazırlanma tarihi:** 5 Eylül 2026  
 **Depo:** `ugur-murat-alt/opencode-skill-forge`  
 **İncelenen başlangıç:** `main`, commit `ed4c4b42b198ab8ae1088847e1b6ea0aa38ee048`, paket sürümü `0.5.6`  
@@ -538,6 +546,8 @@ Her iş paketinin altında kayıt biçimi: `Durum / commit-dosyalar / komutlar /
 
 ### P04 — Kalıcı işler ve ortak ForgeRunner
 
+> Not (P22): `prompt_edit` profili kaldırıldı; runner yalnız `skill_evolve` sunar. İlgili alt madde geçersizdir.
+
 **Bağımlılık:** P03. **Gereksinimler:** G01/G03/G04/G05/G12.
 
 - [ ] Durable kabul/dedup/outbox veya doğrulanmış ortak kuyruk transaction'ını; SQLite adapter ve pg-boss worker'ı uygula.
@@ -574,6 +584,8 @@ Her iş paketinin altında kayıt biçimi: `Durum / commit-dosyalar / komutlar /
 
 ### P07 — Altı MCP aracı ve bağlam ekonomisi
 
+> Not (P22): dış sözleşme beş araca indi (`forge_prepare` kaldırıldı); "altı" geçen maddeler beş araçla okunmalı.
+
 **Bağımlılık:** P05/P06. **Gereksinimler:** G06/G10/G13.
 
 - [ ] Altı aracın tek kaynaklı şemalarını, açıklamalarını, annotations ve hata zarfını uygula; internal writer araçları dışa sızmasın.
@@ -585,6 +597,8 @@ Her iş paketinin altında kayıt biçimi: `Durum / commit-dosyalar / komutlar /
 **Çıkış:** Gerçek MCP istemcisi Python/TS yardımcı scriptli skill'i az araçla kullanıyor. Testler: K06/K15/K24.
 
 ### P08 — Ortak altyapıyla Prompt Editor
+
+> Not (P22): bu paket tamamen düştü; Prompt Editor üründen kaldırıldı. Maddeler uygulanmayacak.
 
 **Bağımlılık:** P04/P07. **Gereksinimler:** G03/G12/G13.
 
@@ -761,6 +775,9 @@ Her değişiklik bu şemayla eklenir; eski gerekçe silinmez:
 | Tarih | Değişiklik | Kanıt/gerekçe | Etkilenen G/P/K | Kapsam ve test etkisi | Sonuç |
 |---|---|---|---|---|---|
 | 2026-09-05 | İlk uygulama planı | Mevcut repo kaynak/test sözleşmesi + kullanıcının 14 gereksinimi | G01–G14, P01–P16, K01–K30 | Henüz uygulama yapılmadı; bütün kabul işleri açık | Plan oluşturuldu |
+| 2026-09-08 | V2 yönlendirmesi | Çok kullanıcılı org/ortam, skorlu arama, sürümlü ajan promptu, prompt çıkarma, web yenileme | P17–P24, bölüm 23 | P08 düştü; P14 learning/rewrites/flags kapsamı düştü; 6→5 MCP aracı | Bölüm 23 eklendi, uygulama P22 ile başlar |
+| 2026-09-08 | forge_prepare kaldırma | Stub ölü sözleşme taşır; hook'lar handoff-odaklı yeniden yazılır | P22, P09 | P09 hook kabulü güncellenir | Kaldırma kararı |
+| 2026-09-08 | Roller | founder/admin/writer/reader/auditor; founder dışı default roller silinebilir (üyeli rolde önce reassign) | P17–P18 | Rol migration + matris testleri | Rol kararı |
 
 ## 22. Kaynaklar ve yeniden doğrulama
 
@@ -1029,7 +1046,7 @@ Aynı checkpoint'in `npm pack --dry-run` ve temiz tarball production kurulumu/No
 
 011 migration mevcut öğrenme kayıtlarını revision=1 ile geçmişe alır. Yeni kayıt atomik ilk sürüm oluşturur; dedup artık oluşturulmamış UUID yerine mevcut kaydın id/revision değerini döndürür. Ders güncelleme tenant yazma kilidi, yeniden ACL kontrolü, revision CAS, içerik sanitizasyonu ve aynı kapsam duplicate kontrolü kullanır. Devre dışı ders retrieval'dan çıkar; içerik/trigger/disabled değişiklikleri en fazla 20 sürüm tutulur. Ana ders silinmesi veya mevcut retention akışı geçmişi FK cascade ile siler. Webde Düzenle/Etkinleştir/Devre dışı bırak/Geçmiş vardır; eski revision ile gelen form sessizce üzerine yazmaz.
 
-`p08-learning-history-contract.log`: SQLite/PostgreSQL iki test / 26 assertion; sabit dedup id, stale CAS reddi, disable retrieval, başka proje/kullanıcıdan geçmiş reddi, secret reddi, 20 sürüm sınırı ve cascade silme geçti. Typecheck, **308 test / 0 hata / 1385 assertion / 55 dosya**, son build geçti (`p08-learning-history-full-tests.log`, `p08-learning-history-build.log`). Kendi fixture servisi 2459251 PID ile yeniden başlatıldı; gerçek tarayıcıda ders kaydı, devre dışı bırakma, metin düzenleme ve üç sürüm geçmişi görüldü (`docs/evidence/design/learning-history-browser.png`). Türkçe açıklama `docs/tr/ogrenme-gecmisi.md`. Bu P08'in canlı model/kalite kabulü veya P14'ün eski learn verisi aktarımı değildir; o işler açık.
+`p08-learning-history-contract.log`: SQLite/PostgreSQL iki test / 26 assertion; sabit dedup id, stale CAS reddi, disable retrieval, başka proje/kullanıcıdan geçmiş reddi, secret reddi, 20 sürüm sınırı ve cascade silme geçti. Typecheck, **308 test / 0 hata / 1385 assertion / 55 dosya**, son build geçti (`p08-learning-history-full-tests.log`, `p08-learning-history-build.log`). Kendi fixture servisi 2459251 PID ile yeniden başlatıldı; gerçek tarayıcıda ders kaydı, devre dışı bırakma, metin düzenleme ve üç sürüm geçmişi görüldü (`docs/evidence/design/learning-history-browser.png`). Türkçe açıklama `docs/tr/ogrenme-gecmisi.md` (P22'de kaldırıldı; tarihçe notu korunur). Bu P08'in canlı model/kalite kabulü veya P14'ün eski learn verisi aktarımı değildir; o işler açık.
 
 Aynı öğrenme checkpoint'inin `npm pack --dry-run` ve gerçek tarball temiz production kurulumu üzerinden Node CLI/HTTP/web/altı MCP aracı/ZIP worker import/search/load smoke kontrolü geçti (`p08-learning-history-pack.json`, `p08-learning-history-clean-package.json`). Yeni öğrenme eylemlerinin gerçek HTTP kanıtı ayrıca yukarıdaki tarayıcı akışıdır; paket smoke kontrolü model kalitesi kabulü değildir.
 
@@ -1063,7 +1080,7 @@ Kaynak `live.ts:readSessionFlags` bayrakların sessionID bazında olduğunu doğ
 
 014 migration, tenant/user/project/client-session hash kapsamlı revision'lı tercihleri saklar. Yalnız promptEnabled/autoApply değerleri yazılır; boş values üst kapsam değerlerine dönüşü sağlar. PUT yazıları tenant kilidi + yeniden ACL + revision CAS ile, GET okumaları sahip/proje yetkisiyle çalışır. Kullanıcı başına 10000 kayıt sınırı vardır. `forge_prepare.source` opsiyoneldir; mevcut çağrılar korunur. Kaynak idempotency girdisine dâhil edilir; kuyruk etkin session değerlerini ve sessionPreferenceRevision'ı immutable config_json'a kaydeder. Codex/Claude hook session_id varsa source bilgisini gerçek HTTP isteğine ekler.
 
-`p03-session-contract.log`: SQLite/PostgreSQL iki test / 30 assertion; proje/istemci/oturum ve kullanıcı izolasyonu, stale CAS, izin verilmeyen değer reddi, source'suz uyumluluk, farklı kaynakta idempotency çakışması ve kabul edilmiş snapshot'ın değişmezliği geçti. `p09-hook-session.log`: gerçek localhost HTTP alıcısına çağrılan kaynak hook fonksiyonları iki istemcinin session kimliğini taşıdı; native Codex/Claude olayının canlı çalıştığı iddia edilmez. `p03-session-http.log`: gerçek servis HTTP PUT/GET → forge_prepare → kalıcı kuyruk/production handler zinciri, editörü kapalı oturumda özgün metinle unchanged döndürdü. Türkçe sözleşme `docs/tr/oturum-tercihleri.md`. Bu temel eski session-flags dosyasının aktarımı değildir; açık eski-yeni session eşleme dönüşümü devam eden P14 işidir.
+`p03-session-contract.log`: SQLite/PostgreSQL iki test / 30 assertion; proje/istemci/oturum ve kullanıcı izolasyonu, stale CAS, izin verilmeyen değer reddi, source'suz uyumluluk, farklı kaynakta idempotency çakışması ve kabul edilmiş snapshot'ın değişmezliği geçti. `p09-hook-session.log`: gerçek localhost HTTP alıcısına çağrılan kaynak hook fonksiyonları iki istemcinin session kimliğini taşıdı; native Codex/Claude olayının canlı çalıştığı iddia edilmez. `p03-session-http.log`: gerçek servis HTTP PUT/GET → forge_prepare → kalıcı kuyruk/production handler zinciri, editörü kapalı oturumda özgün metinle unchanged döndürdü. Türkçe sözleşme `docs/tr/oturum-tercihleri.md` (P22'de kaldırıldı; tarihçe notu korunur). Bu temel eski session-flags dosyasının aktarımı değildir; açık eski-yeni session eşleme dönüşümü devam eden P14 işidir.
 
 Son doğrulama: typecheck, **317 pass / 0 fail / 1497 assertion / 60 dosya**, 43.14 saniye ve son build geçti (`p03-session-full-tests.log`, `p03-session-build.log`). Kaynak fingerprint `p03-session-source-fingerprint.json`. `npm pack --dry-run` ve gerçek tarball temiz production kurulumu üzerinden Node CLI/HTTP/web/altı MCP aracı/ZIP worker import/search/load geçti (`p03-session-pack.json`, `p03-session-clean-package.json`). Session HTTP testi Fastify injection ile gerçek route/auth/queue/handler yaşam döngüsünü, hook testi gerçek TCP HTTP taşımasını denetler; canlı native istemci/model kabulü olarak birleştirilmez.
 
@@ -1362,3 +1379,112 @@ Kullanıcı yayın kanalını açıkça **npm1.0.0 + GitHub / latest yeni ürün
 Kullanıcının son talimatıyla belirlenen ilk yayın hedefi tamamlandı. Kaynak commit **a840b07**, uzak main ve codex/skill-forge-mcp-delivery dalına gönderildi; **v1.0.0** etiketi oluşturuldu. npm `@vaur94/opencode2-skill-forge@1.0.0` public/latest olarak yüklendi. Registry ilk kısa beklemede eski sürümü gösterdi; işlem tamamlanınca **latest=1.0.0** ve SHA-512 integrity'nin yayımlanan artifact ile birebir eşleştiği doğrulandı (`release-npm-publish.log`, `release-verification.json`). Tekrar publish yapılmadı.
 
 GitHub kararlı sürümü: https://github.com/ugur-murat-alt/opencode-skill-forge/releases/tag/v1.0.0 — draft=false/prerelease=false;694.689byte tarball ve SHA256SUMS indirilebilir (`release-github.json`). Uzak CI/ileri ölçek testleri tekrar tetiklenmedi. P01–P16'nın açık ileri kabul maddeleri tamamlandı diye işaretlenmedi; sürüm notlarında kullanım sınırları korunuyor. Yeni test kampanyası veya özellik çalışması bu yayın görevinin parçası olarak sürdürülmeyecek.
+
+### P24 uçtan uca denetim ve V2 teslimi (2026-09-08)
+
+G01–G14 uygulama karşılığı kaynak taramasıyla doğrulandı (handoff, revision, runner, kuyruk, sağlayıcı,
+telemetri, kurulum, benchmark scriptleri, bakım, artifact, veri dizini, prompt zinciri, bağlar, eşleme/OIDC).
+Kod tabanında TODO/FIXME/stub yok. Son ağaçta tam kapılar koşuldu: typecheck, `bun test`
+(354 pass / 1 skip / 10 fail / 365 test / 83 dosya; 10 fail yalnızca çevresel gerçek-Docker
+sandbox testleri, P22 probu + `p26-review-round2-p19p20.json` gates notuyla kanıtlı), build,
+pack (40 dosya), prettier + oxlint temiz, web kabul 28/28 (`role-restore` adımı dahil).
+Önceki başarısız soak/katalog kayıtları ve açık P02–P16 maddeleri korunur;
+tamamlandı diye işaretlenmedi. Teslim notu `docs/evidence/p24-delivery.md` (P24 anındaki anlık
+görüntüdür; güncel kapılar `p26`/`p27` + `p23-web-acceptance.json`'dadur). Uzak CI ve commit
+kullanıcı kararına bırakıldı.
+
+### P22 Prompt Editor çıkarma — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: önce `test/prompt-removal-boundary.test.ts` yazıldı (kırmızı: 2 fail), kaldırma tamamlanınca yeşile döndü (2 pass). `src/prompt/` kaldırıldı; `sanitize.ts` sır-redaksiyon güvencesi korunarak `src/telemetry/sanitize.ts` altına `sanitizeUntrustedText` adıyla taşındı (legacy karakterizasyon eski adla alias üzerinden çalışır). `forge_prepare` (şema+invoke+HTTP+hook), `prompt_edit` iş türü, `provider role=prompt`, `/api/prompts/*`, `/api/settings/session`, prompt ayar alanları (kayıtlı satırlar `storedSettingsSchema` ile toleranslı okunur) ve migration learning/rewrites/flags kapsamı kaldırıldı. Hook'lar handoff-odaklı yeniden yazıldı; smoke scriptleri beş araç sözleşmesine güncellendi. 8 saf prompt test dosyası silindi, migration/hook/mcp-tools/policy/worker/telemetry testleri paket-odaklı düzeltildi; `test/legacy-runtime` karakterizasyonu korunur. Kapılar: typecheck temiz, build temiz, pack 39 dosya, `bun test` 315 pass / 1 skip / 10 fail (326 test) — 10 fail yalnızca gerçek-Docker sandbox testleri, ortam nedeni kanıtlıdır (PrivateTmp `/tmp` perdesi + `umask 0077`/mkdtemp izinleri; yürütücü `umask 022` probunda başarılı). Kanıt `docs/evidence/p22-prompt-removal.json` (aynı sayılar). Eski `runs` prompt satırları retention ile yaşlanır; prompt tabloları bu adımda düşürülmedi.
+
+Bağımsız incelemede (3 general ajan) bulunan ek eksikler kapatıldı: `020_prompt_drain` migration takılı prompt işlerini `cancelled/prompt_removed` yapar ve `queue.accept` bilinmeyen türü `invalid_kind` ile reddeder; SPR el kitabı/hook talimatları/README/package.json beş araca güncellendi; smoke hata mesajları `five-tool` oldu; eşleme hatası `invalid_mapping` koduna bağlandı; sınır testi `docs/tr`+README+el kitabı+`package.json` kapsar; sanitizer doğrudan birim testle korunur. Eski learning/rewrites/flags receipt'lerinin rollback/`original` yolu kapandı (fail-closed; veri silinmedi). `role='prompt'` yetim satırlar okunmaz, kasadaki sırlarına dokunulmaz; temizlik notu buradadır.
+
+### P17 organizasyon, davet ve devir — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `test/organization.test.ts` (6 test) + `test/github-auth.test.ts` (2 test) önce yazıldı, eksik modüllerde kırmızı verdi, sonra yeşillendi. Roller `founder/admin/writer/reader/auditor` oldu (`owner→founder`, `editor→writer`, `viewer→reader`; migration 022 mevcut satırları yetki yükseltmeden taşır; `local-owner` cihaz kimliği aynı kaldı). `021_invitations`, `023 tenant_lifecycle + transfer_offers` migration'ları eklendi. Davet tek kullanımlık/süreli/iptal edilebilir (50 bekleyen + saatlik 20 kota, kabulde rol yeniden doğrulama); devir iki adımlı atomik takas (eski kurucu yöneticiye iner); silme ad-eşleşme + 24 saat bekleme + dondurma (`tenant_frozen`) + FK-sıralı basamaklı silme; devre dışı bırakma oturumları aynı işlemde iptal eder (401). OIDC mevcut `issuer|sub` kapısıyla, GitHub `github|<id>` adaptörüyle (`/auth/github/*`, fixture-sunuculu test) davet-kapılı çalışır. Uçlar: `/api/tenants`, `/api/organizations`, `/api/invitations/*`, `/api/organization/transfer/*`, `/api/organization/deletion/*`. Web Members etiketleri güncellendi (tam tasarım P23'te). Kapılar: typecheck temiz, build temiz, pack 39 dosya, `bun test` 323 pass / 10 fail (yalnızca çevresel Docker). Kanıt `docs/evidence/p17-organization.json`. Bilinen sınırlar: `users`/`auth_sessions` kullanıcı düzeyinde korunur; disk blobları paylaşılabildiği için silinmez; pg-boss kuyruk temizliği kapsam dışıdır.
+
+### P18 rol-araç matrisi — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `test/role-matrix.test.ts` (5 test) önce yazıldı, eksik modülde kırmızı verdi, sonra yeşillendi. `024_role_registry` migration'ı eklendi; `src/domain/roles.ts` matris + kademe, `src/application/roles.ts` çözümleme servisi (`list/create/remove`, `assertGrantable`, `allowedTool`) taşır. `authorize` özel rolleri tabana indirger, bilinmeyen/silinmiş rolü fail-closed reddeder. `ForgeService.invoke` rol reddini `tool_denied` (rol+araç açıklamalı) ile verir; `createMcpServer` artık async ve kimlik başına liste filtreler. Üye/davet kabulü özel rol adlarını doğrular; yetki yükseltme kuralı (`grant_denied`) üye ve davet yollarında zorlanır. Uçlar: `GET/POST /api/roles`, `DELETE /api/roles/:name`. Proje rolleri yerleşik writer/reader kalır; web özel-rol UI P23 işidir. Kapılar: typecheck temiz, build temiz, pack 39 dosya, `bun test` 338 pass / 0 fail / 339 test. Kanıt `docs/evidence/p18-role-matrix.json`.
+
+### P19 ortam, kapsam ve bağ modeli — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `test/environments.test.ts` (5 test) önce yazıldı, eksik modüllerde kırmızı verdi, sonra yeşillendi. `025_environments` (ortam tablosu + `projects.environment_id` + kiracı başına default ortam ve backfill) ve `026_binding_identity` (`local_name` + `fs_fingerprint`) migration'ları eklendi. `EnvironmentService` (list/create/remove/resolveProject + idempotent `ensureDefaultEnvironment`), `BindingService` (kanonik yol + dev:ino parmak izi, taşınmış dizinde `stale`), `PackageStore.setScope` (CAS + çift-yetki + ad çakışması + denetim; pinler korunur) yazıldı. Skill/ayar/MCP-arama kapsamına `environment` eklendi; yazma kuralı `scopeWritePermission` ile merkezileşti; arama varsayılan kümesi proje ortamını katar. Uçlar: `/api/environments*`, `/api/bindings/*`, `PUT /api/skills/:id/scope`. P17 silme basamağına `environments` eklendi (P17 testi yakaladı). Kişisel/proje kapsamları ve göç yolları değişmedi. Kapılar: typecheck temiz, build temiz, pack 40 dosya, `bun test` 343 pass / 0 fail / 344 test. Kanıt `docs/evidence/p19-environments.json`. Web ortam seçici P23 işidir.
+
+### P20 skorlu arama — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `test/search-scoring.test.ts` (4 test: saf skor birimi + sıralama/açıklama/eşik/sayfa/tekilleme + ayar sınırları + duvar kaçağı) önce yazıldı, eksik modülde kırmızı verdi, sonra yeşillendi. `src/skills/scoring.ts` saf skor motoru (isim katmanı açıklamayı yener, kapsam + ≤0.1 kullanım dürtmesi, 3-ondalık deterministik) eklendi. `PackageStore.search` LIKE ön-filtre (100 aday) + tenant-içi 30-gün kullanım + skor + `searchMinScore` + sıralama + ad-tekilleme (`other_scopes`) + `skor:id` cursor uygular; limit = min(girdi, ayar). Ayarlara `searchMinScore` (max-birleşim: sıkı eşik korunur) ve `searchMaxResults` eklendi. MCP yönergesine ilk-N yükleme cümlesi eklendi. Cursor opaklık sözleşmesi ve staging ajan akışı korunur. Kapılar: typecheck temiz, build temiz, pack 40 dosya, `bun test` 347 pass / 0 fail / 348 test. Kanıt `docs/evidence/p20-search-scoring.json`.
+
+### P21 ajan prompt zinciri — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `test/agent-prompts.test.ts` (4 test: çözüm önceliği, monoton sürüm + CAS + geri alma, içerik doğrulama + admin kapısı, kiracı izolasyonu) önce yazıldı, eksik modülde kırmızı verdi, sonra yeşillendi. `027_agent_prompts` migration'ı eklendi. `AgentPromptService` (active/history/update/rollback) + `resolvePrompt` (environment → org → paket dosyası; bilinmeyen projede zarif düşüş) yazıldı; sürümler monoton artar, geri alma yeni sürüm ekler, taban çakışması `revision_conflict` verir. İçerik kapısı: boşluk-dışı, ≤32768 karakter, karar çapaları; yazma yönetici ister, denetim kaydı tutulur. `productionHandler` çalıştırma başına ortambağımlı prompt çözer; eski dosya yardımcısı kaldırıldı. Uçlar: `GET/PUT /api/agent-prompts`, `POST /api/agent-prompts/rollback`. Kapılar: typecheck temiz, build temiz, pack 41 dosya, `bun test` 351 pass / 0 fail / 352 test. Kanıt `docs/evidence/p21-agent-prompts.json`.
+
+### P23 web yenileme — uygulama kaydı (2026-09-08)
+
+TDD sırası izlendi: `scripts/web-acceptance.mjs` (Playwright, gerçek derlenmiş servis + gerçek Chromium) önce yazıldı, olmayan ekranlarda kırmızı verdi, sonra yeşillendi: 28/28 kontrol (giriş, 12 sayfa, org kur/seç/rozet, skorlu arama görünümü, rol oluştur/sil/geri-yükle, davet oluştur/iptal, prompt düzenle/çift-marker geri al, yetkisiz giriş, sıfır sayfa hatası). `playwright-core@1.63.0` sabitlendi. Yeni ekranlar: Organizasyonlar (kur/seç/devir teklifi+kabul/silme iste+onay+vazgeç), Roller (liste/oluştur/sil + matris görünümü), Davetler (oluştur/anahtar/iptal), Ajan promptları (kapsam seçici, CAS düzenleme, geçmiş + geri alma). Kabuk: org/ortam seçici + kapsam rozeti (`OrgScope`), projesiz açılan yönetim sayfaları; Library skor sütunu + gerekçe + kapsam filtresi. Tasarım standardı: token değişkenleri + compact yoğunluk; `prettier`/`oxlint` temiz. Yeni uçlar: `POST /api/tenants/switch`, `GET /api/organization/transfer/offers`, `GET /api/organization/deletion/status`, `POST /api/projects` artık `environment_id` kabul eder. Kanıt `docs/evidence/p23-web-acceptance.json` + `docs/evidence/design/p23-*.png` (12 ekran).
+
+### 2. tur bağımsız inceleme bulgu kapatmaları (2026-09-08)
+
+6 kapsam (P22, P17, P18+P21, P19+P20, P23, tutarlılık) ikinci kez tarandı; çıkan blocker/majorların
+tamamı kapatıldı. P19+P20 kanıtı `docs/evidence/p26-review-round2-p19p20.json`: 028 kirli-veri
+dedup/orphan iyileştirmesi, ortam skill edit/rollback eşlemesi (`scopeForSkill` + projesiz fallback),
+`withRevision` ikinci-faz TOCTOU kapatma, arama/duvar kilit testleri. P23 kanıtı
+`docs/evidence/p27-review-round2-p23.json`: `list()` silinmiş özel rolleri döndürür (restore ulaşılır),
+kabulde `role-restore` + çift-marker `prompt-rollback` gerçek assertion'ları (28/28), ölü CSS/Empty/token
+küçükleri. Tutarlılık: plan başlığı + P24 kaydı güncel sayılara çekildi, `p24-delivery.md` anlık-görüntü
+notu eklendi, ölü doc referansları işaretlendi, kabul detayları zenginleştirildi
+(kalan boş detaylar sayfa-yükleme adımlarıdır; bilinçli kabul).
+
+### 1. tur bağımsız inceleme bulgu kapatmaları (2026-09-08)
+
+6 bağımsız ajan (P22, P17, P18+P21, P19+P20, P23, tutarlılık) taradı; çıkan blocker/majorların tamamı
+kapatıldı, kanıt `docs/evidence/p25-review-round1.json`. Öne çıkanlar: davet/transfer atomik claim
+korumaları, cascade + dondurma semantiği (istekte iptal, claim/outbox atlama), public uç throttle,
+prompt dosya adı + rollback kapısı + PK yarışı eşlemesi, ortam yarışı/backfill/okuma yalıtımı,
+binding damgası, skor rötuşları, web senkronizasyon + kabul doublajları, sınır testi genişlemesi.
+Ertelenenler belgelendi (pg-boss temizliği, yetim oturum GC, özel-rol web UI).
+
+## 23. V2: Organizasyon > Ortam yönetimi (2026-09-08 yönlendirmesi)
+
+Kullanıcı, firmadan tek kişiye herkesin tüm projelerini yürütebildiği, organizasyonlar arası keskin duvarlı sisteme karar verdi. Org kurma herkese açık, org'a giriş yalnız davetle. Default roller founder/admin/writer/reader/auditor; founder alınamaz (yalnız rıza ile devir, halefsiz ayrılışta org kilitli), diğer default roller üyesizse silinebilir. Skill'ler ortama kayıt olur (environment veya project + yerel ad + yol parmak izi); dışarıda skill bilgisi saklanmaz. Arama skorlu ve yapılandırılabilir (`maxResults`/`minScore` + `why-matched`); adet üst sınırı gibi sabit kapı yok. Default ajan promptu sürümlüdür (org default → env override) + golden test. Prompt Editor ve `forge_prepare` tamamen kalkar (stub yok); dış sözleşme 6→5 araca iner. Web compact/modern/az çizgili yenilenir.
+
+Her pakette TDD kapısı: önce başarısız sözleşme testi (kırmızı) → uygulama (yeşil) → `docs/evidence/` kanıtı → tam küme. Yeşil olmayan paket kapanmaz.
+
+### P17 — Kimlik, üyelik ve davet
+- [x] OAuth (GitHub/Google) kayıt; kullanıcı ↔ N org; tek kullanımlık süreli davet, kabulde rol yeniden doğrulama, kabul öncesi iptal.
+- [x] Kurucu devir protokolü (teklif + kabul + pencere), halef designate, org silme (yazılı onay + bekleme + tombstone).
+- [x] Üye çıkarma = token/session/lease anında iptal; davet kotası + hız sınırı; append-only org denetim kaydı.
+- [x] Testler: davet tekrarı/süresi, devirsiz kurucu silme reddi, çıkarma sonrası erişim yokluğu.
+
+### P18 — Rol ve araç matrisi
+- [x] Özel roller (izin seti, deny-first); founder dışı default rol silme (üyeli rolde önce reassign zorunlu); yükseltme yasağı (sahip olunmayan izin verilemez).
+- [x] Rol→MCP aracı + argüman kısıtı; kontrol `ForgeService.invoke`, HTTP route'ları ve MCP liste filtrelemede; sızıntısız ret açıklaması.
+- [x] Başlangıç: reader=search/load/report, writer=+stage/run, admin=+finalize/yönetim, auditor=salt-okunur rapor, founder=tümü+org.
+- [x] Testler: yetkisiz finalize/run reddi, admin'in founder'a dokunamaması, matris dışı aracın listede görünmemesi.
+
+### P19 — Org/ortam/project-binding modeli
+- [x] `environments` tablosu; `projects.environment_id`; skill/ayar `scope_key`'e `environment:` şeması; binding ortam bilinçli `project_ref` çözümleme.
+- [x] Mevcut personal/project verisi idempotent + checksum'lı taşınır; yol değişince binding yeniden doğrulama; ortamlar arası `promote` açık işlem + yeniden doğrulama (kodda `setScope` + CAS/çift-yetki/denetim).
+- [x] Testler: tenant-kaçış (orglar arası arama/listeleme imkânsızlığı), kapsam taşıma, stale binding reddi.
+
+### P20 — Skorlu skill arama
+- [x] Hibrit skor (terim kapsama + alan ağırlığı + kullanım sinyali), `minScore`/`maxResults` org/ortam ayarından, `why-matched`, cursor sayfalama; aynı kimlik tekilleştirme + kapsam notu (gölgeleme yok).
+- [x] Server instructions: çok eşleşmede yalnız ilk N yüklenir; tümünü yükleme davranış testi.
+- [x] Testler: eşik altı elenme, adet yapılandırması, açıklanabilirlik, sayfalama determinizmi.
+
+### P21 — Sürümlü ajan promptu
+- [x] `agent_prompts` (org default + env override, sürümlü); runner `skill_evolve` sistem promptunu buradan alır; değişiklik diff + golden-task + rollback.
+- [x] Testler: override önceliği, eski sürüme dönüş, golden görev regresyonu.
+
+### P22 — Prompt Editor çıkarma
+- [x] Kaldırma envanteri: `src/prompt/` tamamı, `forge_prepare` (schemas/server/`forge.ts:295-333`), handler/queue/worker prompt dalları, `Run.kind` daraltma, `provider_profiles role='prompt'` durdurma, `/api/prompts/*` + learning CRUD + `/api/tools/forge_prepare`, ayar prompt alanları, web prompt ekranları, hook'ların handoff-odaklı yeniden yazımı, prompt testleri, `prompts/prompt-edit.md`, P08.
+- [x] P14 learning/rewrites/flags göç kapsamı düşer (yalnız skill/paket); prompt `runs` satırları retention ile yaşlanır, backfill yok; prompt tabloları bu adımda düşürülmez (yazım durur).
+- [x] Kabul: `forge_prepare|prompt_edit|LearningStore|prompt/` için kaynak taraması sıfır sonuç; tam küme yeşil (çevresel Docker hariç).
+
+### P23 — Web yenileme
+- [x] Org/Ortam seçici + kapsam rozeti; skorlu skill arama; rol/davet/denetim ekranları; prompt ekranları kalkar; tasarım tokenları + yoğunluk standardı; her ekranda boş/hata/yetkisiz durumu.
+- [x] Kabul: Playwright senaryoları (login, arama→yükleme, davet→kabul, yetkisiz deneme, stale edit) + gerçek ekran görüntüleri; mock veriyle ekran kapatılmaz.
+
+### P24 — Uçtan uca V2 denetimi
+- [x] G-hedeflerine org/duvar satırları; K-senaryoları (duvar ihlali denemesi, davet yarışı, eşik davranışı, devir/silme akışı).
+- [x] Açık P01–P16 maddeleri V2 notuyla korunur; tamamlanmayan kabul başarı yazılmaz.

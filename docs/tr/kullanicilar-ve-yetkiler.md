@@ -1,20 +1,41 @@
-# Kullanıcılar ve proje yetkileri
+# Kullanıcılar, davetler ve organizasyon yetkileri
 
-**Projeler ve ayarlar** ekranında çalışma alanı sahibi veya yöneticisi, kullanıcıları ve seçili projeye erişimi yönetir. Üyeler 50 kişilik sayfalarda gösterilir. Görüntüleyici/editör bu yönetim API'sini kullanamaz.
+**Projeler ve ayarlar** ekranında kurucu veya yönetici, kullanıcıları ve seçili projeye erişimi yönetir. Üyeler 50 kişilik sayfalarda gösterilir. Yazıcı/okuyucu/denetçi bu yönetim API'sini kullanamaz.
 
-| Çalışma alanı rolü | Erişim                                                                                                  |
-| ------------------ | ------------------------------------------------------------------------------------------------------- |
-| Sahip              | Bütün projelere ve yönetim işlemlerine erişir. Sahip üyeliği bu ekrandan kaldırılamaz veya düşürülemez. |
-| Yönetici           | Bütün projelere ve yönetim işlemlerine erişir.                                                          |
-| Editör             | Yalnız açık proje üyeliği olan projelere erişir. Proje rolü görüntüleyici ise yazamaz.                  |
-| Görüntüleyici      | Yalnız açık proje üyeliği olan projeleri okur. Proje editör rolü çalışma alanı sınırını yükseltmez.     |
-| Devre dışı         | Rolü ne olursa olsun çalışma alanına erişemez. Mevcut oturum ve token aynı yetki kontrolünden geçer.    |
+| Organizasyon rolü | Erişim                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Kurucu            | Bütün projelere ve yönetim işlemlerine erişir. Kurucu üyeliği bu ekrandan kaldırılamaz veya düşürülemez; devir ayrı akıştır. |
+| Yönetici          | Bütün projelere ve yönetim işlemlerine erişir.                                                                               |
+| Yazıcı            | Yalnız açık proje üyeliği olan projelere erişir. Proje rolü okuyucu ise yazamaz.                                             |
+| Okuyucu           | Yalnız açık proje üyeliği olan projeleri okur. Proje yazıcı rolü çalışma alanı sınırını yükseltmez.                          |
+| Denetçi           | Salt okunur; yazma/çalıştırma yapamaz.                                                                                       |
+| Devre dışı        | Rolü ne olursa olsun erişemez. Devre dışı bırakmada mevcut oturum ve tokenlar iptal edilir.                                  |
 
-## Kullanıcı tanımlama
+## Kullanıcı tanımlama ve davet
 
-Sunucu profilinde OIDC sağlayıcının tam `issuer|sub` kimliğini, görünen adı ve başlangıç rolünü girin. Bu kayıt bir davet mesajı göndermez, parola üretmez veya OIDC hesabı açmaz. Kullanıcı kendi kimlik sağlayıcısıyla giriş yapar. Yerel profil tek yerel sahip kimliğiyle çalışır; başka subject tanımlamak yerel owner-token'ı ikinci kullanıcı girişine dönüştürmez.
+Kurucu/yönetici `POST /api/invitations` ile tek kullanımlık, süreli davet üretir (kurucu rolü davet edilemez). Davet, bekleyen 50 ve saatlik 20 kotasıyla sınırlıdır. Kabul eden hesap belirtilen rolle üye olur; kullanılmış, süresi dolmuş veya iptal edilmiş davet reddedilir. Kabul anındaki rol yeniden doğrulanır; arada değişmiş yetki devralınmaz.
 
-Mevcut subject'i yeniden eklemek mevcut rolünü sessizce değiştirmez. Yeni editör veya görüntüleyici için seçili projede üyelik tanımlayın. Yönetici rolü seçildiğinde proje erişimi çalışma alanı rolünden gelir.
+Sunucu profilinde OIDC sağlayıcının tam `issuer|sub` kimliğini (veya GitHub için `github|<id>`) davette subject olarak girin. Bu kayıt bir davet mesajı göndermez, parola üretmez veya harici hesap açmaz. Kullanıcı kendi kimlik sağlayıcısıyla (Google OIDC veya GitHub OAuth) giriş yapar. Yerel profil tek yerel sahip kimliğiyle çalışır; başka subject tanımlamak yerel owner-token'ı ikinci kullanıcı girişine dönüştürmez.
+
+Mevcut subject'i yeniden eklemek mevcut rolünü sessizce değiştirmez. Yeni yazıcı veya okuyucu için seçili projede üyelik tanımlayın. Yönetici rolü seçildiğinde proje erişimi çalışma alanı rolünden gelir.
+
+## Rol → araç matrisi ve özel roller
+
+MCP araç görünürlüğü üyelik rolüne göre filtrelenir; yetkisiz çağrı `tool_denied` ile reddedilir ve hangi rolün hangi araca takıldığı yanıtta açıklanır. Başlangıç matrisi:
+
+| Rol                      | Araçlar                                                                    |
+| ------------------------ | -------------------------------------------------------------------------- |
+| Kurucu, Yönetici, Yazıcı | `forge_search`, `forge_load`, `forge_run`, `forge_handoff`, `forge_report` |
+| Okuyucu                  | `forge_search`, `forge_load`, `forge_report`                               |
+| Denetçi                  | yalnız `forge_report`                                                      |
+
+Kurucu/yönetici `POST /api/roles` ile özel rol tanımlar (`base: reader|writer|admin` + araç alt kümesi); adlar `^[a-z0-9-]{1,64}$`, yerleşik adlar rezerve. `GET /api/roles` etkin tanımları, `DELETE /api/roles/:name` kaldırır, `POST /api/roles/:name/restore` geri yükler: kurucu korunur, üyeli rol önce başka role taşınmadan kalkmaz. Rolü silinmiş/bilinmeyen üyelik fail-closed reddedilir. Kimse kendi yetkisinden üst rol veremez (kurucu devri hariç, o ayrı akıştır). Devre dışı bırakma başka kiracıdaki oturumları da kapatır (güvenli tarafta kalmak için bilinçli tercih).
+
+## Kurucu devri ve organizasyon silme
+
+Devir iki adımlıdır: kurucu alıcı üyeye teklif eder, alıcı kabul eder; roller atomik takas olur (eski kurucu yöneticiye iner). Kendine devir, pasif üyeye devir ve süresi dolmuş teklif reddedilir. Kurucu rolü devredilmeden alınamaz; halefsiz ayrılışta organizasyon kilitli kalır, arka kapı yoktur.
+
+Silme de iki adımlıdır: kurucu organizasyon adını yazarak ister, 24 saat bekleme boyunca yazma işlemleri `tenant_frozen` ile kapanır, süre dolunca ad yeniden doğrulanıp bütün organizasyon verisi silinir. Bekleme içinde vazgeçilebilir. Silme makbuzu yanıtta döner; denetim kaydı organizasyonla birlikte silindiği için makbuz saklanmalıdır.
 
 ## Değişiklik ve iptal
 
@@ -28,9 +49,13 @@ Yetki daraltıldığında artık çalıştırma izni olmayan bekleyen/çalışan
 
 - `GET /api/members?project_ref=<id>&after=<user_id>`: yetkili yöneticiye en fazla 50 üye ve devam anahtarı.
 - `POST /api/members`: `{subject, display_name, role}`; yeni üyelikte `created: true`, mevcut üyelikte `false`.
-- `PUT /api/members/:id`: `{project_ref, generation, project_generation, role, disabled, project_role}`. Proje üyeliği yokken `project_generation: null`; kaldırmak için `project_role: null`.
+- `PUT /api/members/:id`: `{project_ref, generation, project_generation, role, disabled, project_role}`. Proje üyeliği yokken `project_generation: null`; kaldırmak için `project_role: null`. Devre dışı bırakma oturumları iptal eder.
+- `GET /api/tenants`: oturum sahibinin üye olduğu organizasyonlar ve rolleri.
+- `POST /api/organizations`: `{name}`; yeni organizasyon kurar, kurucu yapar.
+- `POST /api/invitations`: `{role, ttlMs?}`; `GET /api/invitations` bekleyenler; `POST /api/invitations/:id/revoke` iptal; `POST /api/invitations/accept`: `{token, subject, display_name}` (kimliksiz).
+- `POST /api/organization/transfer`, `POST /api/organization/transfer/:id/accept`, `POST /api/organization/deletion/request|confirm|cancel`.
 
-Sahip erişimi koruması ve eski üyelik sürümü HTTP 409; yetersiz yetki HTTP 403; bulunmayan üye HTTP 404 verir. Modelin veya istemcinin gönderdiği tenant/user iddiası kimlik kaynağı değildir; kimlik mevcut oturumdan çözülür.
+Kurucu erişimi koruması ve eski üyelik sürümü HTTP 409; yetersiz yetki HTTP 403; bulunmayan üye HTTP 404 verir. Modelin veya istemcinin gönderdiği tenant/user iddiası kimlik kaynağı değildir; kimlik mevcut oturumdan çözülür.
 
 ## Ayar ve model profili yazımları
 

@@ -1,6 +1,6 @@
 # Skill Forge MCP
 
-Skill Forge; skill paketlerini saklayan, arayan ve çalıştıran, prompt düzenleme ve tamamlanan işten skill geliştirme görevlerini kalıcı kuyrukta yürüten bağımsız bir servistir. Node.js üzerinde HTTP/MCP servisi ve web yönetim arayüzü sağlar. OpenCode kurulumu gerekmez.
+Skill Forge; skill paketlerini saklayan, arayan ve çalıştıran, tamamlanan işten skill geliştirme görevlerini kalıcı kuyrukta yürüten bağımsız bir servistir. Node.js üzerinde HTTP/MCP servisi ve web yönetim arayüzü sağlar. OpenCode kurulumu gerekmez.
 
 Bağımsız MCP sürümü `1.0.0`, npm'de `latest` kanalını kullanır. Bu ana sürüm eski OpenCode eklentisinden bağımsız servise kırıcı bir mimari geçiştir. Bu sürüm küçük ölçekli kullanıma açılır; geniş kullanıcı yükü, dört sağlayıcının canlı kabulü ve macOS/Windows uçtan uca doğrulaması tamamlanmış sayılmaz. [Sürüm notları](docs/tr/surum-notlari.md) çalışan kapsamı ve kalan sınırları açıklar.
 
@@ -42,14 +42,13 @@ Yerel veri konumu Linux'ta `$XDG_DATA_HOME/skill-forge` (varsayılan `~/.local/s
 
 ## MCP ve istemci kurulumu
 
-Dış MCP sözleşmesi altı araçtan oluşur:
+Dış MCP sözleşmesi beş araçtan oluşur:
 
 | Araç            | İşlev                                                     |
 | --------------- | --------------------------------------------------------- |
 | `forge_search`  | Yetkili kapsamda skill arama                              |
 | `forge_load`    | Belirli immutable revision içeriğini yükleme              |
 | `forge_run`     | İzinli script paketini sandbox'ta çalıştırma              |
-| `forge_prepare` | Prompt düzenleme görevini kabul etme                      |
 | `forge_handoff` | Tamamlanmış işin sınırlı özetini skill incelemesine verme |
 | `forge_report`  | Kalıcı iş durumunu ve sonucu okuma                        |
 
@@ -75,11 +74,11 @@ Hook taşıması ve kurulum sözleşmeleri test edilmiştir; gerçek native Code
 
 Web arayüzündeki sağlayıcı ayarları OpenAI, Anthropic, OpenRouter ve Ollama profillerini destekleyen kaynak uygulamasına bağlıdır. Sağlayıcı sırları sunucudaki şifreli kasada saklanır. Profil kaydı veya bağlantı testi, gerçek model kalite/benchmark kabulü değildir; dört sağlayıcının canlı kabul çalışmaları açıktır.
 
-Prompt Editor ve skill evolution bağımsız ayarlardır. Prompt düzenleme hata, model eksikliği veya deadline durumunda özgün metni korur. İçe aktarılan eski rewrite geçmişi yeni bir başarılı model çalışması olarak gösterilmez. Proje/personal/oturum ayarları ve veri görünürlüğü için:
+Skill geliştirme bağımsız ayarla (`evolutionEnabled`) açılıp kapatılır. Proje/personal ayarları ve veri görünürlüğü için:
 
 - [Kullanıcılar ve yetkiler](docs/tr/kullanicilar-ve-yetkiler.md)
-- [Oturum tercihleri](docs/tr/oturum-tercihleri.md)
-- [Öğrenme geçmişi](docs/tr/ogrenme-gecmisi.md)
+- [Ortamlar, kapsamlar ve proje bağları](docs/tr/ortamlar-ve-kapsamlar.md)
+- [Ajan promptlarını yönetme](docs/tr/ajan-promptlari.md)
 - [Eski verinin keşfi, eşlemesi ve geri alınabilir aktarımı](docs/tr/eski-veri-kesfi.md)
 - [Kimlikli sunucuya veri aktarımı](docs/tr/sunucu-veri-aktarimi.md)
 
@@ -107,7 +106,7 @@ npm pack --dry-run
 node scripts/package-smoke.mjs
 ```
 
-`build` ve `build:plugin` aynı Node tabanlı kaynak build'ini çalıştırır; ikinci ad geçiş uyumluluğu için korunur. Derlenmiş CLI kullanan testlerden önce `bun run build` çalıştırın. [Temiz paket kontrolü](docs/tr/temiz-paket-kontrolu.md), gerçek tarball'ı boş projeye üretim bağımlılıklarıyla kurar; Node HTTP/web, altı MCP aracı, ZIP worker import/search/load ve OpenCode bağımlılığının yokluğunu denetler. Gerçek script/istemci/model ve desteklenen bütün OS kabulü yerine geçmez.
+`build` ve `build:plugin` aynı Node tabanlı kaynak build'ini çalıştırır; ikinci ad geçiş uyumluluğu için korunur. Derlenmiş CLI kullanan testlerden önce `bun run build` çalıştırın. [Temiz paket kontrolü](docs/tr/temiz-paket-kontrolu.md), gerçek tarball'ı boş projeye üretim bağımlılıklarıyla kurar; Node HTTP/web, beş MCP aracı, ZIP worker import/search/load ve OpenCode bağımlılığının yokluğunu denetler. Gerçek script/istemci/model ve desteklenen bütün OS kabulü yerine geçmez.
 
 Paket `dist/`, Türkçe rehberler, bu README, SPR el kitabı ve MIT lisansını içerir. Eski OpenCode agent JSONC tanımları ve test kaynakları dağıtılmaz. `test/fixtures/legacy/` hash ile korunmuş eski çekirdeği/politikayı, `test/legacy-runtime/` eski host karakterizasyon kaynaklarını barındırır. Yeni servisin üretim girişleri bunları yüklemez. Eski çekirdeğin lisans bildirimleri fixture içinde korunur; depo [MIT lisanslıdır](LICENSE).
 

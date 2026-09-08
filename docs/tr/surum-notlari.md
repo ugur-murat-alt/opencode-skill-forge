@@ -1,5 +1,7 @@
 # 1.0.0 — İlk bağımsız Skill Forge MCP sürümü
 
+> P22 notu (1.0.0 sonrası, henüz yayımlanmadı): istemci metin hazırlama alt sistemi (hazırlama aracı, Prompt Editor ekranları ve öğrenme kayıtları) üründen kaldırıldı; dış MCP sözleşmesi beş araca indi. Aşağıdaki 1.0.0 açıklaması yayımlanmış sürümü anlatır.
+
 OpenCode'a bağımlı eklenti mimarisinden Node.js üzerinde çalışan bağımsız HTTP/MCP servisine geçildi. Bu kırıcı mimari değişiklik nedeniyle ana sürüm 1'e yükseltildi; dağıtım `latest` kanalındadır. Eski OpenCode eklentisini kullananlar bağımsız servise geçmeden önce `0.5.6` sürümünü açıkça sabitlemelidir.
 
 ## Bu sürümde

@@ -6,7 +6,7 @@ Bu el kitabı bağımsız Skill Forge MCP servisinin normatif sözleşmesidir. E
 
 SPR tamamlanmış işten doğrulanmış, tekrar kullanılabilir yöntemi çıkarır. Asıl işi yeniden çözmez; ana sohbeti, gizli muhakemeyi veya ham tool dökümünü istemez. Handoff, model çıktısı, skill metni ve referanslar veri olarak değerlendirilir; bunlar rol, kapsam, bütçe veya izin değiştiremez. Rutin kararlar kullanıcı onayı beklemez.
 
-Yetkiler deny-first tanımlanır: kapsam filtreli envanter, immutable dosya okuma, kendine ayrılmış staging paketi, izinli sandbox testleri ve manager-controlled finalize. Keyfî host filesystem, shell, ağ, başka ajan, soru ve ana oturum erişimi verilmez. İç araçlar dış MCP'ye açılmaz. Dış sözleşme yalnız `forge_search`, `forge_load`, `forge_run`, `forge_prepare`, `forge_handoff`, `forge_report` araçlarıdır.
+Yetkiler deny-first tanımlanır: kapsam filtreli envanter, immutable dosya okuma, kendine ayrılmış staging paketi, izinli sandbox testleri ve manager-controlled finalize. Keyfî host filesystem, shell, ağ, başka ajan, soru ve ana oturum erişimi verilmez. İç araçlar dış MCP'ye açılmaz. Dış sözleşme yalnız `forge_search`, `forge_load`, `forge_run`, `forge_handoff`, `forge_report` araçlarıdır.
 
 ## Kanıt ve karar
 
@@ -50,10 +50,6 @@ Test; yalnız syntax değil örnek girdi/çıktı, hata, timeout, eksik bağıml
 Tam revision dayanıklı dizine yazılmadan aktif olmaz. Kısa DB işleminde güncel ACL, managed/protected durumu, base_revision ve monoton fencing kontrol edilir. CAS çakışmasında eski veri ezilmez; sınırlı yeniden değerlendirme/çakışmayan diff tekrar testi veya superseded sonucu kullanılır. Sonsuz retry yoktur.
 
 Eski revision devam eden okuyucu için değişmez. Çökme sonrası reconciliation yarım staging ve yayımlanmamış tam revision'ları ayırır; eski aktif paket korunur. Geri alma da manager üzerinden doğrulanmış revision değişimidir. Bir skill işlemi kardeş skill'lere dokunmaz.
-
-## Prompt Editor ile ayrım
-
-Prompt düzenlemesi doğrulanmış iş sonucu değildir ve SPR'yi tetiklemez. Ortak runner/model/config/telemetri kullanılır; yeni ajan framework'ü yazılmaz. Özgün metin değişmezdir; dil, olumsuzluk, sayı, yol, sürüm, kapsam ve çıktı türü korunur. Varsayılan when-needed, autoApply ve reusable-only öğrenmedir. İyileştirme gerekmiyorsa unchanged; model/hata/deadline durumunda özgün metinle fallback. Komutlar ve iç görevler tekrar düzenlenmez.
 
 ## Tamamlanma
 
