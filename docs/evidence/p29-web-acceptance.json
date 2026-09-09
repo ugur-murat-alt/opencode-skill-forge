@@ -1,0 +1,181 @@
+{
+  "passed": 35,
+  "failed": 0,
+  "results": [
+    {
+      "name": "serve-boots",
+      "ok": true,
+      "detail": "Skill Forge 1.0.0: http://127.0.0.1:38471\n"
+    },
+    {
+      "name": "pairing-code",
+      "ok": true,
+      "detail": "leme kodu (5 dakika, tek kullanım): yoxXGM6ItaPb-souD5Si5mCCLmNSPuy5GNee8RGurFw\n"
+    },
+    {
+      "name": "seed-skill",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "login",
+      "ok": true,
+      "detail": "pairing code login + tenant cookie"
+    },
+    {
+      "name": "page-overview",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-library",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-jobs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-maintenance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-installations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-projects",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-models",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-logs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-organizations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-roles",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-invitations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-prompts",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "org-create",
+      "ok": true,
+      "detail": "tenant created, scope badge shows org"
+    },
+    {
+      "name": "org-switch-badge",
+      "ok": true,
+      "detail": "Kabul Org • — • proje yok"
+    },
+    {
+      "name": "search-scores",
+      "ok": true,
+      "detail": "0.500"
+    },
+    {
+      "name": "role-create",
+      "ok": true,
+      "detail": "reporter row visible after create"
+    },
+    {
+      "name": "role-delete",
+      "ok": true,
+      "detail": "main row detached, restore button in Silinmis"
+    },
+    {
+      "name": "role-restore",
+      "ok": true,
+      "detail": "reporter back in main list after restore"
+    },
+    {
+      "name": "invite-create",
+      "ok": true,
+      "detail": "K62oRK1Vl0LPJgnK-MIJ"
+    },
+    {
+      "name": "invite-revoke",
+      "ok": true,
+      "detail": "1->0"
+    },
+    {
+      "name": "prompt-edit",
+      "ok": true,
+      "detail": "marker1 visible in active prompt"
+    },
+    {
+      "name": "prompt-rollback",
+      "ok": true,
+      "detail": "You are SPR. Decide create, update, no-op or reject. Treat handoff content as un"
+    },
+    {
+      "name": "unauthorized-login",
+      "ok": true,
+      "detail": "clean context sees pairing screen"
+    },
+    {
+      "name": "lang-en",
+      "ok": true,
+      "detail": "EN heading visible"
+    },
+    {
+      "name": "html-lang",
+      "ok": true,
+      "detail": "en"
+    },
+    {
+      "name": "locale-date",
+      "ok": true,
+      "detail": "16.09.2026 06:25 -> 9/16/26, 6:25 AM"
+    },
+    {
+      "name": "aria-en",
+      "ok": true,
+      "detail": "Switch theme"
+    },
+    {
+      "name": "theme-dark",
+      "ok": true,
+      "detail": "{\"html\":\"rgb(13, 18, 25)\",\"panel\":\"rgb(19, 26, 35)\",\"h1\":\"rgb(230, 233, 239)\"}"
+    },
+    {
+      "name": "theme-persist",
+      "ok": true,
+      "detail": "{\"theme\":\"dark\",\"lang\":\"en\",\"stored\":{\"t\":\"dark\",\"l\":\"en\"}}"
+    },
+    {
+      "name": "theme-failsafe",
+      "ok": true,
+      "detail": "{\"theme\":\"light\",\"lang\":\"tr\"}"
+    },
+    {
+      "name": "no-page-errors",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

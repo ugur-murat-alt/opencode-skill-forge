@@ -4,8 +4,8 @@
 **V2 durumu (2026-09-08):** 1.0.0 yayımlandı. P17–P24 tamamlandı (P17 roller/davet/devir/silme/GitHub,
 P18 rol-araç matrisi, P19 ortam/kapsam/bağ, P20 skorlu arama, P21 ajan prompt zinciri, P22 prompt çıkarma,
 P23 web yenileme, P24 denetim + teslim notu) + 2 tur bağımsız inceleme kapatmaları. Son kapılar:
-typecheck/build/pack temiz, `bun test` 354 pass / 1 skip / 10 fail / 365 test / 83 dosya
-(10 fail yalnızca çevresel gerçek-Docker sandbox testleri), web kabul 28/28,
+typecheck/build/pack temiz, `bun test` 357 pass / 1 skip / 10 fail / 368 test / 84 dosya
+(10 fail yalnızca çevresel gerçek-Docker sandbox testleri), web kabul 35/35 (28 + 7 dil/tema),
 runtime harness 18/18. Kanıtlar
 `docs/evidence/p17-*`, `p18-*`, `p19-*`, `p20-*`, `p21-*`, `p22-*`, `p23-web-acceptance.json`,
 `p24-delivery.md`, `p25-review-round1.json`, `p26-review-round2-p19p20.json`,
@@ -1423,6 +1423,28 @@ TDD sırası izlendi: `test/agent-prompts.test.ts` (4 test: çözüm önceliği,
 ### P23 web yenileme — uygulama kaydı (2026-09-08)
 
 TDD sırası izlendi: `scripts/web-acceptance.mjs` (Playwright, gerçek derlenmiş servis + gerçek Chromium) önce yazıldı, olmayan ekranlarda kırmızı verdi, sonra yeşillendi: 28/28 kontrol (giriş, 12 sayfa, org kur/seç/rozet, skorlu arama görünümü, rol oluştur/sil/geri-yükle, davet oluştur/iptal, prompt düzenle/çift-marker geri al, yetkisiz giriş, sıfır sayfa hatası). `playwright-core@1.63.0` sabitlendi. Yeni ekranlar: Organizasyonlar (kur/seç/devir teklifi+kabul/silme iste+onay+vazgeç), Roller (liste/oluştur/sil + matris görünümü), Davetler (oluştur/anahtar/iptal), Ajan promptları (kapsam seçici, CAS düzenleme, geçmiş + geri alma). Kabuk: org/ortam seçici + kapsam rozeti (`OrgScope`), projesiz açılan yönetim sayfaları; Library skor sütunu + gerekçe + kapsam filtresi. Tasarım standardı: token değişkenleri + compact yoğunluk; `prettier`/`oxlint` temiz. Yeni uçlar: `POST /api/tenants/switch`, `GET /api/organization/transfer/offers`, `GET /api/organization/deletion/status`, `POST /api/projects` artık `environment_id` kabul eder. Kanıt `docs/evidence/p23-web-acceptance.json` + `docs/evidence/design/p23-*.png` (12 ekran).
+
+### P25 web EN/TR + dark/light — kayıt (2026-09-09, 3 tur incelemede 0 bulguyla kapandı)
+
+4 tur bağımsız inceleme (plan 3 mercek + final 2 tur + kapanış) yürütüldü; bulunan 1 blocker
+(React #300), 1 major (kanıt bayatlığı) ve minorlar kapatıldı, son turda bulgu çıkmadı.
+Uygulama: `web/src/i18n` sözlükleri (234 sunucu kodu + 3 istemci/fallback), 19 tsx taşıma,
+16 token + dark palet, FOUC + senkron effect, header düğmeleri, kabul 35/35.
+Canlı bulunan hatalar: useMemo-içi useCallback (#300), FOUC/effect zemin senkronu,
+zayıf theme assertion, light faint AA. Kanıt: `p29-web-i18n-theme.json`,
+`p29-web-acceptance.json`, `design/p29-*-en-dark.png`.
+
+Hedef: gömülü Türkçe metin ve gömülü renk sıfırlanır; varsayılan TR+light korunur.
+Kararlar (inceleme uzlaşısı): (D1) sunucu mesajlarına dokunulmaz; web `ApiError.code`
+taşır, render `t.errors[code] ?? t.errors.unknown` ile sözlükten çözülür. (D2) ad-alanlı
+anahtarlar (`nav.*`, `jobs.*`, `common.*`, `status.*`, `aria.*`, `errors.*`), `t(key, params)`
+enterpolasyon, plural `Intl.PluralRules` + `_one/_other`, yer-tutucu küme-eşitliği testi.
+(D3) kalıcılık `localStorage` (`forge-lang`, `forge-theme`); OS tercihi ilk-varsayılan
+olmaz, otomatik izleme yok (deterministik kabul). (D4) tam token tablosu; `rgba` için
+`--shadow-rgb` deseni; `color-scheme` bildirimi; `transparent/currentColor/inherit`
+dışı çıplak renk yasak. (D5) TDD: sınır testi + kabul adımları önce kırmızı.
+(D6) kanıtlar sürümlenir (`p29-*`), p23 seti tarihçe olarak korunur.
+Kapsam dışı: sunucu mesaj metinleri, `docs/tr`. Kanıt: `p29-web-i18n-theme.json`.
 
 ### Runtime harness — gerçeklik bağı (2026-09-09)
 
