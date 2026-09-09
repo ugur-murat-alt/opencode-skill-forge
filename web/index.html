@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1.0" />
     <title>Skill Forge</title>
+    <script>
+      try {
+        var l = localStorage.getItem("forge-lang");
+        var t = localStorage.getItem("forge-theme");
+        if (l !== "tr" && l !== "en") l = "tr";
+        if (t !== "light" && t !== "dark") t = "light";
+        document.documentElement.lang = l;
+        document.documentElement.dataset.theme = t;
+        document.documentElement.style.colorScheme = t;
+        document.documentElement.style.background =
+          t === "dark" ? "#0d1219" : "#fff";
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

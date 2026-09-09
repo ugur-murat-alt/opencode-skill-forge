@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import {
   useResource,
   ErrorNotice,
   Refresh,
   JobTable,
   Status,
+  date,
   type Job,
 } from "./ui";
 export function Jobs({ project }: { project: string }) {
@@ -13,6 +15,7 @@ export function Jobs({ project }: { project: string }) {
     [cursor, setCursor] = useState(""),
     [selected, setSelected] = useState<Job | null>(null),
     [error, setError] = useState("");
+  const { t, st } = useLang();
   const resource = useResource<{ items: Job[]; next_cursor: string | null }>(
     `/api/runs?project_ref=${encodeURIComponent(project)}${state ? `&state=${state}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
@@ -23,18 +26,16 @@ export function Jobs({ project }: { project: string }) {
       setSelected(null);
       await resource.refresh();
     } catch (error) {
-      setError(String(error));
+      setError(errorCode(error));
     }
   }
   return (
     <>
-      <h1>İşler</h1>
-      <p className="subtitle">
-        Kalıcı kuyruk, denemeler ve doğrulanmış sonuçlar.
-      </p>
+      <h1>{t("jobs.title")}</h1>
+      <p className="subtitle">{t("jobs.subtitle")}</p>
       <div className="toolbar">
         <label>
-          Durum
+          {t("jobs.filterStatus")}
           <select
             value={state}
             onChange={(e) => {
@@ -53,7 +54,7 @@ export function Jobs({ project }: { project: string }) {
               "cancelled",
             ].map((value) => (
               <option key={value} value={value}>
-                {value || "Tümü"}
+                {value ? st(value) : t("jobs.all")}
               </option>
             ))}
           </select>
@@ -67,30 +68,32 @@ export function Jobs({ project }: { project: string }) {
         )}
         <div className="pagination">
           <button disabled={!cursor} onClick={() => setCursor("")}>
-            İlk sayfa
+            {t("jobs.firstPage")}
           </button>
           <button
             disabled={!resource.data?.next_cursor}
             onClick={() => setCursor(resource.data!.next_cursor!)}
           >
-            Sonraki
+            {t("jobs.nextPage")}
           </button>
         </div>
       </section>
       {selected && (
         <section className="panel">
           <div className="section-heading">
-            <h2>İş ayrıntısı</h2>
+            <h2>{t("jobs.detailTitle")}</h2>
             <Status value={selected.status} />
-            <button onClick={() => setSelected(null)}>Kapat</button>
+            <button onClick={() => setSelected(null)}>
+              {t("common.close")}
+            </button>
           </div>
           <p className="mono">{selected.run_id}</p>
           <AttemptHistory key={selected.run_id} id={selected.run_id} />
           <dl>
-            <dt>Deneme</dt>
+            <dt>{t("jobs.attempt")}</dt>
             <dd>{selected.attempt}</dd>
-            <dt>Hata kodu</dt>
-            <dd>{selected.error_code ?? "Yok"}</dd>
+            <dt>{t("jobs.errorCode")}</dt>
+            <dd>{selected.error_code ?? t("jobs.none")}</dd>
           </dl>
           {selected.result_summary != null && (
             <pre>{JSON.stringify(selected.result_summary, null, 2)}</pre>
@@ -109,7 +112,7 @@ export function Jobs({ project }: { project: string }) {
           )}
           {["queued", "running", "retry_wait"].includes(selected.status) && (
             <button className="danger" onClick={() => void cancel()}>
-              İşi iptal et
+              {t("jobs.cancelJob")}
             </button>
           )}
         </section>
@@ -126,6 +129,7 @@ function JobResult({ project, id }: { project: string; id: string }) {
     } | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const { t } = useLang();
   async function read(next = false) {
     setBusy(true);
     setError("");
@@ -142,7 +146,7 @@ function JobResult({ project, id }: { project: string; id: string }) {
         }),
       );
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -150,18 +154,16 @@ function JobResult({ project, id }: { project: string; id: string }) {
   return (
     <div>
       <button disabled={busy} onClick={() => void read()}>
-        Sonuç içeriğini oku
+        {t("jobs.readResult")}
       </button>
       <ErrorNotice message={error} />
       {chunk && (
         <>
           <pre className="code-view">{chunk.content}</pre>
-          <small>
-            Toplam {chunk.total_bytes} byte; bu bölüm en fazla 24 KiB.
-          </small>
+          <small>{t("jobs.resultChunk", { bytes: chunk.total_bytes })}</small>
           {chunk.next_cursor && (
             <button disabled={busy} onClick={() => void read(true)}>
-              Sonraki bölüm
+              {t("jobs.nextChunk")}
             </button>
           )}
         </>
@@ -172,6 +174,7 @@ function JobResult({ project, id }: { project: string; id: string }) {
 
 function AttemptHistory({ id }: { id: string }) {
   const [after, setAfter] = useState(0);
+  const { t, lang } = useLang();
   const history = useResource<{
     status: string;
     items: {
@@ -183,34 +186,37 @@ function AttemptHistory({ id }: { id: string }) {
     next: number | null;
   }>(`/api/runs/${encodeURIComponent(id)}/attempts?after=${after}`);
   return (
-    <section aria-label="Deneme geçmişi">
+    <section aria-label={t("jobs.attemptHistory")}>
       <div className="section-heading">
-        <h3>Deneme geçmişi</h3>
+        <h3>{t("jobs.attemptHistory")}</h3>
         <Refresh run={history.refresh} loading={history.loading} />
       </div>
       <ErrorNotice message={history.error} />
       {history.data && (
         <>
           <p>
-            Güncel durum: <Status value={history.data.status} />
+            {t("jobs.currentStatus")} <Status value={history.data.status} />
           </p>
           {history.data.items.length === 0 ? (
-            <p>Bu sayfada kayıtlı deneme yok.</p>
+            <p>{t("jobs.noAttempts")}</p>
           ) : (
             <ol>
               {history.data.items.map((attempt) => (
                 <li key={attempt.fence}>
-                  <strong>Deneme {attempt.fence}</strong> ·{" "}
+                  <strong>
+                    {t("jobs.attemptN", { fence: attempt.fence })}
+                  </strong>{" "}
+                  ·{" "}
                   {attempt.result === "lease_expired"
-                    ? "İşçi bağlantısı kesildi; sahiplik süresi doldu"
+                    ? t("jobs.leaseExpired")
                     : attempt.result === null
-                      ? "Devam ediyor"
+                      ? t("jobs.ongoing")
                       : attempt.result}
                   <p>
-                    {new Date(attempt.started_at).toLocaleString("tr-TR")} →{" "}
+                    {date(attempt.started_at, lang)} →{" "}
                     {attempt.ended_at === null
-                      ? "Henüz bitmedi"
-                      : new Date(attempt.ended_at).toLocaleString("tr-TR")}
+                      ? t("jobs.notEnded")
+                      : date(attempt.ended_at, lang)}
                   </p>
                 </li>
               ))}
@@ -218,13 +224,13 @@ function AttemptHistory({ id }: { id: string }) {
           )}
           <div className="pagination">
             <button disabled={after === 0} onClick={() => setAfter(0)}>
-              İlk denemeler
+              {t("jobs.firstAttempts")}
             </button>
             <button
               disabled={history.data.next === null}
               onClick={() => setAfter(history.data!.next!)}
             >
-              Sonraki denemeler
+              {t("jobs.nextAttempts")}
             </button>
           </div>
         </>

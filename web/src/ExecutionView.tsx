@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { ErrorNotice, Status } from "./ui";
 type Artifact = { path: string; bytes: number; reference: string };
 type Result = {
@@ -21,6 +22,7 @@ export function ExecutionView({
   initial: Result;
   project: string;
 }) {
+  const { t } = useLang();
   const [page, setPage] = useState(initial),
     [chunk, setChunk] = useState<{
       content: string;
@@ -45,7 +47,7 @@ export function ExecutionView({
         }),
       );
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -67,7 +69,7 @@ export function ExecutionView({
         }),
       );
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -81,57 +83,58 @@ export function ExecutionView({
           <span>{Math.round(page.elapsed_ms)} ms</span>
         )}
       </div>
-      <ErrorNotice message={error || page.error?.message || ""} />
+      <ErrorNotice message={error} />
+      {!error && page.error?.message && (
+        <p role="alert" className="error">
+          {page.error.message}
+        </p>
+      )}
       {page.result !== undefined && (
         <pre className="code-view">{JSON.stringify(page.result, null, 2)}</pre>
       )}
       {page.result_truncated && (
         <>
-          <p>
-            Sonuç {page.result_bytes} byte. Büyük JSON ayrı saklanır; aşağıdan
-            indirin veya 24 KiB bölümler halinde okuyun.
-          </p>
+          <p>{t("exec.resultTruncated", { bytes: page.result_bytes ?? 0 })}</p>
           <button disabled={busy} onClick={() => void result()}>
-            Sonucun ilk bölümünü oku
+            {t("exec.readFirst")}
           </button>
         </>
       )}
       {chunk && (
         <>
           <pre className="code-view">{chunk.content}</pre>
-          <p>
-            Bu görünüm en fazla 24 KiB gösterir; toplam {chunk.total_bytes}{" "}
-            byte.
-          </p>
+          <p>{t("exec.chunkNote", { total: chunk.total_bytes })}</p>
           {chunk.next_cursor && (
             <button disabled={busy} onClick={() => void result(true)}>
-              Sonucun sonraki bölümünü oku
+              {t("exec.readNext")}
             </button>
           )}
         </>
       )}
       {!!page.artifact_count && (
         <>
-          <h3>Artifact dosyaları · {page.artifact_count}</h3>
+          <h3>
+            {t("exec.artifactsTitle", { count: page.artifact_count ?? 0 })}
+          </h3>
           <ul>
             {page.artifacts?.map((a) => (
               <li key={a.path}>
                 <a
                   href={`/api/artifacts/${initial.execution_id}?reference=${encodeURIComponent(a.reference)}`}
                 >
-                  {a.path} indir
+                  {t("exec.downloadFile", { path: a.path })}
                 </a>{" "}
-                <small>{a.bytes} byte</small>
+                <small>{t("exec.fileBytes", { bytes: a.bytes })}</small>
               </li>
             ))}
           </ul>
           <div className="toolbar">
             <button disabled={busy} onClick={() => void artifacts(true)}>
-              İlk sayfa / bağlantıları yenile
+              {t("exec.refreshFirst")}
             </button>
             {page.next_cursor && (
               <button disabled={busy} onClick={() => void artifacts()}>
-                Sonraki artifact sayfası
+                {t("exec.nextArtifacts")}
               </button>
             )}
           </div>

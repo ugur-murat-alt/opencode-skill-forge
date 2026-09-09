@@ -1,7 +1,8 @@
 import { ExecutionView } from "./ExecutionView";
 import { useEffect, useRef, useState } from "react";
 import { Download, Play, Save, FilePlus, Trash2 } from "lucide-react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, date } from "./ui";
 type Skill = {
   skill_id: string;
@@ -47,6 +48,7 @@ export function PackageDetail({
   close: () => void;
   refresh: () => Promise<void>;
 }) {
+  const { t, lang } = useLang();
   const [revision, setRevision] = useState(skill.revision),
     [path, setPath] = useState("SKILL.md"),
     [loaded, setLoaded] = useState<Loaded | null>(null),
@@ -99,7 +101,7 @@ export function PackageDetail({
       setLoaded(next);
       setDraft(changes.find((c) => c.path === path)?.content ?? next.content);
     } catch (e) {
-      if (token === generation.current) setError(String(e));
+      if (token === generation.current) setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -114,13 +116,13 @@ export function PackageDetail({
         files: [...manifest.data!.files, ...next.files],
       });
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     }
   }
   function stage(content: string | null) {
     const hash = manifest.data?.files.find((f) => f.path === path)?.hash;
     if (!hash) {
-      setError("Dosya envanterini yükleyin.");
+      setError("client_inventory_required");
       return;
     }
     setChanges([
@@ -143,7 +145,7 @@ export function PackageDetail({
       await refresh();
       close();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -162,7 +164,7 @@ export function PackageDetail({
       await refresh();
       close();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -180,7 +182,7 @@ export function PackageDetail({
       await refresh();
       close();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -204,7 +206,7 @@ export function PackageDetail({
         }),
       );
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -219,13 +221,13 @@ export function PackageDetail({
       <div className="section-heading">
         <h2>{skill.name}</h2>
         <button disabled={busy} onClick={close}>
-          Kapat
+          {t("common.close")}
         </button>
       </div>
       <ErrorNotice message={error || revisions.error || manifest.error} />
       <div className="toolbar">
         <label>
-          Sürüm
+          {t("pkgdetail.versionLabel")}
           <select
             value={revision}
             disabled={busy || changes.length > 0}
@@ -233,8 +235,10 @@ export function PackageDetail({
           >
             {revisions.data?.items.map((row) => (
               <option key={row.revision} value={row.revision}>
-                {row.revision.slice(0, 10)} · {date(row.created_at)} ·{" "}
-                {row.validation_passed ? "Doğrulandı" : "Doğrulanmadı"}
+                {row.revision.slice(0, 10)} · {date(row.created_at, lang)} ·{" "}
+                {row.validation_passed
+                  ? t("pkgdetail.verified")
+                  : t("pkgdetail.unverified")}
               </option>
             ))}
           </select>
@@ -244,16 +248,16 @@ export function PackageDetail({
           href={`/api/skills/${skill.skill_id}/export?revision=${revision}`}
         >
           <Download size={16} />
-          ZIP indir
+          {t("pkgdetail.downloadZip")}
         </a>
         <button
           disabled={busy || revision === skill.revision}
           onClick={() => void rollback()}
         >
-          Seçili sürüme dön
+          {t("pkgdetail.rollbackTo")}
         </button>
       </div>
-      <div className="file-list" aria-label="Paket dosyaları">
+      <div className="file-list" aria-label={t("pkgdetail.filesAria")}>
         {manifest.data?.files.map((f) => (
           <button
             key={f.path}
@@ -265,20 +269,22 @@ export function PackageDetail({
           </button>
         ))}
         {manifest.data?.next !== null && manifest.data?.next !== undefined && (
-          <button onClick={() => void moreFiles()}>Diğer dosyalar</button>
+          <button onClick={() => void moreFiles()}>
+            {t("pkgdetail.moreFiles")}
+          </button>
         )}
       </div>
       <div className="toolbar">
         <strong className="mono">{path}</strong>
         <button disabled={busy} onClick={() => void load()}>
-          Dosyayı oku
+          {t("pkgdetail.readFile")}
         </button>
         {loaded?.next_cursor && (
           <button
             disabled={busy}
             onClick={() => void load(loaded.next_cursor!)}
           >
-            Devamını yükle
+            {t("pkgdetail.loadMore")}
           </button>
         )}
       </div>
@@ -287,15 +293,17 @@ export function PackageDetail({
           <pre className="code-view">{loaded.content}</pre>
           <small>
             {loaded.encoding === "base64"
-              ? "Binary dosya · base64"
-              : "UTF-8 metin"}{" "}
-            · {loaded.total_bytes} byte{" "}
-            {loaded.next_cursor ? "· Kısmi içerik" : "· Tam içerik"}
+              ? t("pkgdetail.binaryLabel")
+              : t("pkgdetail.textLabel")}{" "}
+            {t("pkgdetail.totalBytes", { total: loaded.total_bytes })}{" "}
+            {loaded.next_cursor
+              ? t("pkgdetail.partialContent")
+              : t("pkgdetail.fullContent")}
           </small>
           {editable && loaded.encoding === "utf8" && !loaded.next_cursor && (
             <>
               <label>
-                Dosyayı düzenle
+                {t("pkgdetail.editFile")}
                 <textarea
                   className="code-editor"
                   rows={12}
@@ -309,14 +317,14 @@ export function PackageDetail({
                   disabled={busy || changes.length >= 16}
                   onClick={() => stage(draft)}
                 >
-                  Değişikliği adaya ekle
+                  {t("pkgdetail.stageChange")}
                 </button>
                 <button
                   disabled={busy || path === "SKILL.md"}
                   onClick={() => stage(null)}
                 >
                   <Trash2 size={16} />
-                  Dosya silmeyi adaya ekle
+                  {t("pkgdetail.stageDelete")}
                 </button>
               </div>
             </>
@@ -328,18 +336,15 @@ export function PackageDetail({
           <details>
             <summary>
               <FilePlus size={16} />
-              Yeni metin dosyası ekle
+              {t("pkgdetail.addFileSummary")}
             </summary>
-            <p>
-              En fazla 16 dosya tek adayda değişebilir. Referans ve script
-              sözleşmelerini aynı adayda güncelleyin.
-            </p>
+            <p>{t("pkgdetail.addFileNote")}</p>
             <label>
-              Yeni dosya yolu
+              {t("pkgdetail.newPathLabel")}
               <input
                 value={newPath}
                 onChange={(e) => setNewPath(e.target.value)}
-                placeholder="references/example.md"
+                placeholder={t("pkgdetail.newPathPh")}
               />
             </label>
             <button
@@ -350,9 +355,7 @@ export function PackageDetail({
                   manifest.data.files.some((f) => f.path === newPath) ||
                   changes.some((c) => c.path === newPath)
                 ) {
-                  setError(
-                    "Envanter tamamlanmalı ve yeni dosya adı benzersiz olmalı.",
-                  );
+                  setError("client_path_invalid");
                   return;
                 }
                 setChanges([
@@ -362,25 +365,27 @@ export function PackageDetail({
                 setNewPath("");
               }}
             >
-              Dosya taslağı ekle
+              {t("pkgdetail.addDraft")}
             </button>
           </details>
           {changes.length > 0 && (
             <div className="candidate-panel">
-              <h3>Yayın adayı · {changes.length} dosya</h3>
+              <h3>
+                {t("pkgdetail.candidateTitle", { count: changes.length })}
+              </h3>
               {changes.map((c) => (
                 <details key={c.path} open>
                   <summary>
                     {c.path} ·{" "}
                     {c.content === null
-                      ? "Silinecek"
+                      ? t("pkgdetail.willDelete")
                       : c.original_hash
-                        ? "Değişecek"
-                        : "Eklenecek"}
+                        ? t("pkgdetail.willChange")
+                        : t("pkgdetail.willAdd")}
                   </summary>
                   {c.content !== null && (
                     <label>
-                      Aday içerik
+                      {t("pkgdetail.candidateContent")}
                       <textarea
                         className="code-editor"
                         rows={6}
@@ -403,14 +408,11 @@ export function PackageDetail({
                       setChanges(changes.filter((item) => item.path !== c.path))
                     }
                   >
-                    Bu değişikliği çıkar
+                    {t("pkgdetail.removeChange")}
                   </button>
                 </details>
               ))}
-              <p>
-                Yayın bütün paketi doğrular ve kayıtlı script testlerini sandbox
-                içinde çalıştırır. Çatışmada aktif sürümün üzerine yazılmaz.
-              </p>
+              <p>{t("pkgdetail.publishNote")}</p>
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -418,7 +420,7 @@ export function PackageDetail({
                   disabled={busy}
                   onChange={(event) => setRebase(event.target.checked)}
                 />{" "}
-                Çakışmayan dosya değişikliklerini güncel sürümle birleştir
+                {t("pkgdetail.rebaseLabel")}
               </label>
               <button
                 className="primary"
@@ -426,7 +428,7 @@ export function PackageDetail({
                 onClick={() => void publish()}
               >
                 <Save size={16} />
-                {busy ? "Doğrulanıyor…" : "Test et ve yayımla"}
+                {busy ? t("pkgdetail.verifying") : t("pkgdetail.publishRun")}
               </button>
             </div>
           )}
@@ -440,19 +442,19 @@ export function PackageDetail({
         revisions={revisions.data?.items.map((r) => r.revision) ?? []}
       />
       <details>
-        <summary>Bu sürümün doğrulama kanıtı</summary>
+        <summary>{t("pkgdetail.validationProof")}</summary>
         <pre>{JSON.stringify(manifest.data?.validation ?? null, null, 2)}</pre>
       </details>
       {manifest.data?.execution && (
         <details>
           <summary>
             <Play size={16} />
-            Kayıtlı script çalıştır
+            {t("pkgdetail.runScript")}
           </summary>
           <label>
-            Giriş
+            {t("pkgdetail.entryLabel")}
             <select value={entry} onChange={(e) => setEntry(e.target.value)}>
-              <option value="">Giriş seçin</option>
+              <option value="">{t("pkgdetail.entrySelect")}</option>
               {Object.keys(manifest.data.execution.entrypoints).map((name) => (
                 <option key={name}>{name}</option>
               ))}
@@ -461,7 +463,7 @@ export function PackageDetail({
           {entry && (
             <>
               <details>
-                <summary>Girdi ve çıktı şeması</summary>
+                <summary>{t("pkgdetail.schemaSummary")}</summary>
                 <pre>
                   {JSON.stringify(
                     manifest.data.execution.entrypoints[entry],
@@ -471,7 +473,7 @@ export function PackageDetail({
                 </pre>
               </details>
               <label>
-                JSON girdi
+                {t("pkgdetail.jsonInput")}
                 <textarea
                   className="code-editor"
                   rows={5}
@@ -480,7 +482,7 @@ export function PackageDetail({
                 />
               </label>
               <button disabled={busy} onClick={() => void run()}>
-                Sandbox içinde çalıştır
+                {t("pkgdetail.runSandbox")}
               </button>
             </>
           )}
@@ -498,22 +500,22 @@ export function PackageDetail({
           disabled={busy}
           onClick={() => void configure("pinned", !skill.pinned)}
         >
-          {skill.pinned ? "Sabitlemeyi kaldır" : "Sürümü sabitle"}
+          {skill.pinned ? t("pkgdetail.unpin") : t("pkgdetail.pin")}
         </button>
         <button
           disabled={busy}
           onClick={() => void configure("protected", !skill.protected)}
         >
-          {skill.protected ? "Korumayı kaldır" : "Paketi koru"}
+          {skill.protected ? t("pkgdetail.unprotect") : t("pkgdetail.protect")}
         </button>
         <button
           disabled={busy}
           onClick={() => void configure("managed", !skill.managed)}
         >
-          {skill.managed ? "Otomatik yönetimi kapat" : "Otomatik yönetimi aç"}
+          {skill.managed ? t("pkgdetail.managedOff") : t("pkgdetail.managedOn")}
         </button>
         <a className="button" href="#maintenance">
-          Bakım ve arşivleme
+          {t("pkgdetail.maintenanceLink")}
         </a>
       </div>
     </section>
@@ -533,6 +535,7 @@ function FileComparison({
   path: string;
   revisions: string[];
 }) {
+  const { t } = useLang();
   const [other, setOther] = useState(""),
     [comparison, setComparison] = useState<{
       left: Loaded | null;
@@ -573,22 +576,22 @@ function FileComparison({
       const [left, right] = await Promise.all([read(other), read(revision)]);
       if (generation.current === token) setComparison({ left, right });
     } catch (e) {
-      if (generation.current === token) setError(String(e));
+      if (generation.current === token) setError(errorCode(e));
     } finally {
       setBusy(false);
     }
   }
   return (
     <details>
-      <summary>Dosyanın sürümlerini karşılaştır</summary>
+      <summary>{t("pkgdetail.compareTitle")}</summary>
       <label>
-        Karşılaştırılacak sürüm
+        {t("pkgdetail.compareLabel")}
         <select
           value={other}
           disabled={busy}
           onChange={(e) => setOther(e.target.value)}
         >
-          <option value="">Sürüm seçin</option>
+          <option value="">{t("pkgdetail.compareSelect")}</option>
           {revisions
             .filter((r) => r !== revision)
             .map((r) => (
@@ -599,29 +602,29 @@ function FileComparison({
         </select>
       </label>
       <button disabled={busy || !other} onClick={() => void compare()}>
-        Karşılaştır
+        {t("pkgdetail.compareBtn")}
       </button>
       <ErrorNotice message={error} />
       {comparison && (
         <>
           <p>
             {comparison.left?.next_cursor || comparison.right?.next_cursor
-              ? "İlk 24 KiB karşılaştırılıyor; dosyanın devamı bu görünümde yok."
+              ? t("pkgdetail.comparePartial")
               : comparison.left?.content === comparison.right?.content
-                ? "Dosya içeriği aynı."
-                : "Dosya içeriği farklı; iki sürüm aşağıda."}
+                ? t("pkgdetail.compareSame")
+                : t("pkgdetail.compareDifferent")}
           </p>
           <div className="comparison-grid">
             <div>
               <h3>{other.slice(0, 12)}</h3>
               <pre className="code-view">
-                {comparison.left?.content ?? "Bu sürümde dosya yok."}
+                {comparison.left?.content ?? t("pkgdetail.compareMissing")}
               </pre>
             </div>
             <div>
               <h3>{revision.slice(0, 12)}</h3>
               <pre className="code-view">
-                {comparison.right?.content ?? "Bu sürümde dosya yok."}
+                {comparison.right?.content ?? t("pkgdetail.compareMissing")}
               </pre>
             </div>
           </div>

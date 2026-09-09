@@ -1,4 +1,5 @@
 import { Bell, Settings, Bot, Terminal, MessageSquare } from "lucide-react";
+import { useLang } from "./i18n/lang";
 import {
   useResource,
   ErrorNotice,
@@ -9,6 +10,7 @@ import {
   type Job,
 } from "./ui";
 export function Overview({ project }: { project: string }) {
+  const { t, st, lang } = useLang();
   const overview = useResource<{
     active_jobs: number;
     skill_packages: number;
@@ -23,50 +25,54 @@ export function Overview({ project }: { project: string }) {
   const data = overview.data;
   return (
     <>
-      <h1>Genel durum</h1>
-      <p className="subtitle">
-        Skill paketleri, işler ve istemci bağlantıları.
-      </p>
+      <h1>{t("overview.title")}</h1>
+      <p className="subtitle">{t("overview.subtitle")}</p>
       <ErrorNotice message={overview.error || installations.error} />
-      <section className="metrics" aria-label="Proje ölçümleri">
+      <section className="metrics" aria-label={t("overview.metricsAria")}>
         <div>
-          <span>Aktif işler</span>
+          <span>{t("overview.activeJobs")}</span>
           <strong>{data?.active_jobs ?? "—"}</strong>
         </div>
         <div>
-          <span>Skill paketleri</span>
+          <span>{t("overview.skillPackages")}</span>
           <strong>{data?.skill_packages ?? "—"}</strong>
         </div>
         <div>
-          <span>Model durumu</span>
+          <span>{t("overview.modelStatus")}</span>
           <strong className="metric-text">
             {data
               ? data.model_status === "configured"
-                ? "Yapılandırıldı"
-                : "Yapılandırılmadı"
+                ? st("configured")
+                : st("unconfigured")
               : "—"}
           </strong>
         </div>
         <div>
-          <span>Gözlenen maliyet</span>
+          <span>{t("overview.observedCost")}</span>
           <strong className="metric-text">
-            {data ? money(data.observed_cost_micros) : "—"}
+            {data
+              ? money(
+                  data.observed_cost_micros,
+                  t("overview.costUnknown"),
+                  lang,
+                )
+              : "—"}
           </strong>
         </div>
       </section>
       <div className="overview-grid">
         <section className="panel jobs-panel">
-          <h2>Son işler</h2>
+          <h2>{t("overview.recentJobs")}</h2>
           {data ? (
             <JobTable items={data.jobs} />
           ) : (
             <p className="loading" role="status">
-              Yükleniyor…
+              {t("shell.loading")}
             </p>
           )}
         </section>
         <section className="panel connection-panel">
-          <h2>İstemci bağlantıları</h2>
+          <h2>{t("overview.clients")}</h2>
           {[
             { client: "claude", label: "Claude Code", Icon: Bot },
             { client: "codex", label: "Codex", Icon: Terminal },
@@ -86,26 +92,26 @@ export function Overview({ project }: { project: string }) {
             );
           })}
           <a className="panel-link" href="#installations">
-            <Settings size={15} /> Kurulumları yönet
+            <Settings size={15} /> {t("overview.manageInstalls")}
           </a>
         </section>
       </div>
       <section className="panel events-panel">
-        <h2>Son olaylar</h2>
+        <h2>{t("overview.recentEvents")}</h2>
         {data?.events.length ? (
           <ul className="events">
             {data.events.map((event) => (
               <li key={event.id}>
                 <Bell size={17} />
                 <span>{event.kind}</span>
-                <time>{date(event.created_at)}</time>
+                <time>{date(event.created_at, lang)}</time>
               </li>
             ))}
           </ul>
         ) : (
           <div className="empty">
             <Bell size={44} strokeWidth={1.5} />
-            <span>Henüz olay yok</span>
+            <span>{t("overview.noEvents")}</span>
           </div>
         )}
       </section>

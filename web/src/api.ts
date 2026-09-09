@@ -3,9 +3,14 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
   }
+}
+/** Extract the stable server error code for dictionary rendering. */
+export function errorCode(error: unknown): string {
+  return error instanceof ApiError && error.code ? error.code : "unknown";
 }
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -20,8 +25,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const value = await response.json();
   if (!response.ok)
     throw new ApiError(
-      value.error?.message ?? "İşlem tamamlanamadı.",
+      value.error?.message ?? value.error?.code ?? "unknown",
       response.status,
+      value.error?.code,
     );
   if (value.csrf) csrf = value.csrf;
   return value as T;

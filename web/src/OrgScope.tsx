@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
 import { useResource, ErrorNotice } from "./ui";
+import { useLang } from "./i18n/lang";
 
 interface Tenant {
   tenant_id: string;
@@ -34,6 +35,7 @@ export function OrgScope({
   onSwitch: () => void;
   tick: number;
 }) {
+  const { t } = useLang();
   const tenants = useResource<Tenant[]>("/api/tenants");
   const envs = useResource<Environment[]>("/api/environments");
   const [error, setError] = useState("");
@@ -41,11 +43,11 @@ export function OrgScope({
     void tenants.refresh();
     void envs.refresh();
   }, [tenantId, tick]);
-  const current = tenants.data?.find((t) => t.tenant_id === tenantId);
+  const current = tenants.data?.find((tn) => tn.tenant_id === tenantId);
   const projectRow = projects.find((p) => p.id === project);
   const envName =
     envs.data?.find((e) => e.id === projectRow?.environment_id)?.name ??
-    (projectRow ? "varsayılan" : "—");
+    (projectRow ? t("scope.defaultEnv") : "—");
   async function switchTenant(id: string) {
     if (!id || id === tenantId) return;
     setError("");
@@ -56,33 +58,35 @@ export function OrgScope({
       });
       onSwitch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Geçiş yapılamadı.");
+      setError(errorCode(e));
     }
   }
   return (
     <div className="scope-bar">
       <label className="tenant-switch">
-        <span className="sr-only">Organizasyon</span>
+        <span className="sr-only">{t("scope.organization")}</span>
         <select
           data-testid="tenant-switch"
           value={tenantId}
           onChange={(e) => void switchTenant(e.target.value)}
         >
-          {(tenants.data ?? []).map((t) => (
-            <option value={t.tenant_id} key={t.tenant_id}>
-              {t.name}
+          {(tenants.data ?? []).map((tn) => (
+            <option value={tn.tenant_id} key={tn.tenant_id}>
+              {tn.name}
             </option>
           ))}
         </select>
       </label>
       <span className="scope-badge" data-testid="scope-badge">
         {current?.name ?? tenantId} • {envName} •{" "}
-        {projectRow?.name ?? "proje yok"}
+        {projectRow?.name ?? t("scope.noProject")}
       </span>
       <label className="project-switcher">
-        <span className="sr-only">Etkin proje</span>
+        <span className="sr-only">{t("scope.activeProject")}</span>
         <select value={project} onChange={(e) => onProject(e.target.value)}>
-          {!projects.length && <option value="">Proje seçin</option>}
+          {!projects.length && (
+            <option value="">{t("scope.selectProject")}</option>
+          )}
           {projects.map((item) => (
             <option value={item.id} key={item.id}>
               {item.name}

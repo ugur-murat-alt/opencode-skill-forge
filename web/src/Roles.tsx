@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Refresh } from "./ui";
 
 interface Role {
@@ -18,6 +19,7 @@ export function Roles() {
   const [tools, setTools] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { t } = useLang();
   function create(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -42,9 +44,7 @@ export function Roles() {
         setTools("");
         return resource.refresh();
       })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "Rol oluşturulamadı."),
-      )
+      .catch((e) => setError(errorCode(e)))
       .finally(() => setBusy(false));
   }
   function mutate(path: string, init: RequestInit, done?: () => void) {
@@ -55,9 +55,7 @@ export function Roles() {
         done?.();
         return resource.refresh();
       })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "İşlem başarısız."),
-      )
+      .catch((e) => setError(errorCode(e)))
       .finally(() => setBusy(false));
   }
   function RoleRow({ r }: { r: Role }) {
@@ -66,10 +64,12 @@ export function Roles() {
         <td>
           {r.name}
           <small className="description">
-            {r.builtin ? `yerleşik · ${r.base}` : `özel · taban ${r.base}`}
+            {r.builtin
+              ? t("roles.builtinDetail", { base: r.base ?? "" })
+              : t("roles.customDetail", { base: r.base ?? "" })}
           </small>
         </td>
-        <td>{r.builtin ? "Yerleşik" : "Özel"}</td>
+        <td>{r.builtin ? t("roles.builtin") : t("roles.custom")}</td>
         <td className="mono">{(r.tools ?? []).join(", ")}</td>
         <td>
           {r.name !== "founder" && (
@@ -82,7 +82,7 @@ export function Roles() {
                 })
               }
             >
-              Sil
+              {t("common.delete")}
             </button>
           )}
         </td>
@@ -93,43 +93,43 @@ export function Roles() {
     <>
       <div className="title-row">
         <div>
-          <h1>Roller</h1>
-          <p className="subtitle">Yerleşik roller ve özel araç kümeleri.</p>
+          <h1>{t("roles.title")}</h1>
+          <p className="subtitle">{t("roles.subtitle")}</p>
         </div>
         <Refresh run={() => void resource.refresh()} />
       </div>
       <ErrorNotice message={error || resource.error} />
       <section className="panel">
-        <h2>Oluştur</h2>
+        <h2>{t("roles.create")}</h2>
         <form className="toolbar" onSubmit={create}>
           <label>
-            Rol adı
+            {t("roles.roleName")}
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="ornek-rol"
+              placeholder={t("roles.namePh")}
               pattern="[a-z0-9-]{1,64}"
               required
             />
           </label>
           <label>
-            Taban
+            {t("roles.base")}
             <select value={base} onChange={(e) => setBase(e.target.value)}>
-              <option value="reader">Okuyucu</option>
-              <option value="writer">Yazıcı</option>
-              <option value="admin">Yönetici</option>
+              <option value="reader">{t("roles.baseReader")}</option>
+              <option value="writer">{t("roles.baseWriter")}</option>
+              <option value="admin">{t("roles.baseAdmin")}</option>
             </select>
           </label>
           <label>
-            Araçlar (virgüllü, boşsa taban)
+            {t("roles.tools")}
             <input
               value={tools}
               onChange={(e) => setTools(e.target.value)}
-              placeholder="forge_search, forge_report"
+              placeholder={t("roles.toolsPh")}
             />
           </label>
           <button className="primary" disabled={busy}>
-            Oluştur
+            {t("roles.create")}
           </button>
         </form>
       </section>
@@ -137,9 +137,9 @@ export function Roles() {
         <table>
           <thead>
             <tr>
-              <th>Rol</th>
-              <th>Tür</th>
-              <th>Araçlar</th>
+              <th>{t("roles.role")}</th>
+              <th>{t("roles.kind")}</th>
+              <th>{t("roles.toolsCol")}</th>
               <th></th>
             </tr>
           </thead>
@@ -152,12 +152,12 @@ export function Roles() {
           </tbody>
         </table>
         {!resource.error && !(resource.data ?? []).some((r) => !r.deleted) && (
-          <Empty title="Rol yok" />
+          <Empty title={t("roles.none")} />
         )}
       </section>
       {(resource.data ?? []).some((r) => r.deleted) && (
         <section className="panel table-panel">
-          <h2>Silinmiş</h2>
+          <h2>{t("roles.deleted")}</h2>
           <table>
             <tbody>
               {(resource.data ?? [])
@@ -177,7 +177,7 @@ export function Roles() {
                           )
                         }
                       >
-                        Geri yükle
+                        {t("common.restore")}
                       </button>
                     </td>
                   </tr>

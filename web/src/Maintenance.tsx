@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Archive, RotateCcw, Download, Trash2 } from "lucide-react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Refresh, Empty, date } from "./ui";
 type Item = {
   skill_id: string;
@@ -31,14 +32,15 @@ type Result = {
   }[];
   effect?: string;
 };
-const reasons: Record<string, string> = {
-  archived: "Arşivde",
-  new_skill_grace: "Yeni paket · 7 gün gözlem",
-  not_observed_in_search: "Bu kapsamda aramada görünmedi",
-  visible_not_loaded: "Göründü, yüklenmedi",
-  loaded_outcome_unknown: "Yüklendi; görev sonucu bilinmiyor",
-};
 export function Maintenance({ project }: { project: string }) {
+  const { t, tp, lang } = useLang();
+  const reasons: Record<string, string> = {
+    archived: t("maintenance.reasonArchived"),
+    new_skill_grace: t("maintenance.reasonNewGrace"),
+    not_observed_in_search: t("maintenance.reasonNotObserved"),
+    visible_not_loaded: t("maintenance.reasonVisibleNotLoaded"),
+    loaded_outcome_unknown: t("maintenance.reasonLoadedUnknown"),
+  };
   const [state, setState] = useState("all"),
     [days, setDays] = useState(30),
     [after, setAfter] = useState(""),
@@ -71,7 +73,7 @@ export function Maintenance({ project }: { project: string }) {
       setResult({ items: [item] });
       await cleanups.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -104,7 +106,7 @@ export function Maintenance({ project }: { project: string }) {
         }),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -125,7 +127,7 @@ export function Maintenance({ project }: { project: string }) {
       await report.refresh();
       await cleanups.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -149,14 +151,11 @@ export function Maintenance({ project }: { project: string }) {
   }
   return (
     <>
-      <h1>Bakım</h1>
-      <p className="subtitle">
-        Görünürlük ve kullanım farklı ölçülür. Yüklenen bir paket, başarılı
-        uygulama anlamına gelmez.
-      </p>
+      <h1>{t("maintenance.title")}</h1>
+      <p className="subtitle">{t("maintenance.subtitle")}</p>
       <div className="toolbar">
         <label>
-          Gözlem penceresi
+          {t("maintenance.windowLabel")}
           <select
             value={days}
             onChange={(e) => {
@@ -164,14 +163,14 @@ export function Maintenance({ project }: { project: string }) {
               reset();
             }}
           >
-            <option value={7}>7 gün</option>
-            <option value={30}>30 gün</option>
-            <option value={90}>90 gün</option>
-            <option value={365}>365 gün</option>
+            <option value={7}>{t("maintenance.days", { n: 7 })}</option>
+            <option value={30}>{t("maintenance.days", { n: 30 })}</option>
+            <option value={90}>{t("maintenance.days", { n: 90 })}</option>
+            <option value={365}>{t("maintenance.days", { n: 365 })}</option>
           </select>
         </label>
         <label>
-          Paket durumu
+          {t("maintenance.stateLabel")}
           <select
             value={state}
             onChange={(e) => {
@@ -179,55 +178,47 @@ export function Maintenance({ project }: { project: string }) {
               reset();
             }}
           >
-            <option value="all">Tümü</option>
-            <option value="active">Aktif</option>
-            <option value="archived">Arşivde</option>
+            <option value="all">{t("maintenance.stateAll")}</option>
+            <option value="active">{t("maintenance.stateActive")}</option>
+            <option value="archived">{t("maintenance.stateArchived")}</option>
           </select>
         </label>
         <Refresh run={report.refresh} loading={report.loading} />
         <button onClick={download} disabled={!report.data}>
           <Download size={16} />
-          Raporu indir
+          {t("maintenance.downloadReport")}
         </button>
       </div>
       <ErrorNotice message={error || report.error} />
-      <p className="notice">
-        Yalnız bu kullanıcı ve projedeki servis çağrıları gözlenir. Diğer
-        kullanıcıların veya dışa aktarılan paketlerin kullanımı bilinmiyor.
-        Saklama süresi pencereyi kısaltabilir. Yeni paketler ilk 7 gün temizlik
-        adayı sayılmaz.
-      </p>
+      <p className="notice">{t("maintenance.notice")}</p>
       <div className="toolbar">
-        <span>{selected.length} paket seçildi</span>
+        <span>{tp("maintenance.selected", selected.length)}</span>
         <button
           disabled={!selected.length || busy}
           onClick={() => void preview("archive")}
         >
           <Archive size={16} />
-          Arşivlemeyi incele
+          {t("maintenance.previewArchive")}
         </button>
         <button
           disabled={!selected.length || busy}
           onClick={() => void preview("restore")}
         >
           <RotateCcw size={16} />
-          Geri almayı incele
+          {t("maintenance.previewRestore")}
         </button>
         <button
           disabled={!selected.length || busy}
           onClick={() => void preview("delete")}
         >
-          <Trash2 size={16} /> Kalıcı silmeyi incele
+          <Trash2 size={16} /> {t("maintenance.previewDelete")}
         </button>
       </div>
       {pending && (
         <section className="panel">
-          <h2>Etki önizlemesi</h2>
+          <h2>{t("maintenance.previewTitle")}</h2>
           <p>{pending.preview.effect}</p>
-          <p>
-            Korunan, sabitlenmiş veya bu sırada değişen paketler öğe bazında
-            reddedilir.
-          </p>
+          <p>{t("maintenance.previewNote")}</p>
           <ResultList value={pending.preview} />
           <div className="toolbar">
             <button
@@ -238,42 +229,39 @@ export function Maintenance({ project }: { project: string }) {
               }
               onClick={() => void apply()}
             >
-              İşlemi uygula
+              {t("maintenance.applyAction")}
             </button>
             <button disabled={busy} onClick={() => setPending(null)}>
-              Vazgeç
+              {t("common.cancel")}
             </button>
           </div>
         </section>
       )}
       {result && (
         <section className="panel" aria-live="polite">
-          <h2>İşlem sonuçları</h2>
+          <h2>{t("maintenance.resultTitle")}</h2>
           <ResultList value={result} />
         </section>
       )}
       <section className="panel">
-        <h2>Bekleyen dosya temizliği</h2>
-        <p>
-          Silme kararı verilmiş paketlerin kalan dosyalarıdır. Sürdürme işlemi
-          yeni bir paket silmez. Her çağrı en fazla 25 revision temizler.
-        </p>
+        <h2>{t("maintenance.cleanupTitle")}</h2>
+        <p>{t("maintenance.cleanupDetail")}</p>
         <ErrorNotice message={cleanups.error} />
         <Refresh run={cleanups.refresh} loading={cleanups.loading} />
         {cleanups.data?.items.map((item) => (
           <div className="toolbar" key={item.skill_id}>
             <code>{item.skill_id}</code>
             <button disabled={busy} onClick={() => void resume(item.skill_id)}>
-              Temizliği sürdür
+              {t("maintenance.resumeCleanup")}
             </button>
           </div>
         ))}
         {cleanups.data && !cleanups.data.items.length && (
-          <p>Bu sayfada bekleyen temizlik yok.</p>
+          <p>{t("maintenance.cleanupEmpty")}</p>
         )}
         {cleanupAfter && (
           <button disabled={busy} onClick={() => setCleanupAfter("")}>
-            İlk sayfa
+            {t("maintenance.firstPage")}
           </button>
         )}
         {cleanups.data?.next && (
@@ -281,7 +269,7 @@ export function Maintenance({ project }: { project: string }) {
             disabled={busy}
             onClick={() => setCleanupAfter(cleanups.data!.next!)}
           >
-            Sonraki temizlikler
+            {t("maintenance.nextCleanups")}
           </button>
         )}
       </section>
@@ -289,11 +277,11 @@ export function Maintenance({ project }: { project: string }) {
         <table>
           <thead>
             <tr>
-              <th>Seç</th>
-              <th>Paket</th>
-              <th>Gözlem</th>
-              <th>Görünme / yükleme</th>
-              <th>Script / hata</th>
+              <th>{t("common.select")}</th>
+              <th>{t("maintenance.thPackage")}</th>
+              <th>{t("maintenance.thObservation")}</th>
+              <th>{t("maintenance.thVisibility")}</th>
+              <th>{t("maintenance.thScript")}</th>
             </tr>
           </thead>
           <tbody>
@@ -302,7 +290,9 @@ export function Maintenance({ project }: { project: string }) {
                 <td>
                   <input
                     type="checkbox"
-                    aria-label={`${item.name} seç`}
+                    aria-label={t("maintenance.selectAria", {
+                      name: item.name,
+                    })}
                     checked={selected.includes(item.skill_id)}
                     onChange={(e) => {
                       setPending(null);
@@ -318,12 +308,12 @@ export function Maintenance({ project }: { project: string }) {
                   <strong>{item.name}</strong>
                   <small className="block">
                     {item.scope.startsWith("project:")
-                      ? "Proje"
+                      ? t("maintenance.scopeProject")
                       : item.scope.startsWith("personal:")
-                        ? "Kişisel"
-                        : "Çalışma alanı"}
-                    {item.pinned ? " · Sabit" : ""}
-                    {item.protected ? " · Korunuyor" : ""}
+                        ? t("maintenance.scopePersonal")
+                        : t("maintenance.scopeWorkspace")}
+                    {item.pinned ? t("maintenance.pinnedSuffix") : ""}
+                    {item.protected ? t("maintenance.protectedSuffix") : ""}
                   </small>
                 </td>
                 <td>{reasons[item.reason] ?? item.reason}</td>
@@ -341,14 +331,14 @@ export function Maintenance({ project }: { project: string }) {
         </table>
         {report.data?.items.length === 0 && (
           <Empty
-            title="Bu kapsamda paket yok"
-            detail="Skill kütüphanesinden bir paket aktarabilirsiniz."
+            title={t("maintenance.emptyTitle")}
+            detail={t("maintenance.emptyDetail")}
           />
         )}
       </section>
       <Retention project={project} refresh={report.refresh} />
       <div className="toolbar">
-        {after && <button onClick={reset}>İlk sayfa</button>}
+        {after && <button onClick={reset}>{t("maintenance.firstPage")}</button>}
         {report.data?.next && (
           <button
             onClick={() => {
@@ -357,12 +347,13 @@ export function Maintenance({ project }: { project: string }) {
               setPending(null);
             }}
           >
-            Sonraki 50 paket
+            {t("maintenance.next50")}
           </button>
         )}
         {report.data && (
           <small>
-            {date(report.data.window.since)} – {date(report.data.window.until)}
+            {date(report.data.window.since, lang)} –{" "}
+            {date(report.data.window.until, lang)}
           </small>
         )}
       </div>
@@ -370,23 +361,24 @@ export function Maintenance({ project }: { project: string }) {
   );
 }
 function ResultList({ value }: { value: Result }) {
+  const { t, tp } = useLang();
   return (
     <ul>
       {value.items.map((item) => (
         <li key={item.skill_id}>
           <code>{item.name ?? item.skill_id.slice(0, 8)}</code>
           {item.revision_count !== undefined
-            ? ` · ${item.revision_count} revision`
+            ? tp("maintenance.revisionCount", item.revision_count)
             : ""}
           :{" "}
           {item.error?.message ??
             (item.status === "eligible"
-              ? "Uygun"
+              ? t("maintenance.statusEligible")
               : item.status === "completed"
-                ? "Tamamlandı"
+                ? t("maintenance.statusCompleted")
                 : item.status === "pending_cleanup"
-                  ? "Dosya temizliği bekliyor"
-                  : "Engellendi")}
+                  ? t("maintenance.statusPendingCleanup")
+                  : t("maintenance.statusBlocked"))}
         </li>
       ))}
     </ul>
@@ -400,6 +392,7 @@ function Retention({
   project: string;
   refresh: () => Promise<void>;
 }) {
+  const { t } = useLang();
   const [result, setResult] = useState<any>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -418,36 +411,33 @@ function Retention({
       );
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
   }
   return (
     <section className="panel">
-      <h2>Özel kayıtların saklanması</h2>
+      <h2>{t("maintenance.retentionTitle")}</h2>
       <p>
-        Etkin süre: {settings.data?.values.retentionDays ?? "Bilinmiyor"} gün.
-        Servis bu politikayı arka planda uygular. Şimdi çalıştırmak yalnız kendi
-        süresi dolmuş kayıtlarınızı temizler.
+        {t("maintenance.retentionIntro", {
+          days: settings.data?.values.retentionDays ?? t("status.unknown"),
+        })}
       </p>
-      <p>
-        Tamamlanmış işlerin özel metni, eski dersler ve gözlemler silinir; aktif
-        işler, paket sürümleri, maliyet ve tekrar kayıtları korunur. Bu içerik
-        temizliği geri alınamaz; eski yedekleri değiştirmez.
-      </p>
+      <p>{t("maintenance.retentionDetail")}</p>
       <button disabled={busy || !settings.data} onClick={() => void clean()}>
-        {busy ? "Temizleniyor…" : "Süresi dolan özel kayıtları şimdi temizle"}
+        {busy ? t("maintenance.cleaning") : t("maintenance.cleanNow")}
       </button>
       <ErrorNotice message={error || settings.error} />
       {result && (
         <p role="status">
-          {result.scrubbed_runs} iş metni, {result.deleted_lessons} ders,{" "}
-          {result.deleted_observations} gözlem, {result.deleted_events} olay
-          temizlendi.
-          {result.may_have_more
-            ? " Kalan kayıtlar için sonraki sınırlı tarama gerekiyor."
-            : ""}
+          {t("maintenance.retentionResult", {
+            runs: result.scrubbed_runs,
+            lessons: result.deleted_lessons,
+            observations: result.deleted_observations,
+            events: result.deleted_events,
+          })}
+          {result.may_have_more ? ` ${t("maintenance.retentionMore")}` : ""}
         </p>
       )}
     </section>

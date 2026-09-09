@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 export function Login({ onLogin }: { onLogin: () => void }) {
+  const { t, err } = useLang();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -16,18 +18,18 @@ export function Login({ onLogin }: { onLogin: () => void }) {
       setCode("");
       onLogin();
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Giriş tamamlanamadı.");
+      setError(errorCode(error));
     } finally {
       setBusy(false);
     }
   }
   return (
     <main className="login">
-      <div className="brand">Skill Forge</div>
-      <h1>Çalışma alanına giriş</h1>
-      <p>Yerel servisten aldığınız tek kullanımlık eşleme kodunu girin.</p>
+      <div className="brand">{t("shell.brand")}</div>
+      <h1>{t("login.title")}</h1>
+      <p>{t("login.detail")}</p>
       <form onSubmit={submit}>
-        <label htmlFor="code">Eşleme kodu</label>
+        <label htmlFor="code">{t("login.code")}</label>
         <input
           id="code"
           autoComplete="one-time-code"
@@ -37,15 +39,15 @@ export function Login({ onLogin }: { onLogin: () => void }) {
           minLength={20}
         />
         <button className="primary" disabled={busy}>
-          {busy ? "Giriş yapılıyor…" : "Giriş yap"}
+          {busy ? t("login.signingIn") : t("login.signIn")}
         </button>
         {error && (
           <p role="alert" className="error">
-            {error}
+            {err(error)}
           </p>
         )}
       </form>
-      <a href="/auth/start">Kurumsal hesapla giriş</a>
+      <a href="/auth/start">{t("login.sso")}</a>
     </main>
   );
 }

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Refresh } from "./ui";
 type Member = {
   user_id: string;
@@ -11,6 +12,7 @@ type Member = {
   project_generation: number | null;
 };
 export function Members({ project }: { project: string }) {
+  const { t } = useLang();
   const [after, setAfter] = useState(""),
     [subject, setSubject] = useState(""),
     [name, setName] = useState(""),
@@ -34,7 +36,7 @@ export function Members({ project }: { project: string }) {
       setAfter("");
       await resource.refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -42,27 +44,21 @@ export function Members({ project }: { project: string }) {
   return (
     <section className="panel">
       <div className="section-heading">
-        <h2>Kullanıcılar ve proje erişimi</h2>
+        <h2>{t("members.title")}</h2>
         <Refresh run={resource.refresh} loading={resource.loading} />
       </div>
-      <p>
-        Yönetici bütün projelere erişir. Editör ve görüntüleyici için proje
-        üyeliği gerekir. Çalışma alanı görüntüleyicisi proje rolüyle yazma
-        yetkisi kazanamaz. Devre dışı üyeliğin mevcut oturumları da erişim
-        alamaz.
-      </p>
+      <p>{t("members.intro")}</p>
       <ErrorNotice message={error || resource.error} />
       <details>
-        <summary>Kullanıcı erişimi tanımla</summary>
+        <summary>{t("members.defineAccess")}</summary>
         <p>
-          Sunucu profilinde kimlik sağlayıcının tam <code>issuer|sub</code>{" "}
-          değerini kullanın. Bu işlem davet göndermez veya yeni parola
-          oluşturmaz.
+          {t("members.definePre")} <code>issuer|sub</code>{" "}
+          {t("members.definePost")}
         </p>
         <form onSubmit={create}>
           <div className="form-grid">
             <label>
-              Kimlik sağlayıcı subject
+              {t("members.subjectLabel")}
               <input
                 required
                 maxLength={1000}
@@ -71,7 +67,7 @@ export function Members({ project }: { project: string }) {
               />
             </label>
             <label>
-              Görünen ad
+              {t("members.nameLabel")}
               <input
                 required
                 maxLength={200}
@@ -80,27 +76,27 @@ export function Members({ project }: { project: string }) {
               />
             </label>
             <label>
-              Çalışma alanı rolü
+              {t("members.workspaceRole")}
               <select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="reader">Okuyucu</option>
-                <option value="writer">Yazıcı</option>
-                <option value="admin">Yönetici</option>
-                <option value="auditor">Denetçi</option>
+                <option value="reader">{t("members.roleReader")}</option>
+                <option value="writer">{t("members.roleWriter")}</option>
+                <option value="admin">{t("members.roleAdmin")}</option>
+                <option value="auditor">{t("members.roleAuditor")}</option>
               </select>
             </label>
           </div>
-          <button disabled={busy}>Kullanıcıyı ekle</button>
+          <button disabled={busy}>{t("members.addUser")}</button>
         </form>
       </details>
       <div className="table-panel">
         <table>
           <thead>
             <tr>
-              <th>Kullanıcı</th>
-              <th>Çalışma alanı</th>
-              <th>Bu proje</th>
-              <th>Durum</th>
-              <th>İşlem</th>
+              <th>{t("members.thUser")}</th>
+              <th>{t("members.thWorkspace")}</th>
+              <th>{t("members.thProject")}</th>
+              <th>{t("members.thStatus")}</th>
+              <th>{t("members.thAction")}</th>
             </tr>
           </thead>
           <tbody>
@@ -117,13 +113,13 @@ export function Members({ project }: { project: string }) {
       </div>
       <div className="toolbar">
         <button disabled={!after} onClick={() => setAfter("")}>
-          İlk sayfa
+          {t("members.firstPage")}
         </button>
         <button
           disabled={!resource.data?.next}
           onClick={() => setAfter(resource.data!.next!)}
         >
-          Sonraki 50 üye
+          {t("members.next50")}
         </button>
       </div>
     </section>
@@ -138,6 +134,7 @@ function MemberRow({
   project: string;
   refresh: () => Promise<void>;
 }) {
+  const { t } = useLang();
   const [role, setRole] = useState(m.role),
     [projectRole, setProjectRole] = useState(m.project_role ?? ""),
     [disabled, setDisabled] = useState(!!m.disabled),
@@ -160,7 +157,7 @@ function MemberRow({
       });
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -169,10 +166,10 @@ function MemberRow({
     return (
       <tr>
         <td>{m.display_name}</td>
-        <td>Kurucu</td>
-        <td>Tüm projeler</td>
-        <td>Aktif</td>
-        <td>Kurucu erişimi korunur</td>
+        <td>{t("members.founderRole")}</td>
+        <td>{t("members.founderProjects")}</td>
+        <td>{t("members.founderActive")}</td>
+        <td>{t("members.founderNote")}</td>
       </tr>
     );
   return (
@@ -183,30 +180,30 @@ function MemberRow({
       </td>
       <td>
         <select
-          aria-label={`${m.display_name} çalışma alanı rolü`}
+          aria-label={t("members.wsRoleAria", { name: m.display_name })}
           value={role}
           disabled={busy}
           onChange={(e) => setRole(e.target.value)}
         >
-          <option value="reader">Okuyucu</option>
-          <option value="writer">Yazıcı</option>
-          <option value="admin">Yönetici</option>
-          <option value="auditor">Denetçi</option>
+          <option value="reader">{t("members.roleReader")}</option>
+          <option value="writer">{t("members.roleWriter")}</option>
+          <option value="admin">{t("members.roleAdmin")}</option>
+          <option value="auditor">{t("members.roleAuditor")}</option>
         </select>
       </td>
       <td>
         <select
-          aria-label={`${m.display_name} proje rolü`}
+          aria-label={t("members.projectRoleAria", { name: m.display_name })}
           value={projectRole}
           disabled={busy || role === "admin"}
           onChange={(e) => setProjectRole(e.target.value)}
         >
-          <option value="">Üyelik yok</option>
-          <option value="reader">Okuyucu</option>
-          <option value="writer">Yazıcı</option>
+          <option value="">{t("members.noMembership")}</option>
+          <option value="reader">{t("members.roleReader")}</option>
+          <option value="writer">{t("members.roleWriter")}</option>
         </select>
         {role === "admin" && (
-          <small className="block">Yönetici olarak erişir</small>
+          <small className="block">{t("members.adminAccess")}</small>
         )}
       </td>
       <td>
@@ -217,12 +214,12 @@ function MemberRow({
             disabled={busy}
             onChange={(e) => setDisabled(e.target.checked)}
           />
-          Devre dışı
+          {t("members.disabledLabel")}
         </label>
       </td>
       <td>
         <button disabled={busy} onClick={() => void save()}>
-          Kaydet
+          {t("common.save")}
         </button>
         <ErrorNotice message={error} />
       </td>

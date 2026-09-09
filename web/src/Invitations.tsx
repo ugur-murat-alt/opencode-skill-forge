@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Refresh, date } from "./ui";
 
 interface Invitation {
@@ -18,18 +19,19 @@ export function Invitations() {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { t, lang } = useLang();
   return (
     <>
       <div className="title-row">
         <div>
-          <h1>Davetler</h1>
-          <p className="subtitle">Tek kullanımlık, süreli katılım davetleri.</p>
+          <h1>{t("invites.title")}</h1>
+          <p className="subtitle">{t("invites.subtitle")}</p>
         </div>
         <Refresh run={() => void resource.refresh()} />
       </div>
       <ErrorNotice message={error || resource.error} />
       <section className="panel">
-        <h2>Oluştur</h2>
+        <h2>{t("invites.create")}</h2>
         <form
           className="toolbar"
           onSubmit={(e) => {
@@ -45,30 +47,27 @@ export function Invitations() {
                 setToken(v.token ?? "");
                 return resource.refresh();
               })
-              .catch((e) =>
-                setError(
-                  e instanceof Error ? e.message : "Davet oluşturulamadı.",
-                ),
-              )
+              .catch((e) => setError(errorCode(e)))
               .finally(() => setBusy(false));
           }}
         >
           <label>
-            Rol
+            {t("invites.role")}
             <select value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="reader">Okuyucu</option>
-              <option value="writer">Yazıcı</option>
-              <option value="admin">Yönetici</option>
-              <option value="auditor">Denetçi</option>
+              <option value="reader">{t("invites.roleReader")}</option>
+              <option value="writer">{t("invites.roleWriter")}</option>
+              <option value="admin">{t("invites.roleAdmin")}</option>
+              <option value="auditor">{t("invites.roleAuditor")}</option>
             </select>
           </label>
           <button className="primary" disabled={busy}>
-            Davet oluştur
+            {t("invites.createBtn")}
           </button>
         </form>
         {token && (
           <p>
-            Davet anahtarı: <code data-testid="invite-token">{token}</code>
+            {t("invites.tokenLabel")}{" "}
+            <code data-testid="invite-token">{token}</code>
           </p>
         )}
       </section>
@@ -76,8 +75,8 @@ export function Invitations() {
         <table>
           <thead>
             <tr>
-              <th>Rol</th>
-              <th>Bitiş</th>
+              <th>{t("invites.role")}</th>
+              <th>{t("invites.expiry")}</th>
               <th></th>
             </tr>
           </thead>
@@ -85,7 +84,7 @@ export function Invitations() {
             {(resource.data ?? []).map((inv) => (
               <tr key={inv.id}>
                 <td>{inv.role}</td>
-                <td>{date(inv.expires_at)}</td>
+                <td>{date(inv.expires_at, lang)}</td>
                 <td>
                   <button
                     className="link-button"
@@ -101,15 +100,11 @@ export function Invitations() {
                           setToken("");
                           return resource.refresh();
                         })
-                        .catch((e) =>
-                          setError(
-                            e instanceof Error ? e.message : "İptal edilemedi.",
-                          ),
-                        )
+                        .catch((e) => setError(errorCode(e)))
                         .finally(() => setBusy(false));
                     }}
                   >
-                    İptal et
+                    {t("common.revoke")}
                   </button>
                 </td>
               </tr>
@@ -117,7 +112,7 @@ export function Invitations() {
           </tbody>
         </table>
         {!resource.error && !resource.data?.length && !token && (
-          <Empty title="Bekleyen davet yok" />
+          <Empty title={t("invites.empty")} />
         )}
       </section>
     </>

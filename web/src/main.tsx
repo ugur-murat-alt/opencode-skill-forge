@@ -16,8 +16,12 @@ import {
   KeyRound,
   MailPlus,
   ScrollText,
+  Sun,
+  Moon,
 } from "lucide-react";
-import { api, ApiError, type Account } from "./api";
+import { api, ApiError, errorCode, type Account } from "./api";
+import { LangProvider, useLang, type Theme } from "./i18n/lang";
+import type { KeyPath } from "./i18n/lang";
 import { OrgScope } from "./OrgScope";
 import { Login } from "./Login";
 import { Projects } from "./Projects";
@@ -38,21 +42,51 @@ import "@fontsource/inter/latin-ext-500.css";
 import "@fontsource/inter/latin-600.css";
 import "@fontsource/inter/latin-ext-600.css";
 import "./style.css";
-const navigation = [
-  { id: "overview", title: "Genel durum", Icon: Home },
-  { id: "library", title: "Skill kütüphanesi", Icon: BookOpen },
-  { id: "jobs", title: "İşler", Icon: Briefcase },
-  { id: "organizations", title: "Organizasyonlar", Icon: Building2 },
-  { id: "roles", title: "Roller", Icon: KeyRound },
-  { id: "invitations", title: "Davetler", Icon: MailPlus },
-  { id: "prompts", title: "Ajan promptları", Icon: ScrollText },
-  { id: "maintenance", title: "Bakım", Icon: Archive },
-  { id: "installations", title: "Kurulumlar", Icon: Settings },
-  { id: "projects", title: "Projeler ve ayarlar", Icon: Folder },
-  { id: "models", title: "Modeller ve tüketim", Icon: Database },
-  { id: "logs", title: "Log ve teşhis", Icon: FileText },
+const navigation: { id: string; key: KeyPath; Icon: typeof Home }[] = [
+  { id: "overview", key: "nav.overview", Icon: Home },
+  { id: "library", key: "nav.library", Icon: BookOpen },
+  { id: "jobs", key: "nav.jobs", Icon: Briefcase },
+  { id: "organizations", key: "nav.organizations", Icon: Building2 },
+  { id: "roles", key: "nav.roles", Icon: KeyRound },
+  { id: "invitations", key: "nav.invitations", Icon: MailPlus },
+  { id: "prompts", key: "nav.prompts", Icon: ScrollText },
+  { id: "maintenance", key: "nav.maintenance", Icon: Archive },
+  { id: "installations", key: "nav.installs", Icon: Settings },
+  { id: "projects", key: "nav.projects", Icon: Folder },
+  { id: "models", key: "nav.models", Icon: Database },
+  { id: "logs", key: "nav.logs", Icon: FileText },
 ];
+function ThemeToggle() {
+  const { theme, setTheme, t } = useLang();
+  const next: Theme = theme === "light" ? "dark" : "light";
+  return (
+    <button
+      className="icon-button"
+      data-testid="theme-toggle"
+      aria-label={t("aria.switchTheme")}
+      title={t("aria.switchTheme")}
+      onClick={() => setTheme(next)}
+    >
+      {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+    </button>
+  );
+}
+function LangToggle() {
+  const { lang, setLang, t } = useLang();
+  return (
+    <button
+      className="lang-toggle"
+      data-testid="lang-toggle"
+      aria-label={t("aria.switchLanguage")}
+      title={t("aria.switchLanguage")}
+      onClick={() => setLang(lang === "tr" ? "en" : "tr")}
+    >
+      {lang === "tr" ? "EN" : "TR"}
+    </button>
+  );
+}
 function App() {
+  const { t, err } = useLang();
   const [account, setAccount] = useState<Account | null | undefined>(undefined),
     [error, setError] = useState(""),
     [project, setProject] = useState(""),
@@ -75,10 +109,7 @@ function App() {
       setError("");
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) setAccount(null);
-      else
-        setError(
-          error instanceof Error ? error.message : "Servise ulaşılamadı.",
-        );
+      else setError(errorCode(error));
     }
   }
   useEffect(() => {
@@ -93,15 +124,15 @@ function App() {
   if (error)
     return (
       <main className="login">
-        <h1>Servise ulaşılamadı</h1>
-        <p role="alert">{error}</p>
-        <button onClick={() => void load()}>Yeniden dene</button>
+        <h1>{t("shell.unreachable")}</h1>
+        <p role="alert">{err(error)}</p>
+        <button onClick={() => void load()}>{t("shell.retry")}</button>
       </main>
     );
   if (account === undefined)
     return (
       <main className="login" role="status">
-        Yükleniyor…
+        {t("shell.loading")}
       </main>
     );
   if (!account) return <Login onLogin={() => void load()} />;
@@ -140,8 +171,8 @@ function App() {
       ? projects
       : (pages[page] ?? (
           <>
-            <h1>Sayfa bulunamadı</h1>
-            <a href="#overview">Genel duruma dön</a>
+            <h1>{t("shell.notFound")}</h1>
+            <a href="#overview">{t("shell.notFoundBack")}</a>
           </>
         ));
   return (
@@ -154,21 +185,21 @@ function App() {
           document.getElementById("main-content")?.focus();
         }}
       >
-        İçeriğe geç
+        {t("shell.skip")}
       </a>
       <aside>
         <a className="brand" href="#overview">
-          Skill Forge
+          {t("shell.brand")}
         </a>
-        <nav aria-label="Ana gezinme">
-          {navigation.map(({ id, title, Icon }) => (
+        <nav aria-label={t("shell.mainNav")}>
+          {navigation.map(({ id, key, Icon }) => (
             <a
               href={`#${id}`}
               key={id}
               aria-current={page === id ? "page" : undefined}
             >
               <Icon size={20} strokeWidth={1.7} />
-              <span>{title}</span>
+              <span>{t(key)}</span>
             </a>
           ))}
         </nav>
@@ -177,7 +208,7 @@ function App() {
         <header>
           <button
             className="icon-button menu-toggle"
-            aria-label="Menüyü aç veya kapat"
+            aria-label={t("aria.menuToggle")}
             aria-expanded={menu}
             onClick={() => setMenu(!menu)}
           >
@@ -192,14 +223,16 @@ function App() {
               onSwitch={reloaded}
               tick={scopeTick}
             />
+            <LangToggle />
+            <ThemeToggle />
             <button
               className="icon-button"
-              aria-label="Çıkış yap"
-              title="Çıkış yap"
+              aria-label={t("aria.logout")}
+              title={t("aria.logout")}
               onClick={() =>
                 void api("/api/logout", { method: "POST" })
                   .then(() => setAccount(null))
-                  .catch((error) => setError(String(error)))
+                  .catch((error) => setError(errorCode(error)))
               }
             >
               <LogOut size={18} />
@@ -218,4 +251,8 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <LangProvider>
+    <App />
+  </LangProvider>,
+);

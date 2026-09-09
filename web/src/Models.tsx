@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, money } from "./ui";
 interface Profile {
   role: string;
@@ -15,6 +16,7 @@ interface Profile {
   health: string;
 }
 export function Models({ project }: { project: string }) {
+  const { t, lang } = useLang();
   const profiles = useResource<{ items: Profile[] }>("/api/providers"),
     policy = useResource<{
       values: Record<string, any>;
@@ -22,24 +24,31 @@ export function Models({ project }: { project: string }) {
     }>(`/api/settings/effective?project_ref=${encodeURIComponent(project)}`);
   return (
     <>
-      <h1>Modeller ve tüketim</h1>
-      <p className="subtitle">
-        Editör, skill geliştirme ve değerlendirme için ayrı model profilleri.
-      </p>
+      <h1>{t("models.title")}</h1>
+      <p className="subtitle">{t("models.subtitle")}</p>
       <ErrorNotice message={profiles.error || policy.error} />
       <div className="policy-strip">
         <span>
-          Ücretli çağrılar:{" "}
-          <strong>{policy.data?.values.allowPaid ? "İzinli" : "Kapalı"}</strong>
-        </span>
-        <span>
-          Maliyet üst sınırı:{" "}
+          {t("models.paidCalls")}{" "}
           <strong>
-            {policy.data ? money(policy.data.values.maxCostMicros) : "—"}
+            {policy.data?.values.allowPaid
+              ? t("models.paidAllowed")
+              : t("models.paidOff")}
           </strong>
         </span>
         <span>
-          Tur sınırı: <strong>{policy.data?.values.maxCalls ?? "—"}</strong>
+          {t("models.costCap")}{" "}
+          <strong>
+            {money(
+              policy.data?.values.maxCostMicros ?? null,
+              t("status.unknown"),
+              lang,
+            )}
+          </strong>
+        </span>
+        <span>
+          {t("models.turnLimit")}{" "}
+          <strong>{policy.data?.values.maxCalls ?? "—"}</strong>
         </span>
       </div>
       {profiles.data?.items.map((item) => (
@@ -50,17 +59,14 @@ export function Models({ project }: { project: string }) {
         />
       ))}
       <section className="panel">
-        <h2>Etkin sağlayıcı sınırları</h2>
-        <p>
-          Profil kaydı bağlantı başarısı değildir. Sadece yönetici
-          politikasındaki origin’lere ve yapılandırılmış bütçeye izin verilir.
-        </p>
+        <h2>{t("models.limitsTitle")}</h2>
+        <p>{t("models.limitsDetail")}</p>
         <table>
           <thead>
             <tr>
-              <th>Ayar</th>
-              <th>Değer</th>
-              <th>Kaynak</th>
+              <th>{t("models.thSetting")}</th>
+              <th>{t("models.thValue")}</th>
+              <th>{t("models.thSource")}</th>
             </tr>
           </thead>
           <tbody>
@@ -91,6 +97,7 @@ function ProfileForm({
   item: Profile;
   refresh: () => Promise<void>;
 }) {
+  const { t } = useLang();
   const [provider, setProvider] = useState(item.profile?.provider ?? "ollama"),
     [model, setModel] = useState(item.profile?.model ?? ""),
     [url, setUrl] = useState(item.profile?.baseUrl ?? ""),
@@ -121,7 +128,7 @@ function ProfileForm({
       setCredential("");
       await refresh();
     } catch (error) {
-      setError(String(error));
+      setError(errorCode(error));
     } finally {
       setBusy(false);
     }
@@ -129,11 +136,18 @@ function ProfileForm({
   return (
     <section className="panel">
       <div className="section-heading">
-        <h2>{item.role === "skill" ? "Skill geliştirme" : "Değerlendirme"}</h2>
+        <h2>
+          {item.role === "skill" ? t("models.roleSkill") : t("models.roleEval")}
+        </h2>
         <small>
-          Sürüm {item.revision} · Anahtar{" "}
-          {item.credential === "configured" ? "kayıtlı" : "yok"} · Bağlantı
-          bilinmiyor
+          {t("models.meta", {
+            revision: item.revision,
+            credential:
+              item.credential === "configured"
+                ? t("models.credOn")
+                : t("models.credOff"),
+            connection: t("models.connUnknown"),
+          })}
         </small>
       </div>
       <form
@@ -144,7 +158,7 @@ function ProfileForm({
       >
         <div className="form-grid">
           <label>
-            Sağlayıcı
+            {t("models.provider")}
             <select
               value={provider}
               onChange={(e) => {
@@ -158,17 +172,17 @@ function ProfileForm({
             </select>
           </label>
           <label>
-            Model kimliği
+            {t("models.modelId")}
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
               required
               maxLength={200}
-              placeholder="Yüklü veya katalogdaki model"
+              placeholder={t("models.modelPh")}
             />
           </label>
           <label>
-            Base URL (isteğe bağlı)
+            {t("models.baseUrl")}
             <input
               type="url"
               value={url}
@@ -176,12 +190,12 @@ function ProfileForm({
               placeholder={
                 provider === "ollama"
                   ? "http://127.0.0.1:11434/v1"
-                  : "Varsayılan sağlayıcı adresi"
+                  : t("models.defaultAddrPh")
               }
             />
           </label>
           <label>
-            Çıktı token sınırı
+            {t("models.tokenLimit")}
             <input
               type="number"
               min={64}
@@ -191,13 +205,13 @@ function ProfileForm({
             />
           </label>
           <label>
-            Yeni API anahtarı
+            {t("models.newKey")}
             <input
               type="password"
               autoComplete="new-password"
               value={credential}
               onChange={(e) => setCredential(e.target.value)}
-              placeholder="Boş bırakılırsa kayıtlı anahtar korunur"
+              placeholder={t("models.keyPh")}
             />
           </label>
           <label className="checkbox">
@@ -206,11 +220,11 @@ function ProfileForm({
               checked={paid}
               onChange={(e) => setPaid(e.target.checked)}
             />{" "}
-            Bu profil ücretli çağrı kullanabilir
+            {t("models.allowPaidLabel")}
           </label>
         </div>
         <button className="primary" disabled={busy}>
-          {busy ? "Kaydediliyor…" : "Profili kaydet"}
+          {busy ? t("models.saving") : t("models.saveProfile")}
         </button>
         <ErrorNotice message={error} />
       </form>

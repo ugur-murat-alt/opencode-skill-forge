@@ -1,0 +1,28 @@
+export const invitesTr = {
+  title: "Davetler",
+  subtitle: "Tek kullanımlık, süreli katılım davetleri.",
+  create: "Oluştur",
+  role: "Rol",
+  roleReader: "Okuyucu",
+  roleWriter: "Yazıcı",
+  roleAdmin: "Yönetici",
+  roleAuditor: "Denetçi",
+  createBtn: "Davet oluştur",
+  tokenLabel: "Davet anahtarı:",
+  expiry: "Bitiş",
+  empty: "Bekleyen davet yok",
+};
+export const invitesEn = {
+  title: "Invitations",
+  subtitle: "One-time, time-limited join invitations.",
+  create: "Create",
+  role: "Role",
+  roleReader: "Reader",
+  roleWriter: "Writer",
+  roleAdmin: "Admin",
+  roleAuditor: "Auditor",
+  createBtn: "Create invitation",
+  tokenLabel: "Invitation key:",
+  expiry: "Expires",
+  empty: "No pending invitations",
+};

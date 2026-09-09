@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { Copy, ExternalLink } from "lucide-react";
+import { errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Status, date } from "./ui";
 export function Installations({ project }: { project: string }) {
+  const { t, lang } = useLang();
   const resource = useResource<{
     items: {
       id: string;
@@ -18,35 +21,29 @@ export function Installations({ project }: { project: string }) {
     [copied, setCopied] = useState(false),
     [error, setError] = useState("");
   const quoted = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
-  const command = `skill-forge install --client ${client} --project ${quoted(directory || "/proje/dizini")} --project-ref ${quoted(project)}`;
+  const command = `skill-forge install --client ${client} --project ${quoted(directory || t("installs.dirExample"))} --project-ref ${quoted(project)}`;
   return (
     <>
-      <h1>Kurulumlar</h1>
-      <p className="subtitle">
-        Resmi MCP ve hook bağlantıları. Bağlantı durumu son gözlenen olaya
-        dayanır.
-      </p>
+      <h1>{t("installs.title")}</h1>
+      <p className="subtitle">{t("installs.subtitle")}</p>
       <ErrorNotice message={resource.error || error} />
       <section className="panel">
-        <h2>Claude Code veya Codex bağla</h2>
-        <p>
-          Skill Forge’un kurulu olduğu cihazda proje dizinini seçin. Kurulum
-          mevcut ayarları korur ve özel veri dizininde yedekler.
-        </p>
+        <h2>{t("installs.connectTitle")}</h2>
+        <p>{t("installs.connectDetail")}</p>
         <div className="form-grid">
           <label>
-            İstemci
+            {t("installs.clientLabel")}
             <select value={client} onChange={(e) => setClient(e.target.value)}>
               <option value="codex">Codex</option>
               <option value="claude">Claude Code</option>
             </select>
           </label>
           <label>
-            Yerel proje dizini
+            {t("installs.dirLabel")}
             <input
               value={directory}
               onChange={(e) => setDirectory(e.target.value)}
-              placeholder="/home/kullanıcı/proje"
+              placeholder={t("installs.dirPh")}
             />
           </label>
         </div>
@@ -56,48 +53,41 @@ export function Installations({ project }: { project: string }) {
             void navigator.clipboard
               .writeText(command)
               .then(() => setCopied(true))
-              .catch(() => setError("Panoya kopyalanamadı."))
+              .catch((e) => setError(errorCode(e)))
           }
         >
           <Copy size={16} />
-          {copied ? "Kopyalandı" : "Komutu kopyala"}
+          {copied ? t("installs.copied") : t("installs.copy")}
         </button>
         <p className="helper">
           {client === "codex"
-            ? "Codex’te /hooks ile yeni hook tanımlarını inceleyip güvenin. Bu istemci denetimi kurulum tarafından atlanmaz."
-            : "Claude Code’da proje MCP bağlantısını istemcinin güven ekranından etkinleştirin."}{" "}
-          Hook ek bağlam verir; görünür kullanıcı metnini değiştirmez.
+            ? t("installs.codexHelper")
+            : t("installs.claudeHelper")}{" "}
+          {t("installs.hookNote")}
         </p>
       </section>
       <section className="panel">
-        <h2>ChatGPT App</h2>
-        <p>
-          HTTPS sunucu profilinin MCP adresini ChatGPT bağlantı ayarlarına
-          ekleyin ve kurumsal OAuth hesabıyla oturum açın. Yerel loopback adresi
-          ChatGPT tarafından uzaktan erişilebilir değildir.
-        </p>
-        <p>
-          Handoff araç seçimine bağlıdır; zorunlu bir istemci hook’u olduğu
-          iddia edilmez.
-        </p>
+        <h2>{t("installs.chatTitle")}</h2>
+        <p>{t("installs.chatDetail1")}</p>
+        <p>{t("installs.chatDetail2")}</p>
         <a
           className="button"
           href="https://developers.openai.com/plugins/build/auth"
           target="_blank"
           rel="noreferrer"
         >
-          <ExternalLink size={16} /> Resmi bağlantı sözleşmesi
+          <ExternalLink size={16} /> {t("installs.officialContract")}
         </a>
       </section>
       <section className="panel table-panel">
-        <h2>Gözlenen kurulumlar</h2>
+        <h2>{t("installs.observedTitle")}</h2>
         <table>
           <thead>
             <tr>
-              <th>İstemci</th>
-              <th>Proje dizini</th>
-              <th>Durum</th>
-              <th>Son bağlantı</th>
+              <th>{t("installs.thClient")}</th>
+              <th>{t("installs.thDir")}</th>
+              <th>{t("installs.thHealth")}</th>
+              <th>{t("installs.thLastSeen")}</th>
             </tr>
           </thead>
           <tbody>
@@ -106,7 +96,7 @@ export function Installations({ project }: { project: string }) {
                 <td>
                   {item.client}
                   <small className="description">
-                    {item.version ?? "Sürüm bildirilmedi"}
+                    {item.version ?? t("installs.versionUnknown")}
                   </small>
                 </td>
                 <td className="mono">{item.directory}</td>
@@ -114,14 +104,16 @@ export function Installations({ project }: { project: string }) {
                   <Status value={item.health} />
                 </td>
                 <td>
-                  {item.last_seen ? date(item.last_seen) : "Henüz gözlenmedi"}
+                  {item.last_seen
+                    ? date(item.last_seen, lang)
+                    : t("installs.neverSeen")}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
         {resource.data?.items.length === 0 && (
-          <Empty title="Henüz kayıtlı istemci yok" />
+          <Empty title={t("installs.emptyInstalls")} />
         )}
       </section>
     </>

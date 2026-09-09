@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { Inbox, RefreshCw } from "lucide-react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang, type Locale } from "./i18n/lang";
 export function useResource<T>(path: string | null) {
   const [data, setData] = useState<T | null>(null),
     [error, setError] = useState(""),
@@ -15,10 +16,7 @@ export function useResource<T>(path: string | null) {
       const value = await api<T>(path);
       if (request === generation.current) setData(value);
     } catch (error) {
-      if (request === generation.current)
-        setError(
-          error instanceof Error ? error.message : "İşlem tamamlanamadı.",
-        );
+      if (request === generation.current) setError(errorCode(error));
     } finally {
       if (request === generation.current) setLoading(false);
     }
@@ -33,9 +31,10 @@ export function useResource<T>(path: string | null) {
   return { data, error, loading, refresh, setData };
 }
 export function ErrorNotice({ message }: { message: string }) {
+  const { err } = useLang();
   return message ? (
     <p className="error" role="alert">
-      {message}
+      {err(message)}
     </p>
   ) : null;
 }
@@ -55,11 +54,12 @@ export function Refresh({
   run: () => unknown;
   loading?: boolean;
 }) {
+  const { t } = useLang();
   return (
     <button
       className="icon-button"
-      title="Yenile"
-      aria-label="Yenile"
+      title={t("common.refresh")}
+      aria-label={t("aria.refresh")}
       disabled={loading}
       onClick={() => void run()}
     >
@@ -67,42 +67,24 @@ export function Refresh({
     </button>
   );
 }
-const statusNames: Record<string, string> = {
-  queued: "Kuyrukta",
-  running: "Çalışıyor",
-  retry_wait: "Tekrar bekliyor",
-  completed: "Tamamlandı",
-  no_op: "Değişiklik yok",
-  rejected: "Reddedildi",
-  failed: "Başarısız",
-  cancelled: "İptal edildi",
-  superseded: "Yerini yenisi aldı",
-  improved: "İyileştirildi",
-  unchanged: "Aynı bırakıldı",
-  fallback: "Özgün metin",
-  connected: "Bağlı",
-  stale: "Güncel değil",
-  unknown: "Bilinmiyor",
-  configured: "Yapılandırıldı",
-  unconfigured: "Yapılandırılmadı",
-};
 export function Status({ value }: { value: string }) {
-  return (
-    <span className={`status status-${value}`}>
-      {statusNames[value] ?? value}
-    </span>
-  );
+  const { st } = useLang();
+  return <span className={`status status-${value}`}>{st(value)}</span>;
 }
-export function date(value: number) {
-  return new Date(value).toLocaleString("tr-TR", {
+export function date(value: number, lang: Locale) {
+  return new Date(value).toLocaleString(lang === "tr" ? "tr-TR" : "en-US", {
     dateStyle: "short",
     timeStyle: "short",
   });
 }
-export function money(value: number | null) {
+export function money(
+  value: number | null,
+  unknownLabel: string,
+  lang: Locale,
+) {
   return value === null
-    ? "Bilinmiyor"
-    : new Intl.NumberFormat("tr-TR", {
+    ? unknownLabel
+    : new Intl.NumberFormat(lang === "tr" ? "tr-TR" : "en-US", {
         style: "currency",
         currency: "USD",
         minimumFractionDigits: 4,
@@ -126,15 +108,16 @@ export function JobTable({
   items: Job[];
   select?: (job: Job) => void;
 }) {
+  const { t, lang } = useLang();
   return (
     <>
       <table>
         <thead>
           <tr>
-            <th>İş</th>
-            <th>Tür</th>
-            <th>Durum</th>
-            <th>Başlangıç</th>
+            <th>{t("jobs.table.job")}</th>
+            <th>{t("jobs.table.kind")}</th>
+            <th>{t("jobs.table.status")}</th>
+            <th>{t("jobs.table.started")}</th>
           </tr>
         </thead>
         <tbody>
@@ -152,16 +135,16 @@ export function JobTable({
                   <span className="mono">{job.run_id.slice(0, 8)}</span>
                 )}
               </td>
-              <td>Skill geliştirme</td>
+              <td>{t("jobs.kindEvolve")}</td>
               <td>
                 <Status value={job.status} />
               </td>
-              <td>{date(job.created_at)}</td>
+              <td>{date(job.created_at, lang)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {!items.length && <Empty title="Henüz iş yok" />}
+      {!items.length && <Empty title={t("jobs.empty")} />}
     </>
   );
 }

@@ -1,20 +1,56 @@
 :root {
   font-family: Inter, Arial, sans-serif;
-  color: #182230;
-  background: #fff;
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light;
   font-synthesis: none;
   line-height: 1.5;
   font-size: 14px;
+  --bg: #fff;
+  --panel: #fff;
+  --text: #182230;
   --border: #e4e7ec;
   --muted: #667085;
+  --faint: #6e7684;
   --accent: #087f8c;
+  --accent-strong: #006e79;
+  --success: #08756b;
+  --danger: #b42318;
+  --danger-bg: #fff3f2;
+  --warn: #a15c00;
+  --surface: #f4f7f8;
+  --surface-2: #f8fafc;
+  --input-border: #cfd4dc;
+  --on-accent: #fff;
+  --shadow-rgb: 16 24 40;
   /* P23 tasarım standardı: compact yoğunluk + az çizgi. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --radius: 8px;
-  --panel-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --panel-shadow: 0 1px 2px rgba(var(--shadow-rgb) / 0.05);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1219;
+  --panel: #131a23;
+  --text: #e6e9ef;
+  --border: #2a3340;
+  --muted: #9aa3b2;
+  --faint: #7d8695;
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --success: #34d399;
+  --danger: #f97066;
+  --danger-bg: #2a1518;
+  --warn: #fbbf24;
+  --surface: #161d27;
+  --surface-2: #1a2230;
+  --input-border: #3a4556;
+  --on-accent: #052e2b;
+  --shadow-rgb: 0 0 0;
+  --panel-shadow: 0 1px 2px rgba(var(--shadow-rgb) / 0.5);
 }
 * {
   box-sizing: border-box;
@@ -45,7 +81,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 9px 16px;
-  background: white;
+  background: var(--bg);
   color: inherit;
   cursor: pointer;
 }
@@ -56,7 +92,7 @@ button:disabled {
 .primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 a {
   color: var(--accent);
@@ -107,10 +143,10 @@ textarea,
 select {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #cfd4dc;
+  border: 1px solid var(--input-border);
   border-radius: 6px;
   color: inherit;
-  background: #fff;
+  background: var(--bg);
 }
 textarea {
   resize: vertical;
@@ -119,9 +155,9 @@ form > button {
   margin-top: 16px;
 }
 .error {
-  color: #b42318;
-  background: #fff3f2;
-  border-left: 3px solid #b42318;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-left: 3px solid var(--danger);
   padding: 12px;
   margin-top: 16px;
   overflow-wrap: anywhere;
@@ -148,7 +184,7 @@ nav a {
   padding: 12px 16px;
   text-decoration: none;
   border-radius: 4px;
-  background: #f4f7f8;
+  background: var(--surface);
   border-left: 2px solid var(--accent);
 }
 .workspace {
@@ -264,7 +300,7 @@ summary {
 .shell aside .brand {
   display: block;
   text-decoration: none;
-  color: #101828;
+  color: var(--text);
   padding: 18px 24px;
 }
 .content {
@@ -298,13 +334,13 @@ nav a {
   margin-bottom: 8px;
   background: none;
   border-left: 2px solid transparent;
-  color: #182230;
+  color: var(--text);
   font-weight: 400;
 }
 nav a[aria-current="page"] {
-  background: #f4f7f8;
+  background: var(--surface);
   border-left-color: var(--accent);
-  color: #006e79;
+  color: var(--accent-strong);
   font-weight: 500;
 }
 header {
@@ -338,7 +374,7 @@ header {
 .scope-badge {
   font-size: 12px;
   color: var(--muted);
-  background: #f2f4f7;
+  background: var(--surface);
   border-radius: 999px;
   padding: 6px 12px;
   white-space: nowrap;
@@ -349,13 +385,23 @@ header {
 .prompt-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: #f8fafc;
+  background: var(--surface-2);
   border-radius: var(--radius);
   padding: var(--space-3);
 }
 .project-switcher select {
   font-size: 12px;
   padding: 8px;
+}
+.lang-toggle {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  cursor: pointer;
 }
 .icon-button {
   padding: 8px;
@@ -381,7 +427,7 @@ header {
 }
 .metrics span {
   display: block;
-  color: #344054;
+  color: var(--text);
   margin-bottom: 12px;
 }
 .metrics strong {
@@ -404,7 +450,7 @@ header {
   min-height: 390px;
 }
 .panel {
-  background: #fff;
+  background: var(--panel);
   border-radius: 6px;
   padding: 24px;
   margin: 24px 0;
@@ -444,9 +490,9 @@ header {
   width: 36px;
   display: grid;
   place-items: center;
-  border: 1px solid #d5dae2;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fafbfc;
+  background: var(--surface-2);
 }
 .connection-panel .panel-link {
   display: flex;
@@ -466,12 +512,12 @@ header {
   align-items: center;
   justify-content: center;
   gap: 14px;
-  color: #818997;
+  color: var(--faint);
   padding: 54px 20px;
   margin: 0;
 }
 .empty svg {
-  color: #9a9fa9;
+  color: var(--faint);
 }
 .empty span {
   font-size: 17px;
@@ -507,15 +553,15 @@ header {
 .status-connected,
 .status-completed,
 .status-improved {
-  color: #08756b;
+  color: var(--success);
 }
 .status-failed,
 .status-rejected {
-  color: #b42318;
+  color: var(--danger);
 }
 .status-queued,
 .status-retry_wait {
-  color: #a15c00;
+  color: var(--warn);
 }
 .toolbar {
   display: flex;
@@ -574,7 +620,7 @@ button {
   color: inherit;
 }
 .button.primary {
-  color: white;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 .file-button {
@@ -618,16 +664,16 @@ button {
 }
 .code-view {
   padding: 18px;
-  background: #f8fafb;
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 4px;
   max-height: 460px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #344054;
+  color: var(--text);
 }
 .danger {
-  color: #b42318;
+  color: var(--danger);
 }
 .form-grid {
   display: grid;
@@ -656,7 +702,7 @@ button {
   gap: 22px;
   flex-wrap: wrap;
   padding: 14px 20px;
-  background: #f8fafb;
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 5px;
   margin-bottom: 24px;
@@ -681,7 +727,7 @@ button {
 }
 .diff-columns > div + div {
   border-left: 1px solid var(--border);
-  background: #f5fbfa;
+  background: var(--surface-2);
 }
 .diff-columns pre {
   white-space: pre-wrap;
@@ -706,7 +752,7 @@ button {
   font-size: 12px;
 }
 .saved {
-  color: #08756b;
+  color: var(--success);
   margin-left: 14px;
 }
 .sr-only {
@@ -723,7 +769,7 @@ button {
   top: -100px;
   left: 260px;
   z-index: 20;
-  background: white;
+  background: var(--panel);
   padding: 12px;
 }
 .skip-link:focus {
@@ -885,10 +931,10 @@ details pre {
   line-height: 1.6;
 }
 .candidate-panel {
-  border: 1px solid var(--accent, #1a8374);
+  border: 1px solid var(--accent);
   padding: 20px;
   margin: 20px 0;
-  background: #fafdfc;
+  background: var(--surface-2);
 }
 .block {
   display: block;

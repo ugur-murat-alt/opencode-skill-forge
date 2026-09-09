@@ -1,7 +1,8 @@
 import { PackageDetail } from "./PackageDetail";
 import { useState } from "react";
 import { Upload, BookOpen } from "lucide-react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty } from "./ui";
 interface Skill {
   skill_id: string;
@@ -25,16 +26,19 @@ export function Library({ project }: { project: string }) {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [cursor, setCursor] = useState("");
+  const { t } = useLang();
   const resource = useResource<{ items: Skill[]; next_cursor: string | null }>(
     `/api/skills?project_ref=${encodeURIComponent(project)}&query=${encodeURIComponent(query)}${scope ? `&scope=${scope}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
   async function importFile(file?: File) {
     if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setError("archive_limit");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      if (file.size > 5 * 1024 * 1024)
-        throw Error("ZIP en fazla 5 MiB olabilir.");
       const bytes = new Uint8Array(await file.arrayBuffer());
       let binary = "";
       for (let i = 0; i < bytes.length; i += 16384)
@@ -50,9 +54,7 @@ export function Library({ project }: { project: string }) {
       });
       await resource.refresh();
     } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "Paket içe aktarılamadı.",
-      );
+      setError(errorCode(error));
     } finally {
       setBusy(false);
     }
@@ -61,14 +63,12 @@ export function Library({ project }: { project: string }) {
     <>
       <div className="title-row">
         <div>
-          <h1>Skill kütüphanesi</h1>
-          <p className="subtitle">
-            Sürümlü paketler, referanslar ve çalışan yardımcılar.
-          </p>
+          <h1>{t("library.title")}</h1>
+          <p className="subtitle">{t("library.subtitle")}</p>
         </div>
         <label className="button primary file-button">
           <Upload size={16} />
-          {busy ? "Doğrulanıyor…" : "ZIP içe aktar"}
+          {busy ? t("library.importing") : t("library.import")}
           <input
             type="file"
             accept=".zip"
@@ -86,15 +86,15 @@ export function Library({ project }: { project: string }) {
         }}
       >
         <label className="search-field">
-          Paket ara
+          {t("library.searchLabel")}
           <input
-            placeholder="Yöntem veya tetik sözcüğü"
+            placeholder={t("library.searchPh")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </label>
         <label>
-          Kapsam
+          {t("library.scope")}
           <select
             value={scope}
             onChange={(e) => {
@@ -102,25 +102,25 @@ export function Library({ project }: { project: string }) {
               setCursor("");
             }}
           >
-            <option value="">Tüm yetkili kapsamlar</option>
-            <option value="project">Proje</option>
-            <option value="personal">Kişisel</option>
-            <option value="workspace">Çalışma alanı</option>
-            <option value="environment">Ortam</option>
+            <option value="">{t("library.allScopes")}</option>
+            <option value="project">{t("library.scopeProject")}</option>
+            <option value="personal">{t("library.scopePersonal")}</option>
+            <option value="workspace">{t("library.scopeWorkspace")}</option>
+            <option value="environment">{t("library.scopeEnvironment")}</option>
           </select>
         </label>
-        <button>Ara</button>
+        <button>{t("common.search")}</button>
       </form>
       <ErrorNotice message={error || resource.error} />
       <section className="panel table-panel">
         <table>
           <thead>
             <tr>
-              <th>Paket</th>
-              <th>Kapsam</th>
-              <th>Skor</th>
-              <th>Sürüm</th>
-              <th>Yönetim</th>
+              <th>{t("library.colPackage")}</th>
+              <th>{t("library.colScope")}</th>
+              <th>{t("library.colScore")}</th>
+              <th>{t("library.colRevision")}</th>
+              <th>{t("library.colManagement")}</th>
             </tr>
           </thead>
           <tbody>
@@ -137,7 +137,9 @@ export function Library({ project }: { project: string }) {
                   <small className="description">{skill.description}</small>
                   {!!skill.other_scopes?.length && (
                     <small className="description">
-                      Ayrıca: {skill.other_scopes.join(", ")}
+                      {t("library.alsoWith", {
+                        scopes: skill.other_scopes.join(", "),
+                      })}
                     </small>
                   )}
                 </td>
@@ -156,12 +158,12 @@ export function Library({ project }: { project: string }) {
                 <td className="mono">{skill.revision.slice(0, 10)}</td>
                 <td>
                   {skill.protected
-                    ? "Korumalı"
+                    ? t("library.protected")
                     : skill.pinned
-                      ? "Sabit"
+                      ? t("library.pinned")
                       : skill.managed
-                        ? "Yönetiliyor"
-                        : "Harici"}
+                        ? t("library.managed")
+                        : t("library.external")}
                 </td>
               </tr>
             ))}
@@ -169,19 +171,19 @@ export function Library({ project }: { project: string }) {
         </table>
         {resource.data?.items.length === 0 && (
           <Empty
-            title="Henüz skill paketi yok"
-            detail="Klasik bir ZIP paketi içe aktarın veya doğrulanmış deneyimi istemcinizden teslim edin."
+            title={t("library.emptyTitle")}
+            detail={t("library.emptyDetail")}
           />
         )}
         <div className="pagination">
           <button disabled={!cursor} onClick={() => setCursor("")}>
-            İlk sayfa
+            {t("library.firstPage")}
           </button>
           <button
             disabled={!resource.data?.next_cursor}
             onClick={() => setCursor(resource.data!.next_cursor!)}
           >
-            Sonraki
+            {t("library.nextPage")}
           </button>
         </div>
       </section>

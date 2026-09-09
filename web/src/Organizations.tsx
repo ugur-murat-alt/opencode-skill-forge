@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { api } from "./api";
+import { api, errorCode } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Refresh, date } from "./ui";
 
 interface Tenant {
@@ -35,6 +36,7 @@ export function Organizations({
   const [confirmName, setConfirmName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { t, lang } = useLang();
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -47,7 +49,7 @@ export function Organizations({
       ]);
       onSwitch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "İşlem tamamlanamadı.");
+      setError(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -65,17 +67,17 @@ export function Organizations({
     <>
       <div className="title-row">
         <div>
-          <h1>Organizasyonlar</h1>
-          <p className="subtitle">Kur, seç, devret, gerektiğinde sil.</p>
+          <h1>{t("orgs.title")}</h1>
+          <p className="subtitle">{t("orgs.subtitle")}</p>
         </div>
         <Refresh run={() => void tenants.refresh()} loading={busy} />
       </div>
       <ErrorNotice message={error || tenants.error} />
       <section className="panel">
-        <h2>Kur</h2>
+        <h2>{t("orgs.create")}</h2>
         <form className="toolbar" onSubmit={create}>
           <label>
-            Organizasyon adı
+            {t("orgs.orgName")}
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -84,25 +86,25 @@ export function Organizations({
             />
           </label>
           <button className="primary" disabled={busy}>
-            Kur
+            {t("orgs.create")}
           </button>
         </form>
       </section>
       <section className="panel table-panel">
-        <h2>Üyeliklerim</h2>
+        <h2>{t("orgs.memberships")}</h2>
         <table>
           <thead>
             <tr>
-              <th>Ad</th>
-              <th>Rol</th>
+              <th>{t("orgs.name")}</th>
+              <th>{t("orgs.role")}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {(tenants.data ?? []).map((t) => (
-              <tr key={t.tenant_id}>
-                <td>{t.name}</td>
-                <td>{t.role}</td>
+            {(tenants.data ?? []).map((row) => (
+              <tr key={row.tenant_id}>
+                <td>{row.name}</td>
+                <td>{row.role}</td>
                 <td>
                   <button
                     className="link-button"
@@ -111,12 +113,12 @@ export function Organizations({
                       void run(() =>
                         api("/api/tenants/switch", {
                           method: "POST",
-                          body: JSON.stringify({ tenant_id: t.tenant_id }),
+                          body: JSON.stringify({ tenant_id: row.tenant_id }),
                         }),
                       )
                     }
                   >
-                    Seç
+                    {t("common.select")}
                   </button>
                 </td>
               </tr>
@@ -124,11 +126,11 @@ export function Organizations({
           </tbody>
         </table>
         {!tenants.error && !tenants.data?.length && (
-          <Empty title="Üyelik yok" />
+          <Empty title={t("orgs.none")} />
         )}
       </section>
       <section className="panel">
-        <h2>Kurucu devri</h2>
+        <h2>{t("orgs.transfer")}</h2>
         <form
           className="toolbar"
           onSubmit={(e) => {
@@ -142,21 +144,21 @@ export function Organizations({
           }}
         >
           <label>
-            Alıcı kullanıcı kimliği
+            {t("orgs.recipient")}
             <input
               value={toUser}
               onChange={(e) => setToUser(e.target.value)}
               required
             />
           </label>
-          <button disabled={busy}>Teklif et</button>
+          <button disabled={busy}>{t("common.offer")}</button>
         </form>
         <table>
           <thead>
             <tr>
-              <th>Teklif</th>
-              <th>Alıcı</th>
-              <th>Bitiş</th>
+              <th>{t("orgs.offer")}</th>
+              <th>{t("orgs.to")}</th>
+              <th>{t("orgs.expiry")}</th>
               <th></th>
             </tr>
           </thead>
@@ -165,7 +167,7 @@ export function Organizations({
               <tr key={o.id}>
                 <td className="mono">{o.id.slice(0, 8)}</td>
                 <td className="mono">{o.to_user_id.slice(0, 12)}</td>
-                <td>{date(o.expires_at)}</td>
+                <td>{date(o.expires_at, lang)}</td>
                 <td>
                   {o.to_user_id === userId && (
                     <button
@@ -179,7 +181,7 @@ export function Organizations({
                         )
                       }
                     >
-                      Kabul et
+                      {t("orgs.accept")}
                     </button>
                   )}
                 </td>
@@ -189,10 +191,10 @@ export function Organizations({
         </table>
       </section>
       <section className="panel">
-        <h2>Silme</h2>
+        <h2>{t("orgs.deletion")}</h2>
         {deletion.data?.requested ? (
           <>
-            <p>Silme istendi. Onay için bekleme süresi dolmalıdır.</p>
+            <p>{t("orgs.deletionPending")}</p>
             <div className="toolbar">
               <button
                 disabled={busy}
@@ -205,7 +207,7 @@ export function Organizations({
                   )
                 }
               >
-                Onayla
+                {t("orgs.confirm")}
               </button>
               <button
                 disabled={busy}
@@ -217,10 +219,10 @@ export function Organizations({
                   )
                 }
               >
-                Vazgeç
+                {t("common.cancel")}
               </button>
               <label>
-                Ad doğrulama
+                {t("orgs.confirmName")}
                 <input
                   value={confirmName}
                   onChange={(e) => setConfirmName(e.target.value)}
@@ -242,14 +244,14 @@ export function Organizations({
             }}
           >
             <label>
-              Ad doğrulama
+              {t("orgs.confirmName")}
               <input
                 value={confirmName}
                 onChange={(e) => setConfirmName(e.target.value)}
                 required
               />
             </label>
-            <button disabled={busy}>Silme iste</button>
+            <button disabled={busy}>{t("orgs.requestDeletion")}</button>
           </form>
         )}
       </section>

@@ -1,6 +1,7 @@
 import { Members } from "./Members";
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type Project } from "./api";
+import { api, errorCode, type Project } from "./api";
+import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice } from "./ui";
 export function Projects({
   project,
@@ -13,6 +14,7 @@ export function Projects({
   userId: string;
   onChange: () => Promise<void>;
 }) {
+  const { t } = useLang();
   const projects = useResource<{ items: Project[] }>("/api/projects"),
     envs = useResource<{ id: string; name: string }[]>("/api/environments"),
     [name, setName] = useState(""),
@@ -33,24 +35,22 @@ export function Projects({
       await projects.refresh();
       await onChange();
     } catch (error) {
-      setError(String(error));
+      setError(errorCode(error));
     } finally {
       setBusy(false);
     }
   }
   return (
     <>
-      <h1>Projeler ve ayarlar</h1>
-      <p className="subtitle">
-        Kapsamlar, miras alınan sınırlar ve bağımsız özellik bayrakları.
-      </p>
+      <h1>{t("projects.title")}</h1>
+      <p className="subtitle">{t("projects.subtitle")}</p>
       <ErrorNotice message={error || projects.error} />
       <section className="panel">
-        <h2>{admin ? "Yeni proje" : "Yetkili projeler"}</h2>
+        <h2>{admin ? t("projects.newProject") : t("projects.authorized")}</h2>
         {admin && (
           <form className="toolbar" onSubmit={create}>
             <label className="search-field">
-              Proje adı
+              {t("projects.nameLabel")}
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -59,9 +59,9 @@ export function Projects({
               />
             </label>
             <label>
-              Ortam
+              {t("projects.envLabel")}
               <select value={env} onChange={(e) => setEnv(e.target.value)}>
-                <option value="">Varsayılan</option>
+                <option value="">{t("projects.defaultEnv")}</option>
                 {(envs.data ?? []).map((e) => (
                   <option value={e.id} key={e.id}>
                     {e.name}
@@ -70,7 +70,7 @@ export function Projects({
               </select>
             </label>
             <button className="primary" disabled={busy}>
-              {busy ? "Oluşturuluyor…" : "Proje oluştur"}
+              {busy ? t("projects.creating") : t("projects.createProject")}
             </button>
           </form>
         )}
@@ -78,8 +78,8 @@ export function Projects({
           <table>
             <thead>
               <tr>
-                <th>Proje</th>
-                <th>project_ref</th>
+                <th>{t("projects.thProject")}</th>
+                <th>{t("projects.thRef")}</th>
               </tr>
             </thead>
             <tbody>
@@ -98,24 +98,40 @@ export function Projects({
     </>
   );
 }
-const numericFields = [
-  { key: "maxCalls", label: "En fazla model çağrısı", min: 1, max: 100 },
-  { key: "maxTokens", label: "Toplam token sınırı", min: 64, max: 1000000 },
-  {
-    key: "maxCostMicros",
-    label: "Maliyet sınırı (mikro USD)",
-    min: 0,
-    max: 1000000000,
-  },
-  { key: "concurrency", label: "Eşzamanlı iş", min: 1, max: 1000 },
-  { key: "retentionDays", label: "Saklama süresi (gün)", min: 1, max: 3650 },
-];
-const booleanFields = [
-  { key: "evolutionEnabled", label: "Skill geliştirme" },
-  { key: "allowPaid", label: "Ücretli model çağrıları" },
-  { key: "dependencyInstall", label: "Kilitli bağımlılık kurulumu" },
-];
 function Settings({ project, userId }: { project?: string; userId: string }) {
+  const { t } = useLang();
+  const numericFields = [
+    { key: "maxCalls", label: t("projects.numMaxCalls"), min: 1, max: 100 },
+    {
+      key: "maxTokens",
+      label: t("projects.numMaxTokens"),
+      min: 64,
+      max: 1000000,
+    },
+    {
+      key: "maxCostMicros",
+      label: t("projects.numMaxCost"),
+      min: 0,
+      max: 1000000000,
+    },
+    {
+      key: "concurrency",
+      label: t("projects.numConcurrency"),
+      min: 1,
+      max: 1000,
+    },
+    {
+      key: "retentionDays",
+      label: t("projects.numRetention"),
+      min: 1,
+      max: 3650,
+    },
+  ];
+  const booleanFields = [
+    { key: "evolutionEnabled", label: t("projects.boolEvolution") },
+    { key: "allowPaid", label: t("projects.boolAllowPaid") },
+    { key: "dependencyInstall", label: t("projects.boolDependency") },
+  ];
   const [scope, setScope] = useState("workspace"),
     [values, setValues] = useState<Record<string, any>>({}),
     [error, setError] = useState(""),
@@ -159,22 +175,26 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
       await effective.refresh();
       setSaved(true);
     } catch (error) {
-      setError(String(error));
+      setError(errorCode(error));
     }
   }
   return (
     <section className="panel">
       <div className="section-heading">
-        <h2>Etkin ayarlar</h2>
+        <h2>{t("projects.settingsTitle")}</h2>
         <label>
-          Kapsam
+          {t("projects.scopeLabel")}
           <select value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="workspace">Çalışma alanı varsayılanı</option>
+            <option value="workspace">{t("projects.scopeWorkspace")}</option>
             {project && (
-              <option value={`project:${project}`}>Seçili proje</option>
+              <option value={`project:${project}`}>
+                {t("projects.scopeProject")}
+              </option>
             )}
-            <option value={`personal:${userId}`}>Kişisel tercih</option>
-            <option value="policy">Yönetici politikası</option>
+            <option value={`personal:${userId}`}>
+              {t("projects.scopePersonal")}
+            </option>
+            <option value="policy">{t("projects.scopePolicy")}</option>
           </select>
         </label>
       </div>
@@ -199,12 +219,14 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
                   )
                 }
               >
-                <option value="inherit">Miras al</option>
-                <option value="true">Açık</option>
-                <option value="false">Kapalı</option>
+                <option value="inherit">{t("projects.inherit")}</option>
+                <option value="true">{t("projects.on")}</option>
+                <option value="false">{t("projects.off")}</option>
               </select>
               <small>
-                Etkin: {String(effective.data?.values[field.key] ?? "—")}
+                {t("projects.effective", {
+                  value: String(effective.data?.values[field.key] ?? "—"),
+                })}
               </small>
             </label>
           ))}
@@ -215,7 +237,9 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
                 type="number"
                 min={field.min}
                 max={field.max}
-                placeholder={`Miras: ${effective.data?.values[field.key] ?? "—"}`}
+                placeholder={t("projects.inheritedPh", {
+                  value: effective.data?.values[field.key] ?? "—",
+                })}
                 value={values[field.key] ?? ""}
                 onChange={(e) =>
                   change(
@@ -227,10 +251,13 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
             </label>
           ))}
           {[
-            { key: "allowedOrigins", label: "İzinli model origin’leri" },
+            {
+              key: "allowedOrigins",
+              label: t("projects.originsAllowed"),
+            },
             {
               key: "scriptAllowedOrigins",
-              label: "İzinli script HTTPS origin’leri",
+              label: t("projects.originsScript"),
             },
           ].map((field) => (
             <label key={field.key}>
@@ -249,32 +276,31 @@ function Settings({ project, userId }: { project?: string; userId: string }) {
                       : undefined,
                   )
                 }
-                placeholder="Her satıra bir origin; boşsa miras al"
+                placeholder={t("projects.originsPh")}
               />
             </label>
           ))}
         </div>
         <button className="primary" disabled={!config.data}>
-          Ayarları kaydet
+          {t("projects.saveSettings")}
         </button>
         {saved && (
           <span className="saved" role="status">
-            Kaydedildi
+            {t("projects.saved")}
           </span>
         )}
         <small className="helper">
-          Sürüm {config.data?.revision ?? "—"}. Daha dar kapsamlar üst
-          harcama/ağ sınırını genişletemez. 1 USD = 1.000.000 mikro USD.
+          {t("projects.helper", { revision: config.data?.revision ?? "—" })}
         </small>
       </form>
       <details>
-        <summary>Etkin değerler ve kaynakları</summary>
+        <summary>{t("projects.effectiveDetails")}</summary>
         <table>
           <thead>
             <tr>
-              <th>Ayar</th>
-              <th>Değer</th>
-              <th>Kaynak</th>
+              <th>{t("projects.thSetting")}</th>
+              <th>{t("projects.thValue")}</th>
+              <th>{t("projects.thSource")}</th>
             </tr>
           </thead>
           <tbody>
