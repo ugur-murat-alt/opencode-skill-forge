@@ -217,11 +217,14 @@ try {
     "content-type": "application/json",
   };
   const api = async (method, path, body) => {
-    const r = await fetch(`${base}${path}`, {
+    const init = {
       method,
       headers: auth,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    };
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+    const r = await fetch(`${base}${path}`, init);
     const text = await r.text();
     let json = null;
     try {

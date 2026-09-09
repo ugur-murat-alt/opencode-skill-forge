@@ -2,9 +2,9 @@
 // P23 web kabul senaryosu (TDD kırmızı adım): gerçek derlenmiş servis +
 // gerçek Chromium ile giriş, gezinme, org/rol/davet/prompt akışları.
 // Çalıştırma: node scripts/web-acceptance.mjs [--port 38471] [--headed]
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
@@ -33,7 +33,11 @@ const safe = async (name, fn) => {
 };
 
 const tmp = await mkdtemp(join(tmpdir(), "forge-web-acc-"));
-const shots = join(ROOT, "docs/evidence/design");
+const shots23 = join(tmp, "shots");
+const shotsArg = args.get("--shots") ?? "";
+const shots = shotsArg ? resolve(shotsArg) : join(tmp, "shots");
+await mkdir(shots, { recursive: true });
+await mkdir(shots23, { recursive: true });
 let serve;
 try {
   serve = spawn(
@@ -115,7 +119,7 @@ try {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1000 },
     });
-    page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 200)));
+    page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 2000)));
     await page.goto(`${base}/`, { waitUntil: "networkidle" });
     await page.locator("#code").fill(code);
     await page.getByRole("button", { name: "Giriş yap" }).click();
@@ -151,7 +155,7 @@ try {
       }
       await sleep(900);
       try {
-        await page.screenshot({ path: join(shots, `p23-${id}.png`) });
+        await page.screenshot({ path: join(shots23, `p23-${id}.png`) });
       } catch (e) {
         check(`shot-${id}`, false, String(e).slice(0, 120));
       }
@@ -305,6 +309,114 @@ try {
       await anon.locator("#code").isVisible(),
       "clean context sees pairing screen",
     );
+
+    // Dil + tema: EN başlık, tarih biçimi, lang özniteliği, dark kalıcılığı.
+    await safe("locale-theme", async () => {
+      await page.goto(`${base}/#invitations`, { waitUntil: "networkidle" });
+      await page.getByLabel("Rol").selectOption("reader");
+      await page.getByRole("button", { name: "Davet oluştur" }).click();
+      await page
+        .locator('[data-testid="invite-token"]')
+        .first()
+        .waitFor({ timeout: 8000 });
+      const expiryTr = await page
+        .locator("table tbody tr td:nth-child(2)")
+        .first()
+        .innerText();
+      await page.locator('[data-testid="lang-toggle"]').click();
+      await page
+        .getByRole("heading", { name: "Invitations" })
+        .waitFor({ timeout: 8000 });
+      check("lang-en", true, "EN heading visible");
+      const lang = await page.evaluate(() => document.documentElement.lang);
+      check("html-lang", lang === "en", lang);
+      const expiryEn = await page
+        .locator("table tbody tr td:nth-child(2)")
+        .first()
+        .innerText();
+      check("locale-date", expiryTr !== expiryEn, `${expiryTr} -> ${expiryEn}`);
+      const searchPh = await page
+        .locator('[data-testid="theme-toggle"]')
+        .getAttribute("aria-label");
+      check(
+        "aria-en",
+        Boolean(searchPh && !/[ğüşöçıİ]/.test(searchPh)),
+        searchPh ?? "",
+      );
+      await page.locator('[data-testid="theme-toggle"]').click();
+      await page.waitForFunction(
+        () => document.documentElement.dataset.theme === "dark",
+        null,
+        { timeout: 8000 },
+      );
+      const themeProbe = await page.evaluate(() => {
+        const cs = (sel) => {
+          const el = document.querySelector(sel);
+          return el ? getComputedStyle(el) : null;
+        };
+        return {
+          html: cs("html")?.backgroundColor,
+          panel: cs(".panel")?.backgroundColor,
+          h1: cs("h1")?.color,
+        };
+      });
+      check(
+        "theme-dark",
+        themeProbe.html === "rgb(13, 18, 25)" &&
+          themeProbe.panel === "rgb(19, 26, 35)" &&
+          themeProbe.h1 === "rgb(230, 233, 239)",
+        JSON.stringify(themeProbe),
+      );
+      await page.goto(`${base}/#library`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+      try {
+        await page.screenshot({ path: join(shots, "p29-library-en-dark.png") });
+      } catch (e) {
+        check("shot-en-dark", false, String(e).slice(0, 120));
+      }
+      await page.goto(`${base}/#invitations`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+      try {
+        await page.screenshot({
+          path: join(shots, "p29-invitations-en-dark.png"),
+        });
+      } catch (e) {
+        check("shot-en-dark", false, String(e).slice(0, 120));
+      }
+      await page.reload({ waitUntil: "networkidle" });
+      const persisted = await page.evaluate(() => ({
+        theme: document.documentElement.dataset.theme,
+        lang: document.documentElement.lang,
+        stored: {
+          t: localStorage.getItem("forge-theme"),
+          l: localStorage.getItem("forge-lang"),
+        },
+      }));
+      check(
+        "theme-persist",
+        persisted.theme === "dark" &&
+          persisted.lang === "en" &&
+          persisted.stored.t === "dark" &&
+          persisted.stored.l === "en",
+        JSON.stringify(persisted),
+      );
+      await page.goto(`${base}/#library`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+      await page.evaluate(() => {
+        localStorage.setItem("forge-theme", "neon");
+        localStorage.setItem("forge-lang", "xx");
+      });
+      await page.reload({ waitUntil: "networkidle" });
+      const safe = await page.evaluate(() => ({
+        theme: document.documentElement.dataset.theme,
+        lang: document.documentElement.lang,
+      }));
+      check(
+        "theme-failsafe",
+        safe.theme === "light" && safe.lang === "tr",
+        JSON.stringify(safe),
+      );
+    });
     await anon.close();
 
     check(
