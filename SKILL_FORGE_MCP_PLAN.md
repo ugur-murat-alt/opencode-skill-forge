@@ -1428,6 +1428,8 @@ TDD sırası izlendi: `scripts/web-acceptance.mjs` (Playwright, gerçek derlenmi
 
 Kural: her issue kendi kabul ölçütleriyle kapanır; kanıt `docs/evidence/issues-progress.json`
 + tekil testler; kullanıcı `docs/reviews/2026-09-09-project-audit` dosyalarına dokunulmaz.
+Kapanış 2026-09-10: 19/19 issue kabul ölçütleriyle kapatıldı; HEAD bc09f38 üzerinde tüm CI
+işleri yeşil (run 34429053537: linux-contracts, web-acceptance, windows/macos/ubuntu).
 
 #### #4 Windows checkout (kapanış: 2059f4d)
 - Kırmızı: `test/repo-portability.test.ts` izlenen yolları Windows geçersiz karakteri,
