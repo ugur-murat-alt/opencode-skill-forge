@@ -965,7 +965,10 @@ export async function createHttpServer(config: LocalConfig) {
         ]),
       );
     }
-    const rows = await selected.orderBy("created_at", "desc").limit(101).execute();
+    const rows = await selected
+      .orderBy("created_at", "desc")
+      .limit(101)
+      .execute();
     const page = rows.length > 100 ? rows.slice(0, 100) : rows;
     if (rows.length > 100) {
       const anchor = page[99]!;
@@ -1122,7 +1125,10 @@ export async function createHttpServer(config: LocalConfig) {
         ]),
       );
     }
-    const rows = await selected.orderBy("created_at", "desc").limit(51).execute();
+    const rows = await selected
+      .orderBy("created_at", "desc")
+      .limit(51)
+      .execute();
     const items = rows.length > 50 ? rows.slice(0, 50) : rows;
     return {
       next:
