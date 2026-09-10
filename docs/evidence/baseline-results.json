@@ -28,7 +28,7 @@
         "build:plugin"
       ],
       "exitCode": 1,
-      "log": "baseline-bun-run-build:plugin.log",
+      "log": "baseline-bun-run-build-plugin.log",
       "tail": "$ bash scripts/build-plugin.sh\nerror: preserved dist/skillforge-core.js is missing\nerror: script \"build:plugin\" exited with code 1\n"
     },
     {
@@ -39,7 +39,7 @@
       ],
       "exitCode": 0,
       "log": "baseline-npm-pack-dry-run.log",
-      "tail": "npm notice\nnpm notice \ud83d\udce6  @vaur94/opencode2-skill-forge@0.5.6\nnpm notice Tarball Contents\nnpm notice 1.1kB LICENSE\nnpm notice 14.3kB README.md\nnpm notice 26.8kB SPR_SKILL_AUTHORING.md\nnpm notice 1.1kB package.json\nnpm notice 390B prompt-editor-agent.jsonc\nnpm notice 7.2kB spr-agent.jsonc\nnpm notice Tarball Details\nnpm notice name: @vaur94/opencode2-skill-forge\nnpm notice version: 0.5.6\nnpm notice filename: vaur94-opencode2-skill-forge-0.5.6.tgz\nnpm notice package size: 18.7 kB\nnpm notice unpacked size: 50.8 kB\nnpm notice shasum: e405b54e1f3ea2ebe4791f8b1ba7eb3709474afa\nnpm notice integrity: sha512-QuM9XQWs4y8AF[...]CW6NigJveb+aw==\nnpm notice total files: 6\nnpm notice\nvaur94-opencode2-skill-forge-0.5.6.tgz\n"
+      "tail": "npm notice\nnpm notice 📦  @vaur94/opencode2-skill-forge@0.5.6\nnpm notice Tarball Contents\nnpm notice 1.1kB LICENSE\nnpm notice 14.3kB README.md\nnpm notice 26.8kB SPR_SKILL_AUTHORING.md\nnpm notice 1.1kB package.json\nnpm notice 390B prompt-editor-agent.jsonc\nnpm notice 7.2kB spr-agent.jsonc\nnpm notice Tarball Details\nnpm notice name: @vaur94/opencode2-skill-forge\nnpm notice version: 0.5.6\nnpm notice filename: vaur94-opencode2-skill-forge-0.5.6.tgz\nnpm notice package size: 18.7 kB\nnpm notice unpacked size: 50.8 kB\nnpm notice shasum: e405b54e1f3ea2ebe4791f8b1ba7eb3709474afa\nnpm notice integrity: sha512-QuM9XQWs4y8AF[...]CW6NigJveb+aw==\nnpm notice total files: 6\nnpm notice\nvaur94-opencode2-skill-forge-0.5.6.tgz\n"
     }
   ]
 }
