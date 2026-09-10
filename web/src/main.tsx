@@ -1,24 +1,7 @@
 import { Maintenance } from "./Maintenance";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  Archive,
-  Home,
-  BookOpen,
-  Briefcase,
-  Settings,
-  Folder,
-  Database,
-  FileText,
-  Menu,
-  LogOut,
-  Building2,
-  KeyRound,
-  MailPlus,
-  ScrollText,
-  Sun,
-  Moon,
-} from "lucide-react";
+import { Menu, LogOut, Sun, Moon } from "lucide-react";
 import {
   api,
   ApiError,
@@ -28,7 +11,7 @@ import {
   type Account,
 } from "./api";
 import { LangProvider, useLang, type Theme } from "./i18n/lang";
-import type { KeyPath } from "./i18n/lang";
+import { screens, projectFreeScreens } from "./screens";
 import { OrgScope } from "./OrgScope";
 import { Login } from "./Login";
 import { Projects } from "./Projects";
@@ -49,20 +32,7 @@ import "@fontsource/inter/latin-ext-500.css";
 import "@fontsource/inter/latin-600.css";
 import "@fontsource/inter/latin-ext-600.css";
 import "./style.css";
-const navigation: { id: string; key: KeyPath; Icon: typeof Home }[] = [
-  { id: "overview", key: "nav.overview", Icon: Home },
-  { id: "library", key: "nav.library", Icon: BookOpen },
-  { id: "jobs", key: "nav.jobs", Icon: Briefcase },
-  { id: "organizations", key: "nav.organizations", Icon: Building2 },
-  { id: "roles", key: "nav.roles", Icon: KeyRound },
-  { id: "invitations", key: "nav.invitations", Icon: MailPlus },
-  { id: "prompts", key: "nav.prompts", Icon: ScrollText },
-  { id: "maintenance", key: "nav.maintenance", Icon: Archive },
-  { id: "installations", key: "nav.installs", Icon: Settings },
-  { id: "projects", key: "nav.projects", Icon: Folder },
-  { id: "models", key: "nav.models", Icon: Database },
-  { id: "logs", key: "nav.logs", Icon: FileText },
-];
+
 function ThemeToggle() {
   const { theme, setTheme, t } = useLang();
   const next: Theme = theme === "light" ? "dark" : "light";
@@ -235,12 +205,7 @@ function App() {
     models: <Models project={project} />,
     logs: <Logs project={project} />,
   };
-  const projectFree = new Set([
-    "organizations",
-    "roles",
-    "invitations",
-    "prompts",
-  ]);
+  const projectFree = projectFreeScreens;
   const content =
     !project && !projectFree.has(page)
       ? projects
@@ -267,7 +232,7 @@ function App() {
           {t("shell.brand")}
         </a>
         <nav aria-label={t("shell.mainNav")}>
-          {navigation.map(({ id, key, Icon }) => (
+          {screens.map(({ id, titleKey: key, Icon }) => (
             <a
               href={`#${id}`}
               key={id}

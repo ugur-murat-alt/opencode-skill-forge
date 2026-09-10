@@ -546,7 +546,7 @@ try {
         .locator("pre.prompt-content")
         .getByText("Draft guard prompt")
         .waitFor({ timeout: 8000 });
-      check("prompt-editor-save", true, "saved prompt visible");
+      check("prompt-save", true, "saved prompt visible");
     });
 
     // Dar ekran başlık geometrisi (issue #16): yatay taşma yok, kontroller

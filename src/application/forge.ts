@@ -20,7 +20,7 @@ import { JobQueue } from "../jobs/queue.js";
 import { PackageStore } from "../skills/store.js";
 import { DockerExecutor } from "../execution/docker.js";
 import { ForgeError, errorEnvelope } from "../domain/errors.js";
-import { toolSchemas, type ToolName } from "../mcp/schemas.js";
+import { toolSchemas, type ToolName } from "../domain/tool-contracts.js";
 import { CursorCodec } from "./cursor.js";
 import { validatePackagePath } from "../skills/paths.js";
 import type { Run } from "../storage/schema.js";

@@ -18,7 +18,7 @@ export const GRANTABLE_ROLES = [
 ] as const;
 export type GrantableRole = (typeof GRANTABLE_ROLES)[number];
 
-/** MCP tools governed by the role matrix (mirrors mcp/schemas tool names). */
+/** Tools governed by the role matrix (contract names in domain/tool-contracts). */
 export const MATRIX_TOOLS = [
   "forge_search",
   "forge_load",
