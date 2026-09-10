@@ -57,6 +57,8 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       dataDir,
       postgresUrl: process.env.FORGE_TEST_POSTGRES_URL,
     });
+    let store: PackageStore | undefined;
+    let sweeping: PackageStore | undefined;
     try {
       const actor = { tenantId: randomUUID(), userId: randomUUID() };
       const now = Date.now();
@@ -83,7 +85,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
         .execute();
       const identities = new IdentityService(storage.db);
       const project = await identities.createProject(actor, "PG lease");
-      const store = new PackageStore(
+      store = new PackageStore(
         storage,
         dataDir,
         undefined,
@@ -160,7 +162,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       await insertPin("pg-live");
       await insertPin("pg-dead");
       let renewed = false;
-      const sweeping = new PackageStore(
+      sweeping = new PackageStore(
         withReaderDeleteBarrier(storage, async () => {
           if (renewed) return;
           renewed = true;
@@ -210,6 +212,8 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       release.resolve();
       await expect(reading).resolves.toBe("live-pg");
     } finally {
+      await store?.dispose();
+      await sweeping?.dispose();
       await storage.close();
       await rm(root, { recursive: true, force: true });
     }

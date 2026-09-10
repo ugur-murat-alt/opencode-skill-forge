@@ -42,6 +42,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       dataDir,
       postgresUrl: process.env.FORGE_TEST_POSTGRES_URL,
     });
+    let store: PackageStore | undefined;
     try {
       const actor = { tenantId: randomUUID(), userId: randomUUID() };
       const now = Date.now();
@@ -74,7 +75,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
         actor,
         "PG file lifecycle",
       );
-      const store = new PackageStore(
+      store = new PackageStore(
         storage,
         dataDir,
         undefined,
@@ -233,6 +234,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
         .execute();
       expect((await store.reclaim(actor)).reclaimed_staging).toBe(1);
     } finally {
+      await store?.dispose();
       await storage.close();
       await rm(root, { recursive: true, force: true });
     }

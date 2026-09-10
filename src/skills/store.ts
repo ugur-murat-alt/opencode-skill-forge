@@ -321,6 +321,19 @@ export class PackageStore {
   private touchInFlight?: Promise<void>;
   /** Issue #27: yenileme hatası sessizce yutulmaz; etkilenen pin'ler
    * sonuç kabulünden önce tek tek doğrulanır (bkz. assertReadLease). */
+  /** Arka plan lease/claim kalp atışlarını durdurur ve uçuştaki dokunuşları
+   * bekler. Aynı storage kaynağı kapatılmadan önce çağrılmalıdır; aksi halde
+   * kapanışla yarışan bir dokunuş havuz kapanışını askıda bırakabilir. */
+  async dispose() {
+    clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+    clearInterval(this.claimHeartbeat);
+    this.claimHeartbeat = undefined;
+    await Promise.allSettled([
+      this.touchInFlight ?? Promise.resolve(),
+      this.claimTouchInFlight ?? Promise.resolve(),
+    ]);
+  }
   private touchReaders() {
     if (this.readers.size === 0 || this.touchInFlight) return;
     this.touchInFlight = this.touchReadersOnce()
