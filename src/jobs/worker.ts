@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
+import { sql } from "kysely";
 import { JobQueue, terminalStates } from "./queue.js";
 import type { Run, RunState } from "../storage/schema.js";
 import { ForgeError } from "../domain/errors.js";
@@ -13,6 +14,13 @@ export class ForgeWorker {
   private boss?: PgBoss;
   private loops: Promise<void>[] = [];
   private controllers = new Set<AbortController>();
+  private sweepChain: Promise<void> = Promise.resolve();
+  /** pg-boss states whose job still owns (or will own) a transport slot. */
+  private static readonly liveTransportStates = new Set([
+    "created",
+    "retry",
+    "active",
+  ]);
   constructor(
     readonly queue: JobQueue,
     readonly handler: JobHandler,
@@ -20,8 +28,10 @@ export class ForgeWorker {
       postgresUrl?: string;
       leaseMs?: number;
       pollMs?: number;
-      /** Bounded liveness window before a stale queued run is re-delivered. */
+      /** Bounded liveness window before a lost delivery is re-sent. */
       livenessMs?: number;
+      /** Dispatcher ownership lease for an outbox row. */
+      dispatchLeaseMs?: number;
     } = {},
   ) {}
   async start() {
@@ -74,73 +84,67 @@ export class ForgeWorker {
       this.loops.push(this.outboxLoop());
     } else this.loops.push(this.localLoop("skill_evolve"));
   }
+  /** Is a pg-boss job for this run still pending or executing? */
+  private async transportActive(kind: Run["kind"], runId: string) {
+    const jobs = await this.boss!.findJobs(kind, { key: runId });
+    return jobs.some((job) => ForgeWorker.liveTransportStates.has(job.state));
+  }
+  /** Hand back dispatcher ownership after an inspected row was not sent. */
+  private async releaseDispatch(tenantId: string, runId: string) {
+    await this.queue.storage.db
+      .updateTable("outbox")
+      .set({ dispatch_owner: null, dispatch_until: 0 })
+      .where("tenant_id", "=", tenantId)
+      .where("run_id", "=", runId)
+      .where("dispatch_owner", "=", this.id)
+      .execute();
+  }
   /**
-   * One outbox liveness pass (issue #11). The application `runs` row is the
-   * source of truth: every nonterminal run whose delivery claim died (pg-boss
-   * retry exhaustion, worker crash) must be re-delivered within a bounded
-   * window instead of stalling in `queued` forever.
+   * One outbox liveness pass (issues #11, #23). `runs` stays the source of
+   * truth. The outbox carries its own bounded delivery schedule: only after
+   * the liveness window passes does the sweep inspect the transport. A
+   * pending/executing pg-boss job renews the window; a missing or terminal
+   * job authorizes one deduplicated re-send. One dispatcher owns a row at a
+   * time, so concurrent workers cannot re-send it in parallel, and a stale
+   * execution lease re-delivers even while an old transport job is still
+   * marked active (the executor is gone; fencing protects the run).
+   *
+   * Sweeps are serialized per worker instance: the background loop and a
+   * direct call must never process the same outbox row concurrently.
    */
   async sweepOutbox() {
+    const next = this.sweepChain.then(() => this.performSweep());
+    this.sweepChain = next.catch(() => undefined);
+    return next;
+  }
+  private async performSweep() {
     if (!this.boss) return;
-    const now = await this.queue.storage.now();
+    const storage = this.queue.storage;
+    const now = await storage.now();
     const livenessMs = this.options.livenessMs ?? 60_000;
-    const stranded = this.queue.storage.db
-      .selectFrom("runs")
-      .select("id")
-      .where((eb) =>
-        eb.or([
-          eb.and([eb("state", "=", "running"), eb("lease_until", "<", now)]),
-          eb.and([
-            eb("state", "=", "retry_wait"),
-            eb("available_at", "<=", now),
-          ]),
-          // Stale `queued` liveness: the outbox says delivered but no pg-boss
-          // job can claim it anymore (retry budget exhausted while the claim
-          // path was failing). Re-deliver after the bounded window.
-          eb.and([
-            eb("state", "=", "queued"),
-            eb("available_at", "<=", now - livenessMs),
-          ]),
-        ]),
-      );
-    const orphans = await this.queue.storage.db
-      .selectFrom("runs as r")
-      .innerJoin("outbox as o", (join) =>
+    const dispatchLeaseMs =
+      this.options.dispatchLeaseMs ?? Math.max(2000, livenessMs);
+    const windowStart = now - livenessMs;
+    const due = await storage.db
+      .selectFrom("outbox as o")
+      .innerJoin("runs as r", (join) =>
         join
           .onRef("o.tenant_id", "=", "r.tenant_id")
           .onRef("o.run_id", "=", "r.id"),
       )
-      .select("r.id")
-      .where("r.state", "=", "queued")
-      .where("o.delivered", "=", 1)
-      .where("r.available_at", "<=", now - livenessMs)
-      .limit(100)
-      .execute();
-    if (orphans.length)
-      process.stderr.write(
-        `Kuyruk uzlaştırması: ${orphans.length} queued iş teslim penceresi aştı; yeniden teslim ediliyor\n`,
-      );
-    await this.queue.storage.db
-      .updateTable("outbox")
-      .set({ delivered: 0 })
-      .where("run_id", "in", stranded)
-      .execute();
-    const pending = await this.queue.storage.db
-      .selectFrom("outbox as o")
-      .innerJoin("runs as r", (join) =>
-        join
-          .onRef("r.tenant_id", "=", "o.tenant_id")
-          .onRef("r.id", "=", "o.run_id"),
-      )
       .select([
-        "r.tenant_id",
-        "r.id",
+        "o.tenant_id",
+        "o.run_id",
+        "o.delivered",
+        "o.delivered_at",
+        "o.delivery_attempts",
         "r.user_id",
         "r.kind",
-        "r.available_at",
         "r.state",
+        "r.available_at",
+        "r.lease_until",
       ])
-      .where("o.delivered", "=", 0)
+      .where("r.state", "not in", terminalStates)
       .where((eb) =>
         eb.not(
           eb.exists(
@@ -152,27 +156,142 @@ export class ForgeWorker {
           ),
         ),
       )
+      .where((eb) =>
+        eb.or([
+          eb("o.dispatch_until", "<=", now),
+          eb("o.dispatch_owner", "is", null),
+        ]),
+      )
+      .where((eb) =>
+        eb.or([
+          // Fresh or reset work: never delivered, or a new attempt is due.
+          eb.and([
+            eb("o.delivered", "=", 0),
+            eb.or([
+              eb.and([
+                eb("r.state", "in", ["queued", "retry_wait"]),
+                eb("r.available_at", "<=", now),
+              ]),
+              eb.and([
+                eb("r.state", "=", "running"),
+                eb("r.lease_until", "<", now),
+              ]),
+            ]),
+          ]),
+          // Previously delivered: the bounded window expired, so the
+          // transport state decides between renew and re-deliver.
+          eb.and([
+            eb("o.delivered", "=", 1),
+            eb("o.delivered_at", "<=", windowStart),
+            eb.or([
+              eb.and([
+                eb("r.state", "in", ["queued", "retry_wait"]),
+                eb("r.available_at", "<=", now),
+              ]),
+              eb.and([
+                eb("r.state", "=", "running"),
+                eb("r.lease_until", "<", now),
+              ]),
+            ]),
+          ]),
+        ]),
+      )
+      .orderBy("r.created_at")
+      .orderBy("r.id")
       .limit(100)
       .execute();
-    for (const run of pending) {
-      if (!terminalStates.includes(run.state))
-        await this.boss!.send(
-          run.kind,
-          { tenantId: run.tenant_id, runId: run.id },
-          {
-            singletonKey: run.id,
-            singletonSeconds: 1,
-            startAfter: new Date(run.available_at),
-            group: { id: `${run.tenant_id}:${run.user_id}` },
-          },
-        );
-      await this.queue.storage.db
+    let redeliveries = 0;
+    for (const candidate of due) {
+      // Exactly one dispatcher owns a row; a crashed owner is recovered
+      // after `dispatchLeaseMs`.
+      const claim = await storage.db
         .updateTable("outbox")
-        .set({ delivered: 1 })
-        .where("tenant_id", "=", run.tenant_id)
-        .where("run_id", "=", run.id)
+        .set({ dispatch_owner: this.id, dispatch_until: now + dispatchLeaseMs })
+        .where("tenant_id", "=", candidate.tenant_id)
+        .where("run_id", "=", candidate.run_id)
+        .where((eb) =>
+          eb.or([
+            eb("dispatch_until", "<=", now),
+            eb("dispatch_owner", "is", null),
+          ]),
+        )
+        // The row must still be due: another dispatcher may have delivered
+        // or renewed it between selection and this claim.
+        .where((eb) =>
+          eb.or([
+            eb("delivered", "=", 0),
+            eb("delivered_at", "<=", windowStart),
+          ]),
+        )
+        .executeTakeFirst();
+      if (Number(claim.numUpdatedRows) !== 1) continue;
+      const box = await storage.db
+        .selectFrom("outbox")
+        .select(["delivered", "delivered_at"])
+        .where("tenant_id", "=", candidate.tenant_id)
+        .where("run_id", "=", candidate.run_id)
+        .executeTakeFirst();
+      if (!box) continue;
+      const current = await storage.db
+        .selectFrom("runs")
+        .select(["state", "available_at", "lease_until"])
+        .where("tenant_id", "=", candidate.tenant_id)
+        .where("id", "=", candidate.run_id)
+        .executeTakeFirst();
+      if (!current || terminalStates.includes(current.state)) {
+        await this.releaseDispatch(candidate.tenant_id, candidate.run_id);
+        continue;
+      }
+      const executorLost =
+        current.state === "running" && current.lease_until < now;
+      const workDue =
+        (current.state === "queued" || current.state === "retry_wait") &&
+        current.available_at <= now;
+      if (!executorLost && !workDue) {
+        await this.releaseDispatch(candidate.tenant_id, candidate.run_id);
+        continue;
+      }
+      if (!executorLost && box.delivered === 1) {
+        if (await this.transportActive(candidate.kind, candidate.run_id)) {
+          // One successful send opens a new window; a healthy transport job
+          // is renewed, never re-sent on every sweep.
+          await storage.db
+            .updateTable("outbox")
+            .set({ delivered_at: now, dispatch_owner: null, dispatch_until: 0 })
+            .where("tenant_id", "=", candidate.tenant_id)
+            .where("run_id", "=", candidate.run_id)
+            .execute();
+          continue;
+        }
+        redeliveries += 1;
+      }
+      await this.boss.send(
+        candidate.kind,
+        { tenantId: candidate.tenant_id, runId: candidate.run_id },
+        {
+          singletonKey: candidate.run_id,
+          singletonSeconds: 1,
+          startAfter: new Date(current.available_at),
+          group: { id: `${candidate.tenant_id}:${candidate.user_id}` },
+        },
+      );
+      await storage.db
+        .updateTable("outbox")
+        .set({
+          delivered: 1,
+          delivered_at: now,
+          delivery_attempts: sql`delivery_attempts + 1`,
+          dispatch_owner: null,
+          dispatch_until: 0,
+        })
+        .where("tenant_id", "=", candidate.tenant_id)
+        .where("run_id", "=", candidate.run_id)
         .execute();
     }
+    if (redeliveries)
+      process.stderr.write(
+        `Kuyruk uzlaştırması: ${redeliveries} queued iş teslim penceresi aştı; yeniden teslim ediliyor\n`,
+      );
   }
   private async pause() {
     await new Promise((resolve) =>

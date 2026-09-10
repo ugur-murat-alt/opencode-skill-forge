@@ -26,6 +26,7 @@ import { learningMigration } from "./learning-migration.js";
 import { executionMigration } from "./execution-migration.js";
 import { skillMigration } from "./skill-migration.js";
 import { providerMigration } from "./provider-migration.js";
+import { outboxDeliveryMigration } from "./outbox-delivery-migration.js";
 import { jobMigration } from "./job-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
@@ -89,6 +90,7 @@ export async function openDatabase(options: {
   }
   const db = new Kysely<DB>({ dialect });
   const migrations: Record<string, Migration> = {
+    "031_outbox_delivery": outboxDeliveryMigration,
     "028_environment_uniqueness": environmentUniquenessMigration,
     "027_agent_prompts": agentPromptMigration,
     "026_binding_identity": bindingIdentityMigration,

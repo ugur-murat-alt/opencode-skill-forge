@@ -349,7 +349,15 @@ export interface DB {
     created_at: number;
   };
   runs: Run;
-  outbox: { tenant_id: string; run_id: string; delivered: number };
+  outbox: {
+    tenant_id: string;
+    run_id: string;
+    delivered: number;
+    delivered_at: Generated<number>;
+    delivery_attempts: Generated<number>;
+    dispatch_owner: string | null;
+    dispatch_until: Generated<number>;
+  };
   run_attempts: {
     tenant_id: string;
     run_id: string;
