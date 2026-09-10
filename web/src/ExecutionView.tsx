@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, errorCode } from "./api";
+import { api, apiHeaders, errorCode } from "./api";
 import { useLang } from "./i18n/lang";
 import { ErrorNotice, Status } from "./ui";
 type Artifact = { path: string; bytes: number; reference: string };
@@ -120,7 +120,31 @@ export function ExecutionView({
             {page.artifacts?.map((a) => (
               <li key={a.path}>
                 <a
+                  className="link-button"
+                  role="button"
                   href={`/api/artifacts/${initial.execution_id}?reference=${encodeURIComponent(a.reference)}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    const url = event.currentTarget.href;
+                    void fetch(url, {
+                      credentials: "same-origin",
+                      headers: apiHeaders(url),
+                    })
+                      .then((response) => {
+                        if (!response.ok)
+                          throw new Error(String(response.status));
+                        return response.blob();
+                      })
+                      .then((blob) => {
+                        const url2 = URL.createObjectURL(blob);
+                        const link = document.createElement("a");
+                        link.href = url2;
+                        link.download = a.path.split("/").pop() ?? a.path;
+                        link.click();
+                        URL.revokeObjectURL(url2);
+                      })
+                      .catch((e) => setError(errorCode(e)));
+                  }}
                 >
                   {t("exec.downloadFile", { path: a.path })}
                 </a>{" "}

@@ -1,4 +1,24 @@
 let csrf = "";
+let activeTenant = "";
+/** Bind API calls to the tenant visible on this screen (issue #3): the shared
+ * forge_tenant cookie can flip when another tab switches organization, so a
+ * write from a stale tab must keep its own explicit scope. */
+export function setActiveTenant(tenantId: string) {
+  activeTenant = tenantId;
+}
+/** Shared header policy: CSRF plus the explicit screen tenant for API calls. */
+export function apiHeaders(
+  path: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    ...(csrf ? { "x-forge-csrf": csrf } : {}),
+    ...(activeTenant && path.startsWith("/api/")
+      ? { "x-forge-tenant": activeTenant }
+      : {}),
+    ...extra,
+  };
+}
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -16,11 +36,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    headers: {
+    headers: apiHeaders(path, {
       ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(csrf ? { "x-forge-csrf": csrf } : {}),
-      ...init.headers,
-    },
+      ...(init.headers as Record<string, string> | undefined),
+    }),
   });
   const value = await response.json();
   if (!response.ok)

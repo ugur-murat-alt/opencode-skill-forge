@@ -19,7 +19,7 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import { api, ApiError, errorCode, type Account } from "./api";
+import { api, ApiError, errorCode, setActiveTenant, type Account } from "./api";
 import { LangProvider, useLang, type Theme } from "./i18n/lang";
 import type { KeyPath } from "./i18n/lang";
 import { OrgScope } from "./OrgScope";
@@ -100,6 +100,7 @@ function App() {
   async function load() {
     try {
       const next = await api<Account>("/api/me");
+      setActiveTenant(next.identity.tenantId);
       setAccount(next);
       setProject((current) =>
         next.projects.some((item) => item.id === current)
@@ -231,7 +232,10 @@ function App() {
               title={t("aria.logout")}
               onClick={() =>
                 void api("/api/logout", { method: "POST" })
-                  .then(() => setAccount(null))
+                  .then(() => {
+                    setActiveTenant("");
+                    setAccount(null);
+                  })
                   .catch((error) => setError(errorCode(error)))
               }
             >
@@ -243,7 +247,7 @@ function App() {
           id="main-content"
           tabIndex={-1}
           className="content"
-          key={`${page}:${project}`}
+          key={`${page}:${project}:${account.identity.tenantId}`}
         >
           {content}
         </main>

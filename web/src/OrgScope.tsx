@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorCode } from "./api";
+import { api, errorCode, setActiveTenant } from "./api";
 import { useResource, ErrorNotice } from "./ui";
 import { useLang } from "./i18n/lang";
 
@@ -51,6 +51,9 @@ export function OrgScope({
   async function switchTenant(id: string) {
     if (!id || id === tenantId) return;
     setError("");
+    // The switch itself must claim the target tenant: after the cookie flips,
+    // a stale-tenant /api/me would otherwise pin the screen back (issue #3).
+    setActiveTenant(id);
     try {
       await api("/api/tenants/switch", {
         method: "POST",
@@ -58,6 +61,7 @@ export function OrgScope({
       });
       onSwitch();
     } catch (e) {
+      setActiveTenant(tenantId);
       setError(errorCode(e));
     }
   }
