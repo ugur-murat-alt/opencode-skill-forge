@@ -1688,6 +1688,19 @@ işleri yeşil olmadan issue kapatılmaz.
   ve failure raporu/görüntüsü artifact'ta; `docs/evidence/p29-web-acceptance.json`
   kaldırıldı (eski raporun yeni başarıyı maskelemesi engellendi).
 
-#### 3. dalga (planlandı)
-- `#32` skill-dışı typed iş türü pilotu (mevcut kuyruk/fencing korunarak) + mimari test
-  negatif fixture'ları + ADR doğruluğu; sonrasında entegrasyon, kanıt rotasyonu ve CI.
+#### 3. dalga — tamamlandı
+- `agent-jobs` / `issue/32-job-kinds`: **#32** → **main `48256aa`** (feat `2b9abe0`).
+  Statik/typed iş türü kaydı (`src/domain/job-kinds.ts`), ortak kabul/audit yaşam
+  döngüsü, `evolutionEnabled` kapısı skill türüne taşındı; test türü gerçek
+  accept→claim→handler→sonuç/audit zincirini yürütüyor (SQLite + PG); mimari sınır
+  testi gerçek module-path çözümü + negatif fixture'larla sertleştirildi; use-case
+  pilotu `src/application/run-reports.ts` (HTTP ve MCP aynı fonksiyonu çağırır).
+- `d61f673` — queued-liveness kabulü kendi PG veritabanında koşar (paylaşımlı DB'de
+  diğer dosyaların bıraktığı queued run'lar sayaç ve fault injection'ı bozuyordu).
+
+#### Final doğrulama (main `d61f673`, push öncesi)
+- typecheck/lint/prettier temiz; tam takım taze PG DB'de 506 test: 494 pass, 12
+  ortamsal (Docker sandbox/pg_dump; temiz tabanla aynı sınıf); işlevsel kırmızı yok.
+- Gerçek tarayıcı kabulü CI-tarzı: **101/101** + artifact `--verify` (commit kimliği
+  eşleşti); kasıtlı hata kapısı kırmızı + failure raporu/görüntüsü; `npm pack` 40 dosya.
+- Push sonrası tüm CI işleri yeşil olmadan issue'lar kapatılmayacak.

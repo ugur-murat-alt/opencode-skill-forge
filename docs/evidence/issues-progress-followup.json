@@ -1,0 +1,146 @@
+{
+ "campaign": "2026-09-10/11 GitHub takip issue kampanyası (#22–#32)",
+ "method": "İzole Git worktree'leri + dosya sahipliği ayrık paralel ajanlar; her issue TDD kırmızı→yeşil + gerçek koşum; koordinatör merge/doğrulama; plan ve kanıt tek yazarlı.",
+ "waves": {
+  "1": {
+   "agents": [
+    "agent-storage #27+#28",
+    "agent-client #22+#29"
+   ],
+   "merged": true
+  },
+  "2": {
+   "agents": [
+    "agent-queue #23",
+    "agent-search #24",
+    "agent-budget #25+#26",
+    "agent-web #30+#31"
+   ],
+   "merged": true
+  },
+  "3": {
+   "agents": [
+    "agent-jobs #32"
+   ],
+   "merged": true
+  }
+ },
+ "issues": {
+  "22": {
+   "title": "Tenant geçişi atomik + tablo seçimi",
+   "commits": [
+    "61769d9",
+    "ccf93f6"
+   ],
+   "evidence": "test/tenant-switch-coordination.test.ts; kabul: switch-atomic-{blocked-write,pending-notice,no-leak}, table-switch-{selector-sync,target-header}, rapid-* (geçiş sırasında mutasyon 409 tenant_switch_pending)"
+  },
+  "29": {
+   "title": "Kurulum cursor + sıralama + talep üzerine sayfalama",
+   "commits": [
+    "b964178",
+    "61769d9",
+    "ccf93f6",
+    "08fc7ac"
+   ],
+   "evidence": "test/list-continuation.test.ts (105 kurulum), pagination-contract-{cursors,pages}; kabul: installations-{first-page-only,partial-error,retry-complete,no-overfetch}, project-101-preserved, project-removed-safe-exit"
+  },
+  "27": {
+   "title": "Reader lease yaşam döngüsü ve kurtarma",
+   "commits": [
+    "f424e89",
+    "9f705a4"
+   ],
+   "evidence": "test/reader-lease-{lifecycle,two-process,crash-recovery,postgres}; dispose() kapanış öncesi uçuştaki heartbeat'leri bekler"
+  },
+  "28": {
+   "title": "Yayın/reclaim koordinasyonu ve sınırlı GC",
+   "commits": [
+    "f424e89",
+    "fe68688"
+   ],
+   "evidence": "test/file-lifecycle-{gc,crash,postgres}; claim protokolü, fd-çapalı symlink-güvenli silme, GET salt + POST reclaim (admin ACL/audit)"
+  },
+  "23": {
+   "title": "Outbox teslim zamanlaması ve sahiplik",
+   "commits": [
+    "4a07a70"
+   ],
+   "evidence": "test/queue-{scheduling-backlog,redelivery-window,redelivery-exhaustion,redelivery-operations}; migration 031; taze PG DB'de 13/13"
+  },
+  "24": {
+   "title": "Global arama sıralaması ve kapsam birleştirme",
+   "commits": [
+    "f153a4a"
+   ],
+   "evidence": "test/search-quality-{topk,merge,metrics,postgres}, search-pagination, search-rank-order; forge_search scanned/scored/queries/token_estimate"
+  },
+  "25": {
+   "title": "İş-başına bütçe (sahte lifetime kota kaldırıldı)",
+   "commits": [
+    "f289e60"
+   ],
+   "evidence": "test/budget-semantics-{jobs,http}, budget-reconciliation; run-scoped held ↔ snapshot limiti"
+  },
+  "26": {
+   "title": "Üretim envanteri policy bağlamı",
+   "commits": [
+    "f289e60"
+   ],
+   "evidence": "test/runner-inventory-policy-wiring (sahte model stream + gerçek handler), policy-wiring (gerçek HTTP transport)"
+  },
+  "30": {
+   "title": "Doğrulanabilir kabul artifact'ı",
+   "commits": [
+    "c8b95f4",
+    "08fc7ac"
+   ],
+   "evidence": "scripts/web-acceptance.mjs --report/--verify/--inject-failure; .github/workflows/verify.yml; test/web-draft-report"
+  },
+  "31": {
+   "title": "Taslak yaşam döngüsü ve geçiş koordinasyonu",
+   "commits": [
+    "e4b3647"
+   ],
+   "evidence": "test/web-draft-guard; kabul: draft-close-after-stage-dialog, draft-tenant-transition, draft-publish-snapshot, draft-failed-refresh-keeps vb."
+  },
+  "32": {
+   "title": "Typed iş türü kaydı + mimari sertleştirme + use-case pilotu",
+   "commits": [
+    "2b9abe0",
+    "48256aa",
+    "d61f673"
+   ],
+   "evidence": "test/job-kinds-{contract,use-case}, architecture-boundaries (gerçek module-path + negatif fixture), common-capabilities; src/application/run-reports.ts"
+  }
+ },
+ "gates": {
+  "typecheck": "pass",
+  "lint": "0 warning / 0 error",
+  "prettier": "izlenen dosyalarda temiz",
+  "full_suite_fresh_pg": "506 test / 494 pass / 12 ortamsal (Docker sandbox + pg_dump) / 0 işlevsel kırmızı",
+  "base_comparison": "temiz 846d71f: 12 ortamsal kırmızı; işlevsel fark yok",
+  "pg_combos": "reader-lease/file-lifecycle 15/15; queue 13/13; search 1/1; job-kinds 8/8",
+  "web_acceptance": "101/101 + artifact --verify; kasıtlı hata kapısı kırmızı + failure raporu/görüntüsü",
+  "npm_pack": "40 dosya, 751.9 kB"
+ },
+ "local_acceptance": {
+  "commit": "d61f673d",
+  "report_sha256_prefix": "58fed4e9bd5f5733",
+  "passed": 101,
+  "total": 101,
+  "duration_ms": 50278,
+  "artifact_contract": "docs/evidence/web-acceptance/README.md"
+ },
+ "environmental_failures": [
+  "execution revision pin sqlite/postgres (sandbox_unavailable)",
+  "Node PostgreSQL backup (pg_dump Docker)",
+  "real Docker node/python",
+  "hashed Python wheel, isolated egress, locked npm dependency",
+  "real MCP search/load/reference/run",
+  "sandbox abort, sandbox timeout, script large JSON"
+ ],
+ "ci": {
+  "note": "Push sonrası tek HEAD'de 5 iş (linux-contracts, web-acceptance, windows/macos/ubuntu) yeşil olmadan issue kapatılmaz.",
+  "run": null
+ }
+}

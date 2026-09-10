@@ -1688,6 +1688,14 @@ class RoleService {
 import { randomUUID as randomUUID5 } from "node:crypto";
 import { sql as sql2 } from "kysely";
 import { z as z6 } from "zod";
+async function visibleScopes(db, identity, projectId) {
+  return [
+    "workspace",
+    `personal:${identity.userId}`,
+    `project:${projectId}`,
+    `environment:${(await new EnvironmentService(db).resolveProject(identity.tenantId, projectId)).environment_id}`
+  ];
+}
 async function ensureDefaultEnvironment(db, tenantId) {
   const id = randomUUID5();
   await db.insertInto("environments").values({
@@ -1870,6 +1878,19 @@ class IdentityService {
     if (role !== "founder" && role !== "admin")
       query = query.where("id", "in", this.db.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId));
     return query.orderBy("id").limit(100).execute();
+  }
+  async listProjectsPage(identity, after) {
+    const role = await this.authorize(identity, "read");
+    let query = this.db.selectFrom("projects").selectAll().where("tenant_id", "=", identity.tenantId);
+    if (role !== "founder" && role !== "admin")
+      query = query.where("id", "in", this.db.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId));
+    if (after !== undefined)
+      query = query.where("id", ">", after);
+    const rows = await query.orderBy("id").limit(101).execute();
+    return {
+      items: rows.length > 100 ? rows.slice(0, 100) : rows,
+      next: rows.length > 100 ? rows[99].id : null
+    };
   }
   async issueSession(userId, kind, ttlMs) {
     const token = randomBytes5(32).toString("base64url");
@@ -2090,7 +2111,17 @@ class DirectoryReaders {
 
 // src/skills/store.ts
 import { randomUUID as randomUUID10, createHash as createHash9 } from "node:crypto";
-import { mkdir as mkdir4, open as open4, rename, lstat as lstat5 } from "node:fs/promises";
+import { constants as constants2 } from "node:fs";
+import {
+  mkdir as mkdir4,
+  open as open4,
+  rename,
+  lstat as lstat5,
+  readdir as readdir2,
+  rmdir,
+  rm as rm3,
+  unlink
+} from "node:fs/promises";
 import { dirname as dirname4, join as join6, relative as relative2, resolve as resolve8, isAbsolute as isAbsolute2 } from "node:path";
 import { sql as sql6 } from "kysely";
 
@@ -2269,6 +2300,19 @@ function scopePriority(scopeKey) {
 // src/jobs/queue.ts
 import { randomUUID as randomUUID9, createHash as createHash8 } from "node:crypto";
 import { sql as sql5 } from "kysely";
+
+// src/domain/job-kinds.ts
+import { z as z8 } from "zod";
+var skillEvolveJobKind = {
+  kind: "skill_evolve",
+  payload: z8.record(z8.string(), z8.unknown()),
+  skillProfile: true
+};
+var defaultJobKinds = {
+  skill_evolve: skillEvolveJobKind
+};
+
+// src/jobs/queue.ts
 var terminalStates = [
   "completed",
   "no_op",
@@ -2284,16 +2328,28 @@ var terminalStates = [
 class JobQueue {
   storage;
   policy;
-  constructor(storage, policy = {}) {
+  kinds;
+  constructor(storage, policy = {}, kinds = defaultJobKinds) {
     this.storage = storage;
     this.policy = policy;
+    this.kinds = kinds;
   }
   async accept(identity, input) {
-    if (input.kind !== "skill_evolve")
+    const definition = this.kinds[input.kind];
+    if (!definition)
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     if (!input.key || input.key.length > 200 || Buffer.byteLength(JSON.stringify(input.payload)) > 65536)
       throw new ForgeError("invalid_handoff", "İş kimliği veya girdi boyutu geçersiz.");
-    const inputJson = JSON.stringify(input.payload), inputHash = createHash8("sha256").update(inputJson).digest("hex");
+    let payload;
+    try {
+      payload = definition.payload.parse(input.payload);
+    } catch {
+      throw new ForgeError("invalid_handoff", "İş girdisi bu türün sözleşmesine uymuyor.", 422, undefined, { kind: input.kind });
+    }
+    const inputJson = JSON.stringify(payload);
+    if (typeof inputJson !== "string" || Buffer.byteLength(inputJson) > 65536)
+      throw new ForgeError("invalid_handoff", "İş girdisi serileştirilemedi.");
+    const inputHash = createHash8("sha256").update(inputJson).digest("hex");
     return this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("memberships").set({ role: sql5`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const auth = new IdentityService(tx);
@@ -2305,13 +2361,13 @@ class JobQueue {
         return { status: "duplicate", run: old };
       }
       const effective = await new SettingsService(auth, this.policy).effective(identity, input.projectId, {});
-      const providerProfile = await tx.selectFrom("provider_profiles").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("role", "=", "skill").orderBy("revision", "desc").limit(1).executeTakeFirst();
-      const config = {
-        ...effective,
-        providerProfile: providerProfile ?? null
-      };
-      if (input.kind === "skill_evolve" && !config.values.evolutionEnabled)
-        throw new ForgeError("evolution_disabled", "Skill geliştirme bu kapsamda kapalı.", 422);
+      let config = { ...effective };
+      if (definition.skillProfile) {
+        const providerProfile = await tx.selectFrom("provider_profiles").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("role", "=", "skill").orderBy("revision", "desc").limit(1).executeTakeFirst();
+        if (!effective.values.evolutionEnabled)
+          throw new ForgeError("evolution_disabled", "Skill geliştirme bu kapsamda kapalı.", 422);
+        config = { ...effective, providerProfile: providerProfile ?? null };
+      }
       const pending = await tx.selectFrom("runs").select((eb) => eb.fn.countAll().as("n")).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("state", "not in", terminalStates).executeTakeFirstOrThrow();
       if (Number(pending.n) >= 100)
         throw new ForgeError("queue_full", "Bu kullanıcı için iş kuyruğu dolu.", 429, 5);
@@ -2349,6 +2405,10 @@ class JobQueue {
         max_attempts: 3
       };
       await tx.insertInto("runs").values(run).execute();
+      await this.audit(tx, run, "job.accepted", {
+        run_id: runId,
+        kind: input.kind
+      }, now);
       await tx.insertInto("outbox").values({ tenant_id: identity.tenantId, run_id: runId, delivered: 0 }).execute();
       await tx.insertInto("queue_fairness").values({
         tenant_id: identity.tenantId,
@@ -2358,12 +2418,23 @@ class JobQueue {
       return { status: "accepted", run };
     });
   }
+  async audit(db, run, kind, detail, now) {
+    await db.insertInto("audit_events").values({
+      tenant_id: run.tenant_id,
+      id: randomUUID9(),
+      user_id: run.user_id,
+      project_id: run.project_id,
+      kind,
+      detail: JSON.stringify(detail),
+      created_at: now
+    }).execute();
+  }
   async now(db) {
     const query = this.storage.backend === "postgres" ? sql5`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as now` : sql5`select cast((julianday('now') - 2440587.5) * 86400000 as integer) as now`;
     return Number((await query.execute(db)).rows[0].now);
   }
   async claim(workerId, leaseMs, kind, target) {
-    if (kind && kind !== "skill_evolve")
+    if (kind && !this.kinds[kind])
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     return this.storage.db.transaction().execute(async (tx) => {
       if (this.storage.backend === "sqlite")
@@ -2397,6 +2468,12 @@ class JobQueue {
             updated_at: now,
             lease_until: 0
           }).where("tenant_id", "=", candidate.tenant_id).where("id", "=", candidate.id).where("fence", "=", candidate.fence).execute();
+          await this.audit(tx, candidate, "job.finished", {
+            run_id: candidate.id,
+            kind: candidate.kind,
+            state: "failed",
+            error_code: "deadline_or_attempt_limit"
+          }, now);
           continue;
         }
         await tx.updateTable("queue_fairness").set({ last_claimed: sql5`last_claimed` }).where("tenant_id", "=", candidate.tenant_id).where("user_id", "=", candidate.user_id).execute();
@@ -2455,6 +2532,12 @@ class JobQueue {
         lease_until: 0
       }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("fence", "=", run.fence).execute();
       await tx.updateTable("run_attempts").set({ ended_at: now, result: state }).where("tenant_id", "=", run.tenant_id).where("run_id", "=", run.id).where("fence", "=", run.fence).execute();
+      await this.audit(tx, run, "job.finished", {
+        run_id: run.id,
+        kind: run.kind,
+        state,
+        error_code: errorCode
+      }, now);
     });
   }
   async fail(run, code, retryable) {
@@ -2471,6 +2554,12 @@ class JobQueue {
         updated_at: now
       }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("fence", "=", run.fence).execute();
       await tx.updateTable("outbox").set({ delivered: 0 }).where("tenant_id", "=", run.tenant_id).where("run_id", "=", run.id).execute();
+      await this.audit(tx, run, "job.retry_scheduled", {
+        run_id: run.id,
+        kind: run.kind,
+        error_code: code,
+        attempt: run.attempt
+      }, now);
     });
   }
   async get(identity, runId) {
@@ -2492,24 +2581,101 @@ class JobQueue {
   async cancel(identity, runId) {
     const run = await this.get(identity, runId);
     await new IdentityService(this.storage.db).authorize(identity, "run", run.project_id);
-    await this.storage.db.updateTable("runs").set({
-      state: "cancelled",
-      fence: sql5`fence + 1`,
-      lease_until: 0,
-      updated_at: await this.storage.now()
-    }).where("tenant_id", "=", identity.tenantId).where("id", "=", run.id).where("state", "not in", terminalStates).execute();
+    await this.storage.db.transaction().execute(async (tx) => {
+      const now = await this.now(tx);
+      const updated = await tx.updateTable("runs").set({
+        state: "cancelled",
+        fence: sql5`fence + 1`,
+        lease_until: 0,
+        updated_at: now
+      }).where("tenant_id", "=", identity.tenantId).where("id", "=", run.id).where("state", "not in", terminalStates).executeTakeFirst();
+      if (Number(updated.numUpdatedRows) === 1)
+        await this.audit(tx, run, "job.cancelled", { run_id: run.id, kind: run.kind }, now);
+    });
   }
 }
 
 // src/skills/store.ts
-var READER_LIVENESS_MS = 60000;
-var READER_HEARTBEAT_MS = 20000;
+var LEASE_DEFAULT_MS = 60000;
+var RECLAIM_GRACE_DEFAULT_MS = 10 * 60000;
+var RECLAIM_BUDGET_DEFAULT = 200;
+var CLAIM_WAIT_DEFAULT_MS = 2000;
+var CLAIM_POLL_MS = 25;
+var RECLAIM_ERROR_LIMIT = 20;
+var RECLAIM_ENTRY_LIMIT = 1e4;
+var STAGING_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var REVISION_NAME = /^[a-f0-9]{64}$/;
+var SKILL_DIR_NAME = /^[0-9a-zA-Z-]{1,100}$/;
+async function removeTreeAnchored(root, relativePath, maxEntries = RECLAIM_ENTRY_LIMIT) {
+  validatePackagePath(relativePath);
+  if (process.platform !== "linux")
+    throw new ForgeError("safe_delete_unavailable", "Güvenli geri kazanım bu platformda hazır değil.", 503);
+  const resolvedRoot = resolve8(root);
+  const segments = relativePath.split("/");
+  const handles = [];
+  try {
+    let current = "/";
+    for (const segment of [
+      "",
+      ...resolvedRoot.split("/").filter(Boolean),
+      ...segments.slice(0, -1)
+    ]) {
+      if (segment)
+        current = join6(current, segment);
+      const handle = await open4(current, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+      handles.push(handle);
+      current = `/proc/self/fd/${handle.fd}`;
+    }
+    const name = segments.at(-1);
+    const target = join6(current, name);
+    const info = await lstat5(target);
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new ForgeError("unsafe_path", "Geri kazanım hedefi gerçek dizin değil.");
+    let visited = 0;
+    async function erase(parent, entry) {
+      if (++visited > maxEntries)
+        throw new ForgeError("cleanup_limit", "Geri kazanım girdi sınırı aşıldı.");
+      try {
+        const child = join6(parent, entry);
+        const childInfo = await lstat5(child);
+        if (!childInfo.isDirectory() || childInfo.isSymbolicLink()) {
+          await unlink(child);
+          return;
+        }
+        const handle = await open4(child, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+        try {
+          const anchor = `/proc/self/fd/${handle.fd}`;
+          for (const nested of await readdir2(anchor))
+            await erase(anchor, nested);
+        } finally {
+          await handle.close();
+        }
+        await rmdir(child);
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          throw error;
+      }
+    }
+    await erase(current, name);
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()));
+  }
+}
 function scopeWritePermission(scopeKey) {
   return scopeKey === "workspace" || scopeKey === "environment" || scopeKey.startsWith("environment:") ? "admin" : "write";
 }
 function searchText(value) {
   return value.normalize("NFKC").replace(/[İı]/g, "i").toLocaleLowerCase("en-US");
 }
+var emptySkipped = () => ({
+  referenced: 0,
+  claims: 0,
+  symlinks: 0,
+  grace: 0
+});
 
 class PackageStore {
   storage;
@@ -2518,11 +2684,21 @@ class PackageStore {
   policy;
   directories = new DirectoryReaders;
   readers = new Map;
-  constructor(storage, dataDir, validateScripts, policy = {}) {
+  leaseMs;
+  heartbeatMs;
+  reclaimGraceMs;
+  reclaimBudget;
+  claimWaitMs;
+  constructor(storage, dataDir, validateScripts, policy = {}, liveness = {}) {
     this.storage = storage;
     this.dataDir = dataDir;
     this.validateScripts = validateScripts;
     this.policy = policy;
+    this.leaseMs = Math.max(50, liveness.leaseMs ?? LEASE_DEFAULT_MS);
+    this.heartbeatMs = Math.max(10, Math.min(this.leaseMs - 10, liveness.heartbeatMs ?? Math.floor(this.leaseMs / 3)));
+    this.reclaimGraceMs = Math.max(0, liveness.reclaimGraceMs ?? RECLAIM_GRACE_DEFAULT_MS);
+    this.reclaimBudget = Math.max(1, liveness.reclaimBudget ?? RECLAIM_BUDGET_DEFAULT);
+    this.claimWaitMs = Math.max(0, liveness.claimWaitMs ?? CLAIM_WAIT_DEFAULT_MS);
   }
   generation = randomUUID10();
   async scope(identity, scope, projectId) {
@@ -2560,12 +2736,66 @@ class PackageStore {
     return result;
   }
   heartbeat;
+  touchInFlight;
+  async dispose() {
+    clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+    clearInterval(this.claimHeartbeat);
+    this.claimHeartbeat = undefined;
+    await Promise.allSettled([
+      this.touchInFlight ?? Promise.resolve(),
+      this.claimTouchInFlight ?? Promise.resolve()
+    ]);
+  }
   touchReaders() {
-    if (this.readers.size === 0)
+    if (this.readers.size === 0 || this.touchInFlight)
       return;
-    this.storage.db.updateTable("revision_readers").set({ expires_at: Date.now() + READER_LIVENESS_MS }).where("owner", "=", this.generation).execute().catch(() => {
-      return;
+    this.touchInFlight = this.touchReadersOnce().catch((error) => {
+      process.stderr.write(`Okuyucu lease yenilemesi doğrulanacak: ${error.message}
+`);
+    }).finally(() => {
+      this.touchInFlight = undefined;
     });
+  }
+  async touchReadersOnce() {
+    const now = await this.storage.now();
+    const refreshed = await this.storage.db.updateTable("revision_readers").set({ expires_at: now + this.leaseMs }).where("owner", "=", this.generation).where("kind", "=", "read").returning("id").execute();
+    const live = new Set(refreshed.map((row) => row.id));
+    const missing = [...this.readers.values()].filter((reader) => !live.has(reader.id));
+    if (!missing.length)
+      return;
+    const present = await this.storage.db.selectFrom("revision_readers").select("id").where("owner", "=", this.generation).where("tenant_id", "in", [
+      ...new Set(missing.map((reader) => reader.tenantId))
+    ]).where("id", "in", missing.map((reader) => reader.id)).execute();
+    const ids = new Set(present.map((row) => row.id));
+    for (const reader of missing)
+      if (reader.sealed && !ids.has(reader.id))
+        reader.leaseLost = true;
+  }
+  readerLeaseError() {
+    return new ForgeError("reader_closed", "Okuma kilidi kaybedildi; sonuç kabul edilmedi.", 409);
+  }
+  async assertReadLease(entry, tenantId, skillId, revision) {
+    if (entry.leaseLost)
+      throw this.readerLeaseError();
+    try {
+      const now = await this.storage.now();
+      const pin = await this.storage.db.selectFrom("revision_readers").select(["owner", "expires_at"]).where("tenant_id", "=", tenantId).where("id", "=", entry.id).executeTakeFirst();
+      if (!pin || pin.owner !== this.generation || pin.expires_at === null || pin.expires_at <= now) {
+        entry.leaseLost = true;
+        throw this.readerLeaseError();
+      }
+      const survives = await this.storage.db.selectFrom("skill_revisions").select("revision").where("tenant_id", "=", tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
+      if (!survives) {
+        entry.leaseLost = true;
+        throw this.readerLeaseError();
+      }
+    } catch (error) {
+      if (error instanceof ForgeError)
+        throw error;
+      entry.leaseLost = true;
+      throw this.readerLeaseError();
+    }
   }
   async withRevision(identity, skillId, revision, read, audit = false) {
     const key = JSON.stringify([
@@ -2578,33 +2808,49 @@ class PackageStore {
     let entry = this.readers.get(key);
     if (!entry) {
       const id = randomUUID10();
-      const ready = this.storage.db.transaction().execute(async (tx) => {
-        await tx.updateTable("tenants").set({ name: sql6`name` }).where("id", "=", identity.tenantId).execute();
-        const skill = await tx.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).executeTakeFirst();
-        if (!skill || !audit && skill.scope_key.startsWith("personal:") && skill.owner_id !== identity.userId)
-          throw new ForgeError("skill_unavailable", "Paket bulunamadı veya yetkiniz yok.", 404);
-        await this.assertEnvAccess(tx, identity, skill.scope_key);
-        await new IdentityService(tx).authorize(identity, audit ? "admin" : "read", audit ? undefined : skill.project_id ?? undefined);
-        const row = await tx.selectFrom("skill_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
-        if (!row)
-          throw new ForgeError("revision_unavailable", "Paket sürümü bulunamadı.", 404);
-        await tx.insertInto("revision_readers").values({
-          tenant_id: identity.tenantId,
-          id,
-          skill_id: skillId,
-          revision,
-          created_at: Date.now(),
-          owner: this.generation,
-          expires_at: Date.now() + READER_LIVENESS_MS
-        }).execute();
-        return { skill, row };
+      const ready = (async () => {
+        const insertedAt = await this.storage.now();
+        return this.storage.db.transaction().execute(async (tx) => {
+          await tx.updateTable("tenants").set({ name: sql6`name` }).where("id", "=", identity.tenantId).execute();
+          const skill = await tx.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).executeTakeFirst();
+          if (!skill || !audit && skill.scope_key.startsWith("personal:") && skill.owner_id !== identity.userId)
+            throw new ForgeError("skill_unavailable", "Paket bulunamadı veya yetkiniz yok.", 404);
+          await this.assertEnvAccess(tx, identity, skill.scope_key);
+          await new IdentityService(tx).authorize(identity, audit ? "admin" : "read", audit ? undefined : skill.project_id ?? undefined);
+          const row = await tx.selectFrom("skill_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
+          if (!row)
+            throw new ForgeError("revision_unavailable", "Paket sürümü bulunamadı.", 404);
+          await tx.insertInto("revision_readers").values({
+            tenant_id: identity.tenantId,
+            id,
+            skill_id: skillId,
+            revision,
+            created_at: insertedAt,
+            owner: this.generation,
+            expires_at: insertedAt + this.leaseMs,
+            kind: "read"
+          }).execute();
+          return { skill, row };
+        });
+      })();
+      entry = {
+        id,
+        tenantId: identity.tenantId,
+        count: 0,
+        ready,
+        sealed: false,
+        leaseLost: false
+      };
+      ready.then(() => {
+        entry.sealed = true;
+      }, () => {
+        return;
       });
-      entry = { id, count: 0, ready };
       this.readers.set(key, entry);
     }
     entry.count++;
     if (!this.heartbeat) {
-      this.heartbeat = setInterval(() => this.touchReaders(), READER_HEARTBEAT_MS);
+      this.heartbeat = setInterval(() => this.touchReaders(), this.heartbeatMs);
       this.heartbeat.unref?.();
     }
     try {
@@ -2614,7 +2860,10 @@ class PackageStore {
         throw new ForgeError("skill_unavailable", "Paket bulunamadı veya yetkiniz yok.", 404);
       await this.assertEnvAccess(this.storage.db, identity, current.scope_key);
       await new IdentityService(this.storage.db).authorize(identity, audit ? "admin" : "read", audit ? undefined : current.project_id ?? undefined);
-      return await read(snapshot.skill, snapshot.row);
+      await this.assertReadLease(entry, identity.tenantId, skillId, revision);
+      const result = await read(snapshot.skill, snapshot.row);
+      await this.assertReadLease(entry, identity.tenantId, skillId, revision);
+      return result;
     } finally {
       entry.count--;
       if (entry.count === 0) {
@@ -2712,156 +2961,180 @@ class PackageStore {
       };
     const id = existing?.id ?? randomUUID10();
     const stagingRoot = this.canonicalPath(join6("tenants", createHash9("sha256").update(identity.tenantId).digest("hex"), "staging", randomUUID10()));
-    const candidate = join6(stagingRoot, input.name);
-    await mkdir4(candidate, { recursive: true, mode: 448 });
-    for (const [path, bytes] of Object.entries(input.files)) {
-      const target = join6(candidate, path);
-      await mkdir4(dirname4(target), { recursive: true, mode: 448 });
-      const fd = await open4(target, "wx", 384);
-      try {
-        await fd.writeFile(bytes);
-        await fd.sync();
-      } finally {
-        await fd.close();
-      }
-    }
-    let tests = null;
-    if (manifest.execution) {
-      if (!this.validateScripts)
-        throw new ForgeError("sandbox_unavailable", "Script doğrulama sandbox'ı hazır değil.", 503);
-      tests = await this.validateScripts(candidate, manifest);
-      if (!tests.passed || tests.hash !== manifest.hash)
-        throw new ForgeError("candidate_tests_failed", "Script davranış testleri geçmedi.", 422);
-    }
-    if (JSON.stringify(await packageInventory(candidate)) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
-      throw new ForgeError("candidate_changed", "Test sırasında aday dosya envanteri değişti.", 409);
-    for (const file of manifest.files)
-      if (createHash9("sha256").update(await secureRead(candidate, file.path)).digest("hex") !== file.hash)
-        throw new ForgeError("candidate_changed", "Test sırasında aday paketi değişti.", 409);
-    const packageRelative = join6("tenants", createHash9("sha256").update(identity.tenantId).digest("hex"), "packages", createHash9("sha256").update(resolvedScope).digest("hex").slice(0, 20), id, "revisions", manifest.hash, input.name);
-    const destination = this.canonicalPath(packageRelative);
-    await mkdir4(dirname4(destination), { recursive: true, mode: 448 });
+    const stagingRelative = relative2(resolve8(this.dataDir), stagingRoot);
+    const stagingClaim = await this.tryAcquireClaim(identity.tenantId, "staging", stagingRelative);
+    if (!stagingClaim)
+      throw new ForgeError("candidate_changed", "Staging alanı sahipliği alınamadı; yeniden yayınlayın.", 409);
+    let revisionClaim = null;
     try {
-      await rename(candidate, destination);
-    } catch (error) {
-      if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
-        throw error;
-      for (const file of manifest.files)
-        if (createHash9("sha256").update(await secureRead(destination, file.path)).digest("hex") !== file.hash)
-          throw new ForgeError("revision_corrupt", "Mevcut immutable dizin değişmiş.", 409);
-    }
-    if (process.platform !== "win32") {
-      const fd = await open4(dirname4(destination), "r");
-      try {
-        await fd.sync();
-      } finally {
-        await fd.close();
-      }
-    }
-    try {
-      return await this.storage.db.transaction().execute(async (tx) => {
-        await tx.updateTable("memberships").set({ role: sql6`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
-        await new IdentityService(tx).authorize(identity, scopeWritePermission(input.scope), input.projectId);
-        if (input.run)
-          await new JobQueue(this.storage).assertLease(tx, input.run);
-        if (existing) {
-          const current = await tx.selectFrom("skills").select(["scope_key", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", id).executeTakeFirst();
-          if (current?.scope_key !== resolvedScope || current.project_id !== (input.scope === "project" ? input.projectId : null))
-            throw new ForgeError("revision_conflict", "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.", 409);
+      const candidate = join6(stagingRoot, input.name);
+      await mkdir4(candidate, { recursive: true, mode: 448 });
+      for (const [path, bytes] of Object.entries(input.files)) {
+        const target = join6(candidate, path);
+        await mkdir4(dirname4(target), { recursive: true, mode: 448 });
+        const fd = await open4(target, "wx", 384);
+        try {
+          await fd.writeFile(bytes);
+          await fd.sync();
+        } finally {
+          await fd.close();
         }
-        const now = Date.now();
-        if (!existing)
-          await tx.insertInto("skills").values({
+      }
+      let tests = null;
+      if (manifest.execution) {
+        if (!this.validateScripts)
+          throw new ForgeError("sandbox_unavailable", "Script doğrulama sandbox'ı hazır değil.", 503);
+        tests = await this.validateScripts(candidate, manifest);
+        if (!tests.passed || tests.hash !== manifest.hash)
+          throw new ForgeError("candidate_tests_failed", "Script davranış testleri geçmedi.", 422);
+      }
+      if (JSON.stringify(await packageInventory(candidate)) !== JSON.stringify(manifest.files.map((file) => file.path).sort()))
+        throw new ForgeError("candidate_changed", "Test sırasında aday dosya envanteri değişti.", 409);
+      for (const file of manifest.files)
+        if (createHash9("sha256").update(await secureRead(candidate, file.path)).digest("hex") !== file.hash)
+          throw new ForgeError("candidate_changed", "Test sırasında aday paketi değişti.", 409);
+      await this.assertClaim(stagingClaim);
+      const packageRelative = join6("tenants", createHash9("sha256").update(identity.tenantId).digest("hex"), "packages", createHash9("sha256").update(resolvedScope).digest("hex").slice(0, 20), id, "revisions", manifest.hash, input.name);
+      const destination = this.canonicalPath(packageRelative);
+      await mkdir4(dirname4(destination), { recursive: true, mode: 448 });
+      const revisionKey = `${id}/${manifest.hash}`;
+      revisionClaim = await this.acquireClaimWithWait(identity.tenantId, "revision", revisionKey, this.claimWaitMs);
+      if (!revisionClaim)
+        throw new ForgeError("revision_conflict", "Aynı sürüm dizini başka bir yayın veya geri kazanım tarafından kullanılıyor.", 409);
+      try {
+        await rename(candidate, destination);
+      } catch (error) {
+        if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
+          throw error;
+        for (const file of manifest.files)
+          if (createHash9("sha256").update(await secureRead(destination, file.path)).digest("hex") !== file.hash)
+            throw new ForgeError("revision_corrupt", "Mevcut immutable dizin değişmiş.", 409);
+      }
+      await this.assertClaim(revisionClaim);
+      if (process.platform !== "win32") {
+        const fd = await open4(dirname4(destination), "r");
+        try {
+          await fd.sync();
+        } finally {
+          await fd.close();
+        }
+      }
+      const claimNow = await this.storage.now();
+      try {
+        return await this.storage.db.transaction().execute(async (tx) => {
+          await tx.updateTable("memberships").set({ role: sql6`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+          await new IdentityService(tx).authorize(identity, scopeWritePermission(input.scope), input.projectId);
+          if (input.run)
+            await new JobQueue(this.storage).assertLease(tx, input.run);
+          const claimRow = await tx.selectFrom("package_claims").select(["owner", "expires_at"]).where("tenant_id", "=", identity.tenantId).where("kind", "=", "revision").where("claim_key", "=", revisionKey).executeTakeFirst();
+          if (!claimRow || claimRow.owner !== this.generation || claimRow.expires_at <= claimNow)
+            throw new ForgeError("revision_conflict", "Sürüm dizini bu işlem sırasında geri kazanıldı; yeniden deneyin.", 409);
+          if (existing) {
+            const current = await tx.selectFrom("skills").select(["scope_key", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", id).executeTakeFirst();
+            if (current?.scope_key !== resolvedScope || current.project_id !== (input.scope === "project" ? input.projectId : null))
+              throw new ForgeError("revision_conflict", "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.", 409);
+          }
+          const now = Date.now();
+          if (!existing)
+            await tx.insertInto("skills").values({
+              tenant_id: identity.tenantId,
+              id,
+              scope_key: resolvedScope,
+              project_id: input.scope === "project" ? input.projectId : null,
+              owner_id: identity.userId,
+              name: input.name,
+              description: manifest.description,
+              search_text: searchText(`${input.name} ${manifest.description}`),
+              active_revision: null,
+              managed: 1,
+              pinned: 0,
+              protected: 0,
+              archived: 0,
+              created_at: now,
+              updated_at: now
+            }).execute();
+          await tx.insertInto("skill_revisions").values({
             tenant_id: identity.tenantId,
-            id,
-            scope_key: resolvedScope,
-            project_id: input.scope === "project" ? input.projectId : null,
-            owner_id: identity.userId,
-            name: input.name,
+            skill_id: id,
+            revision: manifest.hash,
+            manifest_json: JSON.stringify(manifest),
+            package_path: packageRelative,
+            created_by: identity.userId,
+            run_id: input.run?.id ?? null,
+            validation_json: JSON.stringify({
+              hash: manifest.hash,
+              passed: true,
+              scripts: tests
+            }),
+            created_at: now
+          }).onConflict((oc) => oc.columns(["tenant_id", "skill_id", "revision"]).doNothing()).execute();
+          let update = tx.updateTable("skills").set({
+            active_revision: manifest.hash,
             description: manifest.description,
             search_text: searchText(`${input.name} ${manifest.description}`),
-            active_revision: null,
-            managed: 1,
-            pinned: 0,
-            protected: 0,
-            archived: 0,
-            created_at: now,
-            updated_at: now
-          }).execute();
-        await tx.insertInto("skill_revisions").values({
-          tenant_id: identity.tenantId,
-          skill_id: id,
-          revision: manifest.hash,
-          manifest_json: JSON.stringify(manifest),
-          package_path: packageRelative,
-          created_by: identity.userId,
-          run_id: input.run?.id ?? null,
-          validation_json: JSON.stringify({
-            hash: manifest.hash,
-            passed: true,
-            scripts: tests
-          }),
-          created_at: now
-        }).onConflict((oc) => oc.columns(["tenant_id", "skill_id", "revision"]).doNothing()).execute();
-        let update = tx.updateTable("skills").set({
-          active_revision: manifest.hash,
-          description: manifest.description,
-          search_text: searchText(`${input.name} ${manifest.description}`),
-          updated_at: sql6`case when updated_at >= ${now} then updated_at + 1 else ${now} end`
-        }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).where("managed", "=", 1).where("protected", "=", 0).where("pinned", "=", 0);
-        update = update.where("scope_key", "=", resolvedScope).where("project_id", input.scope === "project" ? "=" : "is", input.scope === "project" ? input.projectId : null);
-        update = input.baseRevision === null ? update.where("active_revision", "is", null) : update.where("active_revision", "=", input.baseRevision);
-        if (Number((await update.executeTakeFirst()).numUpdatedRows) !== 1)
-          throw new ForgeError("revision_conflict", "Paket eşzamanlı değişti veya korumaya alındı.", 409);
-        await tx.insertInto("audit_events").values({
-          tenant_id: identity.tenantId,
-          id: randomUUID10(),
-          user_id: identity.userId,
-          project_id: input.projectId ?? null,
-          kind: "skill.published",
-          detail: JSON.stringify({
-            skill_id: id,
-            revision: manifest.hash,
-            base_revision: input.baseRevision
-          }),
-          created_at: now
-        }).execute();
-        if (input.importReceipt) {
-          if (existing || !input.projectId)
-            throw new ForgeError("migration_target_exists", "Aktarım yalnız yeni paket oluşturabilir.", 409);
-          const receipt = input.importReceipt;
-          await tx.updateTable("skills").set({
-            managed: receipt.flags.managed ? 1 : 0,
-            protected: receipt.flags.protected ? 1 : 0,
-            pinned: receipt.flags.pinned ? 1 : 0
-          }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).execute();
-          await tx.insertInto("migration_receipts").values({
+            updated_at: sql6`case when updated_at >= ${now} then updated_at + 1 else ${now} end`
+          }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).where("managed", "=", 1).where("protected", "=", 0).where("pinned", "=", 0);
+          update = update.where("scope_key", "=", resolvedScope).where("project_id", input.scope === "project" ? "=" : "is", input.scope === "project" ? input.projectId : null);
+          update = input.baseRevision === null ? update.where("active_revision", "is", null) : update.where("active_revision", "=", input.baseRevision);
+          if (Number((await update.executeTakeFirst()).numUpdatedRows) !== 1)
+            throw new ForgeError("revision_conflict", "Paket eşzamanlı değişti veya korumaya alındı.", 409);
+          await tx.insertInto("audit_events").values({
             tenant_id: identity.tenantId,
-            id: receipt.id,
+            id: randomUUID10(),
             user_id: identity.userId,
-            project_id: input.projectId,
-            source_id: receipt.sourceId,
-            source_checksum: receipt.sourceChecksum,
+            project_id: input.projectId ?? null,
+            kind: "skill.published",
+            detail: JSON.stringify({
+              skill_id: id,
+              revision: manifest.hash,
+              base_revision: input.baseRevision
+            }),
+            created_at: now
+          }).execute();
+          if (input.importReceipt) {
+            if (existing || !input.projectId)
+              throw new ForgeError("migration_target_exists", "Aktarım yalnız yeni paket oluşturabilir.", 409);
+            const receipt = input.importReceipt;
+            await tx.updateTable("skills").set({
+              managed: receipt.flags.managed ? 1 : 0,
+              protected: receipt.flags.protected ? 1 : 0,
+              pinned: receipt.flags.pinned ? 1 : 0
+            }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).execute();
+            await tx.insertInto("migration_receipts").values({
+              tenant_id: identity.tenantId,
+              id: receipt.id,
+              user_id: identity.userId,
+              project_id: input.projectId,
+              source_id: receipt.sourceId,
+              source_checksum: receipt.sourceChecksum,
+              skill_id: id,
+              revision: manifest.hash,
+              skill_generation: now + 1,
+              flags_json: JSON.stringify(receipt.flags),
+              state: "applied",
+              created_at: now,
+              updated_at: now
+            }).execute();
+          }
+          return {
             skill_id: id,
             revision: manifest.hash,
-            skill_generation: now + 1,
-            flags_json: JSON.stringify(receipt.flags),
-            state: "applied",
-            created_at: now,
-            updated_at: now
-          }).execute();
-        }
-        return {
-          skill_id: id,
-          revision: manifest.hash,
-          decision: existing ? "update" : "create"
-        };
+            decision: existing ? "update" : "create"
+          };
+        });
+      } catch (error) {
+        const code = error.code;
+        if (code === "23505" || code?.startsWith("SQLITE_CONSTRAINT"))
+          throw new ForgeError("revision_conflict", "Paket adı/sürümü eşzamanlı yayınlandı.", 409);
+        throw error;
+      }
+    } finally {
+      if (revisionClaim)
+        await this.releaseClaim(revisionClaim);
+      await this.releaseClaim(stagingClaim);
+      await rm3(stagingRoot, { recursive: true, force: true }).catch(() => {
+        return;
       });
-    } catch (error) {
-      const code = error.code;
-      if (code === "23505" || code?.startsWith("SQLITE_CONSTRAINT"))
-        throw new ForgeError("revision_conflict", "Paket adı/sürümü eşzamanlı yayınlandı.", 409);
-      throw error;
     }
   }
   async setScope(identity, skillId, input) {
@@ -2913,6 +3186,8 @@ class PackageStore {
     });
   }
   async search(identity, input) {
+    const started = performance.now();
+    let queries = 0;
     await new IdentityService(this.storage.db).authorize(identity, "read", input.projectId);
     const scopes = input.scope ? [await this.scope(identity, input.scope, input.projectId)] : [
       "workspace",
@@ -2923,109 +3198,308 @@ class PackageStore {
     const effective = await new SettingsService(new IdentityService(this.storage.db), this.policy).effective(identity, input.projectId);
     const minScore = effective.values.searchMinScore ?? 0;
     const limit2 = Math.max(1, Math.min(20, effective.values.searchMaxResults ?? 20, input.limit ?? 5));
-    const terms2 = searchText(input.query ?? "").split(/\s+/).filter(Boolean).slice(0, 10);
-    let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("scope_key", "in", scopes).where("archived", "=", 0).where("active_revision", "is not", null);
-    for (const term of terms2)
-      query = query.where(sql6`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`);
-    const BATCH = 100;
-    let candidateAnchor = null;
-    let rankAnchor = null;
+    const filterTerms = searchText(input.query ?? "").split(/\s+/).filter(Boolean).slice(0, 10);
+    const scoreTerms = (input.query ?? "").normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((term) => term.length >= 2);
     const invalidCursor = () => new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+    const compareRank = (a, b) => b.score - a.score || b.priority - a.priority || b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const rankAfter = (a, b) => compareRank(a, b) > 0;
+    const encodeRank = (rank) => `r1:${rank.score.toFixed(3)}:${rank.priority}:${rank.updatedAt}:${rank.id}`;
+    let rankCursor = null;
+    let legacyAnchor = null;
+    let scanAnchor = null;
     if (input.after) {
-      if (input.after.startsWith("scan:")) {
-        candidateAnchor = input.after.slice("scan:".length);
-        if (!candidateAnchor)
+      if (input.after.startsWith("r1:")) {
+        const parts = input.after.slice("r1:".length).split(":");
+        const [rawScore, rawPriority, rawUpdated, id] = parts;
+        const score = Number(rawScore);
+        const priority = Number(rawPriority);
+        const updatedAt = Number(rawUpdated);
+        if (parts.length !== 4 || !id || !Number.isFinite(score) || score < 0 || score > 1 || !Number.isInteger(priority) || priority < 0 || !Number.isSafeInteger(updatedAt) || updatedAt < 0)
+          throw invalidCursor();
+        rankCursor = { score, priority, updatedAt, id };
+      } else if (input.after.startsWith("scan:")) {
+        scanAnchor = input.after.slice("scan:".length);
+        if (!scanAnchor)
           throw invalidCursor();
       } else {
         const parts = input.after.split(":");
         const score = Number(parts[0]);
         const id = parts[1];
-        if (parts.length < 2 || parts.length > 3 || !id || !Number.isFinite(score) || score < 0 || score > 1)
+        if (parts.length < 2 || parts.length > 3 || !id || !Number.isFinite(score) || score < 0 || score > 1 || parts.length === 3 && !parts[2])
           throw invalidCursor();
-        rankAnchor = { score, id };
-        if (parts.length === 3) {
-          if (!parts[2])
-            throw invalidCursor();
-          candidateAnchor = parts[2] === "-" ? null : parts[2];
-        }
+        legacyAnchor = { score, priority: -1, updatedAt: -1, id };
       }
     }
-    if (candidateAnchor)
-      query = query.where("id", ">", candidateAnchor);
-    const scannedRows = await query.orderBy("id").limit(BATCH + 1).execute();
-    const moreCandidates = scannedRows.length > BATCH;
-    const rows = moreCandidates ? scannedRows.slice(0, BATCH) : scannedRows;
+    const base = () => {
+      let query = this.storage.db.selectFrom("skills").where("tenant_id", "=", identity.tenantId).where("scope_key", "in", scopes).where("archived", "=", 0).where("active_revision", "is not", null);
+      if (scanAnchor)
+        query = query.where("id", ">", scanAnchor);
+      for (const term of filterTerms)
+        query = query.where(sql6`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`);
+      return query;
+    };
+    const eligible = (rank) => {
+      if (legacyAnchor) {
+        if (rank.score > legacyAnchor.score)
+          return false;
+        if (rank.id === legacyAnchor.id && rank.score === legacyAnchor.score)
+          return false;
+      }
+      return !rankCursor || rankAfter(rank, rankCursor);
+    };
     const since = Date.now() - 30 * 86400000;
-    const usageRows = rows.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", (eb) => eb.fn.countAll().as("n")]).where("tenant_id", "=", identity.tenantId).where("skill_id", "in", rows.map((r) => r.id)).where("kind", "in", ["loaded", "entrypoint_executed"]).where("created_at", ">", since).groupBy("skill_id").execute() : [];
-    const usage = new Map(usageRows.map((r) => [r.skill_id, Number(r.n)]));
-    const ranked = rows.map((row) => ({
-      row,
-      ...scoreSkill(input.query ?? "", {
-        name: row.name,
-        description: row.description,
-        updatedAt: row.updated_at,
-        usage: usage.get(row.id) ?? 0
-      })
-    })).filter((r) => r.score >= minScore && (!input.query || r.score > 0)).sort((a, b) => b.score - a.score || scopePriority(b.row.scope_key) - scopePriority(a.row.scope_key) || b.row.updated_at - a.row.updated_at || (a.row.id < b.row.id ? -1 : 1));
-    const merged = [];
-    for (const item of ranked) {
-      const key = item.row.name.normalize("NFKC").toLowerCase();
-      const existing = merged.find((m) => m.row.name.normalize("NFKC").toLowerCase() === key);
-      if (existing) {
-        existing.other_scopes.push(item.row.scope_key);
-        existing.other_ids.push(item.row.id);
-      } else
-        merged.push({ ...item, other_scopes: [], other_ids: [] });
-    }
-    let start = 0;
-    if (rankAnchor) {
-      const sep2 = rankAnchor.id;
-      const anchor = merged.findIndex((m) => m.score.toFixed(3) === rankAnchor.score.toFixed(3) && m.row.id === sep2);
-      if (anchor >= 0)
-        start = anchor + 1;
-      else
-        start = merged.findIndex((m) => m.score < rankAnchor.score || m.score.toFixed(3) === rankAnchor.score.toFixed(3) && m.row.id > sep2);
-      if (start < 0)
-        start = merged.length;
-    }
-    const page = merged.slice(start, start + limit2);
-    const last = page[page.length - 1];
-    const lastCandidate = rows[rows.length - 1];
+    const buildItem = (row, score, why, others, reason) => ({
+      skill_id: row.id,
+      name: row.name,
+      description: row.description,
+      scope: row.scope_key,
+      revision: row.active_revision,
+      updated_at: row.updated_at,
+      managed: Boolean(row.managed),
+      pinned: Boolean(row.pinned),
+      protected: Boolean(row.protected),
+      reason,
+      score,
+      why,
+      other_scopes: others.map((other) => other.scope_key),
+      other_skill_ids: others.map((other) => other.id)
+    });
+    let items = [];
     let next = null;
-    if (start + limit2 < merged.length && last) {
-      next = `${last.score.toFixed(3)}:${last.row.id}:${candidateAnchor ?? "-"}`;
-    } else if (moreCandidates && lastCandidate)
-      next = `scan:${lastCandidate.id}`;
+    let scanned = 0;
+    let scored = 0;
+    if (!input.query) {
+      const scopePrioritySql = sql6`case
+        when scope_key like 'project:%' then 4
+        when scope_key like 'environment:%' then 3
+        when scope_key = 'workspace' then 2
+        else 1 end`;
+      const ranked = base().selectAll("skills").select(scopePrioritySql.as("scope_priority")).select(sql6`row_number() over (partition by name order by ${scopePrioritySql} desc, updated_at desc, id asc)`.as("row_number"));
+      let repsQuery = this.storage.db.selectFrom(ranked.as("ranked")).selectAll("ranked").where("ranked.row_number", "=", 1);
+      if (rankCursor)
+        repsQuery = repsQuery.where(sql6`(
+            ranked.scope_priority < ${rankCursor.priority}
+            or (
+              ranked.scope_priority = ${rankCursor.priority}
+              and (
+                ranked.updated_at < ${rankCursor.updatedAt}
+                or (
+                  ranked.updated_at = ${rankCursor.updatedAt}
+                  and ranked.id > ${rankCursor.id}
+                )
+              )
+            )
+          )`);
+      if (!rankCursor && legacyAnchor)
+        repsQuery = repsQuery.where("ranked.id", ">", legacyAnchor.id);
+      const reps = await repsQuery.orderBy("ranked.scope_priority", "desc").orderBy("ranked.updated_at", "desc").orderBy("ranked.id", "asc").limit(limit2 + 1).execute();
+      queries++;
+      scanned += reps.length;
+      const names = reps.map((rep) => rep.name);
+      const members = names.length ? await base().selectAll("skills").where("name", "in", names).execute() : [];
+      if (names.length)
+        queries++;
+      scanned += members.length;
+      const grouped = new Map;
+      for (const member of members) {
+        const list = grouped.get(member.name);
+        if (list)
+          list.push(member);
+        else
+          grouped.set(member.name, [member]);
+      }
+      const ordered = (rows) => [...rows].sort((a, b) => scopePriority(b.scope_key) - scopePriority(a.scope_key) || b.updated_at - a.updated_at || (a.id < b.id ? -1 : 1));
+      items = reps.slice(0, limit2).map((rep) => {
+        const group = ordered(grouped.get(rep.name) ?? [rep]);
+        const primary = group[0];
+        return buildItem(primary, 0.5, ["inventory"], group.slice(1), "inventory");
+      });
+      const last = reps[limit2 - 1];
+      next = reps.length > limit2 && last ? encodeRank({
+        score: 0.5,
+        priority: Number(last.scope_priority),
+        updatedAt: Number(last.updated_at),
+        id: last.id
+      }) : null;
+    } else {
+      const searchBound = (terms2) => {
+        if (!terms2.length)
+          return sql6`50`;
+        const nameText = sql6`replace(name, '-', ' ')`;
+        let hits = sql6`0`;
+        for (const term of terms2) {
+          const hit = sql6`case when (' ' || ${nameText} || ' ') like ${`% ${term} %`} then 1 else 0 end`;
+          hits = sql6`(${hits} + ${hit})`;
+        }
+        return sql6`case when ${hits} = ${terms2.length} then 100 when ${hits} > 0 then 75 else 65 end`;
+      };
+      const GROUP_BATCH = 4096;
+      const bound = searchBound(scoreTerms);
+      const heap = [];
+      let stream = null;
+      let exhausted = false;
+      let lastUb = 100;
+      while (!exhausted) {
+        const grouped = base().select("name").select(sql6`max(${bound})`.as("group_ub")).select(sql6`count(*)`.as("member_count")).groupBy("name");
+        let groupQuery = this.storage.db.selectFrom(grouped.as("g")).selectAll("g").orderBy("g.group_ub", "desc").orderBy("g.name", "asc").limit(GROUP_BATCH);
+        if (stream)
+          groupQuery = groupQuery.where(sql6`(g.group_ub < ${stream.ub} or (g.group_ub = ${stream.ub} and g.name > ${stream.name}))`);
+        const groups = await groupQuery.execute();
+        queries++;
+        if (!groups.length) {
+          exhausted = true;
+          break;
+        }
+        for (const group of groups)
+          scanned += Number(group.member_count);
+        const names = groups.map((group) => group.name);
+        const members = await base().selectAll("skills").where("name", "in", names).execute();
+        queries++;
+        scored += members.length;
+        scanned += members.length;
+        const usageRows = members.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", (eb) => eb.fn.countAll().as("n")]).where("tenant_id", "=", identity.tenantId).where("skill_id", "in", members.map((member) => member.id)).where("kind", "in", ["loaded", "entrypoint_executed"]).where("created_at", ">", since).groupBy("skill_id").execute() : [];
+        if (members.length)
+          queries++;
+        const usage = new Map(usageRows.map((row) => [row.skill_id, Number(row.n)]));
+        const groupedMembers = new Map;
+        for (const member of members) {
+          const list = groupedMembers.get(member.name);
+          if (list)
+            list.push(member);
+          else
+            groupedMembers.set(member.name, [member]);
+        }
+        for (const group of groups) {
+          const candidates = (groupedMembers.get(group.name) ?? []).map((row) => ({
+            row,
+            priority: scopePriority(row.scope_key),
+            ...scoreSkill(input.query ?? "", {
+              name: row.name,
+              description: row.description,
+              updatedAt: row.updated_at,
+              usage: usage.get(row.id) ?? 0
+            })
+          })).filter((candidate) => candidate.score >= minScore && (!input.query || candidate.score > 0)).sort((a, b) => b.score - a.score || b.priority - a.priority || b.row.updated_at - a.row.updated_at || (a.row.id < b.row.id ? -1 : 1));
+          if (!candidates.length)
+            continue;
+          const primary = candidates[0];
+          const rank = {
+            score: primary.score,
+            priority: primary.priority,
+            updatedAt: primary.row.updated_at,
+            id: primary.row.id
+          };
+          if (!eligible(rank))
+            continue;
+          heap.push({
+            name: group.name,
+            primary,
+            others: candidates.slice(1),
+            rank
+          });
+        }
+        heap.sort((a, b) => compareRank(a.rank, b.rank));
+        if (heap.length > limit2 + 1)
+          heap.length = limit2 + 1;
+        const lastGroup = groups.at(-1);
+        lastUb = Number(lastGroup.group_ub);
+        const full = groups.length === GROUP_BATCH;
+        if (full)
+          stream = { ub: lastUb, name: lastGroup.name };
+        else
+          exhausted = true;
+        const pageScore = heap.length >= limit2 ? heap[limit2 - 1].rank.score : null;
+        if (pageScore !== null && lastUb * 10 < Math.round(pageScore * 1000))
+          break;
+      }
+      const pageGroups = heap.slice(0, limit2);
+      items = pageGroups.map((group) => buildItem(group.primary.row, group.primary.score, group.primary.why, group.others.map((other) => other.row), "metadata_match"));
+      const pageLast = pageGroups.at(-1);
+      const canContinue = heap.length > limit2 || !exhausted && heap.length === limit2 && lastUb / 100 >= minScore - 0.000000001;
+      next = canContinue && pageLast ? encodeRank(pageLast.rank) : null;
+    }
     return {
-      items: page.map((item) => ({
-        skill_id: item.row.id,
-        name: item.row.name,
-        description: item.row.description,
-        scope: item.row.scope_key,
-        revision: item.row.active_revision,
-        updated_at: item.row.updated_at,
-        managed: Boolean(item.row.managed),
-        pinned: Boolean(item.row.pinned),
-        protected: Boolean(item.row.protected),
-        reason: input.query ? "metadata_match" : "inventory",
-        score: item.score,
-        why: item.why,
-        other_scopes: item.other_scopes,
-        other_skill_ids: item.other_ids
-      })),
+      items,
       next,
-      scanned: rows.length
+      scanned,
+      scored,
+      queries,
+      elapsed_ms: Math.round((performance.now() - started) * 10) / 10
     };
   }
-  async reconcile(identity, after) {
+  async sweepReaders(tenantId, now) {
+    const candidates = await this.storage.db.selectFrom("revision_readers").select("id").where("tenant_id", "=", tenantId).where("expires_at", "is not", null).where("expires_at", "<", now).limit(1000).execute();
+    if (!candidates.length)
+      return 0;
+    const deleted = await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", tenantId).where("id", "in", candidates.map((row) => row.id)).where("expires_at", "<", now).returning("id").execute();
+    process.stderr.write(`Okuyucu uzlaştırması: ${deleted.length} süresi geçmiş okuma kilidi temizlendi` + (candidates.length > deleted.length ? `; ${candidates.length - deleted.length} pin yenilendi
+` : `
+`));
+    return deleted.length;
+  }
+  async reclaim(identity, options = {}) {
     await new IdentityService(this.storage.db).authorize(identity, "admin");
     const now = await this.storage.now();
-    const expired = await this.storage.db.selectFrom("revision_readers").select("id").where("tenant_id", "=", identity.tenantId).where("expires_at", "is not", null).where("expires_at", "<", now).limit(1000).execute();
-    if (expired.length) {
-      await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "in", expired.map((row) => row.id)).execute();
-      process.stderr.write(`Okuyucu uzlaştırması: ${expired.length} sahipsiz okuma kilidi temizlendi
-`);
+    const clearedReaders = await this.sweepReaders(identity.tenantId, now);
+    const scan = await this.reclaimScan(identity.tenantId, now);
+    let reclaimedOwnerless = 0;
+    if (options.recoverOwnerlessBefore !== undefined) {
+      const cutoff = options.recoverOwnerlessBefore;
+      if (!Number.isFinite(cutoff) || cutoff <= 0 || cutoff > now)
+        throw new ForgeError("invalid_input", "Sahipsiz pin kurtarma kesimi DB saatinden ileri olamaz.", 400);
+      const recovered = await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("owner", "is", null).where("created_at", "<", cutoff).returning("id").execute();
+      reclaimedOwnerless = recovered.length;
     }
+    const result = {
+      cleared_readers: clearedReaders,
+      reclaimed_staging: scan.reclaimed_staging,
+      reclaimed_revisions: scan.reclaimed_revisions,
+      reclaimed_ownerless: reclaimedOwnerless,
+      skipped: scan.skipped,
+      failed: scan.failed,
+      errors: scan.errors,
+      reclaim_complete: scan.reclaim_complete
+    };
+    if (options.audit)
+      await this.storage.db.insertInto("audit_events").values({
+        tenant_id: identity.tenantId,
+        id: randomUUID10(),
+        user_id: identity.userId,
+        project_id: null,
+        kind: "package.reclaim",
+        detail: JSON.stringify({
+          cleared_readers: result.cleared_readers,
+          reclaimed_staging: result.reclaimed_staging,
+          reclaimed_revisions: result.reclaimed_revisions,
+          reclaimed_ownerless: result.reclaimed_ownerless,
+          failed: result.failed
+        }),
+        created_at: now
+      }).execute();
+    if (result.reclaimed_staging + result.reclaimed_revisions + result.failed)
+      process.stderr.write(`Depo geri kazanımı: ${result.reclaimed_staging} staging, ${result.reclaimed_revisions} revision, ${result.failed} hata
+`);
+    return result;
+  }
+  async reconcile(identity, after, options = {}) {
+    const mutation = options.reclaim === false ? {
+      cleared_readers: 0,
+      reclaimed_staging: 0,
+      reclaimed_revisions: 0,
+      reclaimed_ownerless: 0,
+      skipped: emptySkipped(),
+      failed: 0,
+      errors: [],
+      reclaim_complete: false
+    } : await this.reclaim(identity, {
+      recoverOwnerlessBefore: options.recoverOwnerlessBefore
+    });
+    const report = await this.integrityReport(identity, after);
+    return { ...report, ...mutation };
+  }
+  async integrityReport(identity, after) {
+    await new IdentityService(this.storage.db).authorize(identity, "admin");
+    const insertedAt = await this.storage.now();
     const { rows, pins } = await this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("tenants").set({ name: sql6`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "admin");
@@ -3044,7 +3518,10 @@ class PackageStore {
         id: randomUUID10(),
         skill_id: row.skill_id,
         revision: row.revision,
-        created_at: Date.now()
+        created_at: insertedAt,
+        owner: this.generation,
+        expires_at: insertedAt + this.leaseMs,
+        kind: "integrity"
       }));
       if (pins2.length)
         await tx.insertInto("revision_readers").values(pins2).execute();
@@ -3079,15 +3556,354 @@ class PackageStore {
       }
     } finally {
       if (pins.length)
-        await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "in", pins.map((pin) => pin.id)).execute();
+        await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "in", pins.map((pin) => pin.id)).execute().catch((error) => {
+          process.stderr.write(`Bütünlük pini temizliği sonraki süpürmeye bırakıldı: ${error.message}
+`);
+        });
     }
     await new IdentityService(this.storage.db).authorize(identity, "admin");
     return {
       checked: Math.min(rows.length, 25),
       issues,
-      cleared_readers: expired.length,
       next: rows.length > 25 ? { skill_id: rows[24].skill_id, revision: rows[24].revision } : null,
       action: "verified_preserved"
+    };
+  }
+  claims = new Map;
+  claimHeartbeat;
+  claimTouchInFlight;
+  claimId(claim) {
+    return `${claim.kind}\x00${claim.key}`;
+  }
+  registerClaim(tenantId, kind, key) {
+    const claim = { tenantId, kind, key, lost: false };
+    this.claims.set(this.claimId(claim), claim);
+    if (!this.claimHeartbeat) {
+      this.claimHeartbeat = setInterval(() => this.touchClaims(), this.heartbeatMs);
+      this.claimHeartbeat.unref?.();
+    }
+    return claim;
+  }
+  touchClaims() {
+    if (!this.claims.size || this.claimTouchInFlight)
+      return;
+    this.claimTouchInFlight = this.touchClaimsOnce().catch((error) => {
+      process.stderr.write(`Claim yenilemesi doğrulanacak: ${error.message}
+`);
+    }).finally(() => {
+      this.claimTouchInFlight = undefined;
+    });
+  }
+  async touchClaimsOnce() {
+    const now = await this.storage.now();
+    const refreshed = await this.storage.db.updateTable("package_claims").set({ expires_at: now + this.leaseMs }).where("owner", "=", this.generation).returning(["kind", "claim_key"]).execute();
+    const live = new Set(refreshed.map((row) => `${row.kind}\x00${row.claim_key}`));
+    for (const [id, claim] of this.claims)
+      if (!live.has(id))
+        claim.lost = true;
+  }
+  claimError(claim) {
+    return claim.kind === "staging" ? new ForgeError("candidate_changed", "Staging alanı sahipliği kaybedildi; yeniden yayınlayın.", 409) : new ForgeError("revision_conflict", "Sürüm dizini sahipliği kaybedildi; yeniden deneyin.", 409);
+  }
+  async assertClaim(claim) {
+    if (claim.lost)
+      throw this.claimError(claim);
+    try {
+      const now = await this.storage.now();
+      const row = await this.storage.db.selectFrom("package_claims").select(["owner", "expires_at"]).where("tenant_id", "=", claim.tenantId).where("kind", "=", claim.kind).where("claim_key", "=", claim.key).executeTakeFirst();
+      if (!row || row.owner !== this.generation) {
+        claim.lost = true;
+        throw this.claimError(claim);
+      }
+      if (row.expires_at <= now) {
+        const renewed = await this.storage.db.updateTable("package_claims").set({ expires_at: now + this.leaseMs }).where("tenant_id", "=", claim.tenantId).where("kind", "=", claim.kind).where("claim_key", "=", claim.key).where("owner", "=", this.generation).returning("owner").executeTakeFirst();
+        if (!renewed) {
+          claim.lost = true;
+          throw this.claimError(claim);
+        }
+      }
+    } catch (error) {
+      if (error instanceof ForgeError)
+        throw error;
+      throw this.claimError(claim);
+    }
+  }
+  async releaseClaim(claim) {
+    this.claims.delete(this.claimId(claim));
+    if (!this.claims.size) {
+      clearInterval(this.claimHeartbeat);
+      this.claimHeartbeat = undefined;
+    }
+    await this.storage.db.deleteFrom("package_claims").where("tenant_id", "=", claim.tenantId).where("kind", "=", claim.kind).where("claim_key", "=", claim.key).where("owner", "=", this.generation).execute().catch((error) => {
+      process.stderr.write(`Claim bırakılamadı (${claim.kind}/${claim.key}): ${error.message}
+`);
+    });
+  }
+  async tryAcquireClaim(tenantId, kind, key) {
+    const now = await this.storage.now();
+    const inserted = await this.storage.db.insertInto("package_claims").values({
+      tenant_id: tenantId,
+      kind,
+      claim_key: key,
+      owner: this.generation,
+      created_at: now,
+      expires_at: now + this.leaseMs
+    }).onConflict((oc) => oc.columns(["tenant_id", "kind", "claim_key"]).doNothing()).returning("owner").executeTakeFirst();
+    if (inserted?.owner === this.generation)
+      return this.registerClaim(tenantId, kind, key);
+    const taken = await this.storage.db.updateTable("package_claims").set({
+      owner: this.generation,
+      created_at: now,
+      expires_at: now + this.leaseMs
+    }).where("tenant_id", "=", tenantId).where("kind", "=", kind).where("claim_key", "=", key).where("expires_at", "<", now).returning("owner").executeTakeFirst();
+    return taken?.owner === this.generation ? this.registerClaim(tenantId, kind, key) : null;
+  }
+  async acquireClaimWithWait(tenantId, kind, key, waitMs) {
+    const deadline = Date.now() + waitMs;
+    for (;; ) {
+      const claim = await this.tryAcquireClaim(tenantId, kind, key);
+      if (claim)
+        return claim;
+      if (Date.now() >= deadline)
+        return null;
+      await new Promise((resolve9) => setTimeout(resolve9, CLAIM_POLL_MS));
+    }
+  }
+  reclaimReason(error) {
+    if (error instanceof ForgeError)
+      return error.code;
+    return error.code ?? "reclaim_remove_failed";
+  }
+  async statOptional(path) {
+    return lstat5(path).catch((error) => {
+      if (error.code === "ENOENT")
+        return null;
+      throw error;
+    });
+  }
+  async reclaimStagingEntry(tenantId, relativePath, graceCutoff, now) {
+    const full = this.canonicalPath(relativePath);
+    const info = await this.statOptional(full);
+    if (!info)
+      return "gone";
+    if (info.isSymbolicLink() || !info.isDirectory())
+      return "symlink";
+    const existing = await this.storage.db.selectFrom("package_claims").select(["owner", "expires_at"]).where("tenant_id", "=", tenantId).where("kind", "=", "staging").where("claim_key", "=", relativePath).executeTakeFirst();
+    if (existing && existing.expires_at > now)
+      return "claim";
+    const expiredClaim = Boolean(existing);
+    const claim = await this.tryAcquireClaim(tenantId, "staging", relativePath);
+    if (!claim)
+      return "claim";
+    try {
+      if (!expiredClaim && info.mtimeMs > graceCutoff)
+        return "grace";
+      const fresh2 = await this.statOptional(full);
+      if (!fresh2 || fresh2.isSymbolicLink() || !fresh2.isDirectory())
+        return "gone";
+      await removeTreeAnchored(this.dataDir, relativePath);
+      return "reclaimed";
+    } finally {
+      await this.releaseClaim(claim);
+    }
+  }
+  async reclaimRevisionEntry(tenantId, relativePath, skillId, revision, graceCutoff, now) {
+    const full = this.canonicalPath(relativePath);
+    const info = await this.statOptional(full);
+    if (!info)
+      return "gone";
+    if (info.isSymbolicLink() || !info.isDirectory())
+      return "symlink";
+    const claimKey = `${skillId}/${revision}`;
+    const existing = await this.storage.db.selectFrom("package_claims").select(["owner", "expires_at"]).where("tenant_id", "=", tenantId).where("kind", "=", "revision").where("claim_key", "=", claimKey).executeTakeFirst();
+    if (existing && existing.expires_at > now)
+      return "claim";
+    const expiredClaim = Boolean(existing);
+    const referenced = await this.storage.db.selectFrom("skill_revisions").select("revision").where("tenant_id", "=", tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
+    if (referenced)
+      return "referenced";
+    const claim = await this.tryAcquireClaim(tenantId, "revision", claimKey);
+    if (!claim)
+      return "claim";
+    try {
+      const stillReferenced = await this.storage.db.selectFrom("skill_revisions").select("revision").where("tenant_id", "=", tenantId).where("skill_id", "=", skillId).where("revision", "=", revision).executeTakeFirst();
+      if (stillReferenced)
+        return "referenced";
+      if (!expiredClaim && info.mtimeMs > graceCutoff)
+        return "grace";
+      const fresh2 = await lstat5(full).catch(() => null);
+      if (!fresh2 || fresh2.isSymbolicLink() || !fresh2.isDirectory())
+        return "gone";
+      await removeTreeAnchored(this.dataDir, relativePath);
+      return "reclaimed";
+    } finally {
+      await this.releaseClaim(claim);
+    }
+  }
+  async reclaimScan(tenantId, now) {
+    const tenantDir = join6("tenants", createHash9("sha256").update(tenantId).digest("hex"));
+    const stagingRootRelative = join6(tenantDir, "staging");
+    const packagesRootRelative = join6(tenantDir, "packages");
+    const state = await this.storage.db.selectFrom("package_scan_state").select(["staging_cursor", "packages_cursor"]).where("tenant_id", "=", tenantId).executeTakeFirst();
+    let stagingCursor = state?.staging_cursor ?? "";
+    let packagesCursor = state?.packages_cursor ?? "";
+    let budget = this.reclaimBudget;
+    const skipped = emptySkipped();
+    const errors = [];
+    let failed = 0;
+    let reclaimedStaging = 0;
+    let reclaimedRevisions = 0;
+    const graceCutoff = now - this.reclaimGraceMs;
+    const note = (outcome) => {
+      if (outcome === "grace")
+        skipped.grace++;
+      else if (outcome === "claim")
+        skipped.claims++;
+      else if (outcome === "symlink")
+        skipped.symlinks++;
+      else if (outcome === "referenced")
+        skipped.referenced++;
+    };
+    const listing = async (path, label) => {
+      try {
+        return await readdir2(path);
+      } catch (error) {
+        if (error.code === "ENOENT")
+          return [];
+        failed++;
+        if (errors.length < RECLAIM_ERROR_LIMIT)
+          errors.push({ path: label, reason: this.reclaimReason(error) });
+        return [];
+      }
+    };
+    const stagingRootPath = this.canonicalPath(stagingRootRelative);
+    const stagingNames = (await listing(stagingRootPath, stagingRootRelative)).filter((name) => STAGING_NAME.test(name)).sort();
+    let stagingLast = stagingCursor;
+    let stagingWrapped = false;
+    for (const name of stagingNames) {
+      if (name <= stagingLast)
+        continue;
+      if (budget <= 0)
+        break;
+      budget--;
+      stagingLast = name;
+      const relativePath = `${stagingRootRelative}/${name}`;
+      try {
+        const outcome = await this.reclaimStagingEntry(tenantId, relativePath, graceCutoff, now);
+        if (outcome === "reclaimed")
+          reclaimedStaging++;
+        else
+          note(outcome);
+      } catch (error) {
+        failed++;
+        if (errors.length < RECLAIM_ERROR_LIMIT)
+          errors.push({
+            path: relativePath,
+            reason: this.reclaimReason(error)
+          });
+      }
+    }
+    if (!stagingNames.some((name) => name > stagingLast)) {
+      stagingLast = "";
+      stagingWrapped = true;
+    }
+    stagingCursor = stagingLast;
+    let packagesLast = packagesCursor;
+    let exhausted = true;
+    const packagesRoot = this.canonicalPath(packagesRootRelative);
+    const scopeNames = (await listing(packagesRoot, packagesRootRelative)).filter((name) => /^[a-f0-9]{20}$/.test(name)).sort();
+    outer:
+      for (const scope of scopeNames) {
+        const scopeDir = this.canonicalPath(`${packagesRootRelative}/${scope}`);
+        let scopeInfo;
+        try {
+          scopeInfo = await this.statOptional(scopeDir);
+        } catch (error) {
+          failed++;
+          if (errors.length < RECLAIM_ERROR_LIMIT)
+            errors.push({
+              path: `${packagesRootRelative}/${scope}`,
+              reason: this.reclaimReason(error)
+            });
+          continue;
+        }
+        if (!scopeInfo || !scopeInfo.isDirectory() || scopeInfo.isSymbolicLink()) {
+          if (scopeInfo?.isSymbolicLink())
+            skipped.symlinks++;
+          continue;
+        }
+        const skillNames = (await listing(scopeDir, `${packagesRootRelative}/${scope}`)).filter((name) => SKILL_DIR_NAME.test(name)).sort();
+        for (const skill of skillNames) {
+          const revisionsRelative = `${packagesRootRelative}/${scope}/${skill}/revisions`;
+          const revisionsDir = this.canonicalPath(revisionsRelative);
+          let revisionsInfo;
+          try {
+            revisionsInfo = await this.statOptional(revisionsDir);
+          } catch (error) {
+            failed++;
+            if (errors.length < RECLAIM_ERROR_LIMIT)
+              errors.push({
+                path: revisionsRelative,
+                reason: this.reclaimReason(error)
+              });
+            continue;
+          }
+          if (!revisionsInfo || !revisionsInfo.isDirectory() || revisionsInfo.isSymbolicLink()) {
+            if (revisionsInfo?.isSymbolicLink())
+              skipped.symlinks++;
+            continue;
+          }
+          const revisionNames = (await listing(revisionsDir, revisionsRelative)).filter((name) => REVISION_NAME.test(name)).sort();
+          for (const revision of revisionNames) {
+            const cursorKey = `${scope}/${skill}/${revision}`;
+            if (packagesLast && cursorKey <= packagesLast)
+              continue;
+            if (budget <= 0) {
+              exhausted = false;
+              break outer;
+            }
+            budget--;
+            packagesLast = cursorKey;
+            const relativePath = `${revisionsRelative}/${revision}`;
+            try {
+              const outcome = await this.reclaimRevisionEntry(tenantId, relativePath, skill, revision, graceCutoff, now);
+              if (outcome === "reclaimed")
+                reclaimedRevisions++;
+              else
+                note(outcome);
+            } catch (error) {
+              failed++;
+              if (errors.length < RECLAIM_ERROR_LIMIT)
+                errors.push({
+                  path: `${skill}/revisions/${revision}`,
+                  reason: this.reclaimReason(error)
+                });
+            }
+          }
+        }
+      }
+    if (exhausted) {
+      packagesLast = "";
+      packagesCursor = "";
+    } else
+      packagesCursor = packagesLast;
+    await this.storage.db.insertInto("package_scan_state").values({
+      tenant_id: tenantId,
+      staging_cursor: stagingCursor,
+      packages_cursor: packagesCursor,
+      updated_at: now
+    }).onConflict((oc) => oc.column("tenant_id").doUpdateSet({
+      staging_cursor: stagingCursor,
+      packages_cursor: packagesCursor,
+      updated_at: now
+    })).execute();
+    return {
+      reclaimed_staging: reclaimedStaging,
+      reclaimed_revisions: reclaimedRevisions,
+      skipped,
+      failed,
+      errors,
+      reclaim_complete: stagingWrapped && exhausted
     };
   }
 }
@@ -3220,10 +4036,10 @@ import {
   readFile as readFile3,
   rename as rename2,
   writeFile as writeFile3,
-  readdir as readdir2,
+  readdir as readdir3,
   lstat as lstat6,
   realpath as realpath2,
-  rm as rm3
+  rm as rm4
 } from "node:fs/promises";
 import { join as join8, relative as relative3, resolve as resolve9 } from "node:path";
 function checkCancelled(signal) {
@@ -3233,7 +4049,7 @@ function checkCancelled(signal) {
 async function treeDigest(root, signal) {
   const records = [];
   async function walk(dir) {
-    for (const name of (await readdir2(dir)).sort()) {
+    for (const name of (await readdir3(dir)).sort()) {
       checkCancelled(signal);
       const path = join8(dir, name), stat = await lstat6(path), rel = relative3(root, path);
       if (rel === ".forge-cache.json")
@@ -3415,7 +4231,7 @@ class DependencyCache {
         timeoutMs: 5000,
         maxBytes: 4096
       });
-      await rm3(staging, { recursive: true, force: true });
+      await rm4(staging, { recursive: true, force: true });
       if (cleanup.code !== 0 && !/no such container/i.test(cleanup.stderr))
         throw new ForgeError("dependency_cleanup_failed", "Bağımlılık container temizliği doğrulanamadı.", 503);
     }
@@ -3908,7 +4724,7 @@ import { writeFile as writeFile5, realpath as realpath4 } from "node:fs/promises
 // src/clients/installer.ts
 import { parse as parseToml } from "@iarna/toml";
 import { parse as parse2, modify, applyEdits } from "jsonc-parser";
-import { readFile as readFile4, mkdir as mkdir8, lstat as lstat8, open as open5, rename as rename3, unlink } from "node:fs/promises";
+import { readFile as readFile4, mkdir as mkdir8, lstat as lstat8, open as open5, rename as rename3, unlink as unlink2 } from "node:fs/promises";
 import { join as join11, dirname as dirname7, resolve as resolve12, relative as relative4 } from "node:path";
 import { randomUUID as randomUUID13, createHash as createHash12 } from "node:crypto";
 var START = "<!-- skill-forge:managed:start -->";
@@ -4107,7 +4923,7 @@ ${CLIENT_INSTRUCTIONS}
     };
   } finally {
     await lock.close();
-    await unlink(lockPath);
+    await unlink2(lockPath);
   }
 }
 async function uninstallClient(client, projectRoot, dataDir) {
@@ -4177,7 +4993,7 @@ async function uninstallClient(client, projectRoot, dataDir) {
     }
   }
   if (!conflicts.length)
-    await unlink(path);
+    await unlink2(path);
   else {
     manifest.files = manifest.files.filter((file) => conflicts.includes(file.path));
     await atomic(path, JSON.stringify(manifest, null, 2));
@@ -4580,6 +5396,20 @@ var readerLivenessMigration = {
   }
 };
 
+// src/storage/file-lifecycle-migration.ts
+var fileLifecycleMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("revision_readers").addColumn("kind", "text", (c) => c.notNull().defaultTo("backup")).execute();
+    await db.schema.createTable("package_claims").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id").onDelete("cascade")).addColumn("kind", "text", (c) => c.notNull()).addColumn("claim_key", "text", (c) => c.notNull()).addColumn("owner", "text", (c) => c.notNull()).addColumn("expires_at", "bigint", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("package_claim_pk", [
+      "tenant_id",
+      "kind",
+      "claim_key"
+    ]).execute();
+    await db.schema.createIndex("package_claim_owner").on("package_claims").columns(["tenant_id", "owner"]).execute();
+    await db.schema.createTable("package_scan_state").addColumn("tenant_id", "text", (c) => c.primaryKey().references("tenants.id").onDelete("cascade")).addColumn("staging_cursor", "text", (c) => c.notNull().defaultTo("")).addColumn("packages_cursor", "text", (c) => c.notNull().defaultTo("")).addColumn("updated_at", "bigint", (c) => c.notNull()).execute();
+  }
+};
+
 // src/storage/run-pin-migration.ts
 var runPinMigration = {
   up: async (db) => {
@@ -4768,6 +5598,16 @@ var providerMigration = {
   }
 };
 
+// src/storage/outbox-delivery-migration.ts
+var outboxDeliveryMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("outbox").addColumn("delivered_at", "bigint", (c) => c.notNull().defaultTo(0)).execute();
+    await db.schema.alterTable("outbox").addColumn("delivery_attempts", "integer", (c) => c.notNull().defaultTo(0)).execute();
+    await db.schema.alterTable("outbox").addColumn("dispatch_owner", "text").execute();
+    await db.schema.alterTable("outbox").addColumn("dispatch_until", "bigint", (c) => c.notNull().defaultTo(0)).execute();
+  }
+};
+
 // src/storage/job-migration.ts
 var jobMigration = {
   up: async (db) => {
@@ -4850,6 +5690,7 @@ async function openDatabase(options) {
   }
   const db = new Kysely({ dialect });
   const migrations = {
+    "031_outbox_delivery": outboxDeliveryMigration,
     "028_environment_uniqueness": environmentUniquenessMigration,
     "027_agent_prompts": agentPromptMigration,
     "026_binding_identity": bindingIdentityMigration,
@@ -4862,6 +5703,7 @@ async function openDatabase(options) {
     "019_package_deletion": deletionMigration,
     "018_revision_readers": readerMigration,
     "029_reader_liveness": readerLivenessMigration,
+    "030_file_lifecycle": fileLifecycleMigration,
     "017_run_pins": runPinMigration,
     "016_execution_pins": executionPinMigration,
     "015_flag_import": flagImportMigration,
@@ -4930,6 +5772,7 @@ async function openDatabase(options) {
 // src/jobs/worker.ts
 import { randomUUID as randomUUID15 } from "node:crypto";
 import { PgBoss } from "pg-boss";
+import { sql as sql10 } from "kysely";
 class ForgeWorker {
   queue;
   handler;
@@ -4939,10 +5782,23 @@ class ForgeWorker {
   boss;
   loops = [];
   controllers = new Set;
+  sweepChain = Promise.resolve();
+  static liveTransportStates = new Set([
+    "created",
+    "retry",
+    "active"
+  ]);
   constructor(queue, handler, options = {}) {
     this.queue = queue;
     this.handler = handler;
     this.options = options;
+  }
+  kinds() {
+    return Object.keys(this.queue.kinds);
+  }
+  handlerFor(kind) {
+    const handlers = this.options.handlers;
+    return handlers?.[kind] ?? this.handler;
   }
   async start() {
     if (this.options.postgresUrl) {
@@ -4955,7 +5811,7 @@ class ForgeWorker {
 `);
       });
       await this.boss.start();
-      for (const kind of ["skill_evolve"]) {
+      for (const kind of this.kinds()) {
         await this.boss.createQueue(kind, {
           retryLimit: 3,
           retryDelay: 1,
@@ -4981,47 +5837,123 @@ class ForgeWorker {
       }
       this.loops.push(this.outboxLoop());
     } else
-      this.loops.push(this.localLoop("skill_evolve"));
+      for (const kind of this.kinds())
+        this.loops.push(this.localLoop(kind));
+  }
+  async transportActive(kind, runId) {
+    const jobs = await this.boss.findJobs(kind, { key: runId });
+    return jobs.some((job) => ForgeWorker.liveTransportStates.has(job.state));
+  }
+  async releaseDispatch(tenantId, runId) {
+    await this.queue.storage.db.updateTable("outbox").set({ dispatch_owner: null, dispatch_until: 0 }).where("tenant_id", "=", tenantId).where("run_id", "=", runId).where("dispatch_owner", "=", this.id).execute();
   }
   async sweepOutbox() {
+    const next = this.sweepChain.then(() => this.performSweep());
+    this.sweepChain = next.catch(() => {
+      return;
+    });
+    return next;
+  }
+  async performSweep() {
     if (!this.boss)
       return;
-    const now = await this.queue.storage.now();
+    const storage = this.queue.storage;
+    const now = await storage.now();
     const livenessMs = this.options.livenessMs ?? 60000;
-    const stranded = this.queue.storage.db.selectFrom("runs").select("id").where((eb) => eb.or([
-      eb.and([eb("state", "=", "running"), eb("lease_until", "<", now)]),
-      eb.and([
-        eb("state", "=", "retry_wait"),
-        eb("available_at", "<=", now)
-      ]),
-      eb.and([
-        eb("state", "=", "queued"),
-        eb("available_at", "<=", now - livenessMs)
-      ])
-    ]));
-    const orphans = await this.queue.storage.db.selectFrom("runs as r").innerJoin("outbox as o", (join14) => join14.onRef("o.tenant_id", "=", "r.tenant_id").onRef("o.run_id", "=", "r.id")).select("r.id").where("r.state", "=", "queued").where("o.delivered", "=", 1).where("r.available_at", "<=", now - livenessMs).limit(100).execute();
-    if (orphans.length)
-      process.stderr.write(`Kuyruk uzlaştırması: ${orphans.length} queued iş teslim penceresi aştı; yeniden teslim ediliyor
-`);
-    await this.queue.storage.db.updateTable("outbox").set({ delivered: 0 }).where("run_id", "in", stranded).execute();
-    const pending = await this.queue.storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "o.tenant_id").onRef("r.id", "=", "o.run_id")).select([
-      "r.tenant_id",
-      "r.id",
+    const dispatchLeaseMs = this.options.dispatchLeaseMs ?? Math.max(2000, livenessMs);
+    const windowStart = now - livenessMs;
+    const due = await storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join14) => join14.onRef("o.tenant_id", "=", "r.tenant_id").onRef("o.run_id", "=", "r.id")).select([
+      "o.tenant_id",
+      "o.run_id",
+      "o.delivered",
+      "o.delivered_at",
+      "o.delivery_attempts",
       "r.user_id",
       "r.kind",
+      "r.state",
       "r.available_at",
-      "r.state"
-    ]).where("o.delivered", "=", 0).where((eb) => eb.not(eb.exists(eb.selectFrom("tenant_lifecycle as l").select("l.tenant_id").whereRef("l.tenant_id", "=", "r.tenant_id").where("l.frozen", "=", 1)))).limit(100).execute();
-    for (const run of pending) {
-      if (!terminalStates.includes(run.state))
-        await this.boss.send(run.kind, { tenantId: run.tenant_id, runId: run.id }, {
-          singletonKey: run.id,
-          singletonSeconds: 1,
-          startAfter: new Date(run.available_at),
-          group: { id: `${run.tenant_id}:${run.user_id}` }
-        });
-      await this.queue.storage.db.updateTable("outbox").set({ delivered: 1 }).where("tenant_id", "=", run.tenant_id).where("run_id", "=", run.id).execute();
+      "r.lease_until"
+    ]).where("r.state", "not in", terminalStates).where((eb) => eb.not(eb.exists(eb.selectFrom("tenant_lifecycle as l").select("l.tenant_id").whereRef("l.tenant_id", "=", "r.tenant_id").where("l.frozen", "=", 1)))).where((eb) => eb.or([
+      eb("o.dispatch_until", "<=", now),
+      eb("o.dispatch_owner", "is", null)
+    ])).where((eb) => eb.or([
+      eb.and([
+        eb("o.delivered", "=", 0),
+        eb.or([
+          eb.and([
+            eb("r.state", "in", ["queued", "retry_wait"]),
+            eb("r.available_at", "<=", now)
+          ]),
+          eb.and([
+            eb("r.state", "=", "running"),
+            eb("r.lease_until", "<", now)
+          ])
+        ])
+      ]),
+      eb.and([
+        eb("o.delivered", "=", 1),
+        eb("o.delivered_at", "<=", windowStart),
+        eb.or([
+          eb.and([
+            eb("r.state", "in", ["queued", "retry_wait"]),
+            eb("r.available_at", "<=", now)
+          ]),
+          eb.and([
+            eb("r.state", "=", "running"),
+            eb("r.lease_until", "<", now)
+          ])
+        ])
+      ])
+    ])).orderBy("r.created_at").orderBy("r.id").limit(100).execute();
+    let redeliveries = 0;
+    for (const candidate of due) {
+      const claim = await storage.db.updateTable("outbox").set({ dispatch_owner: this.id, dispatch_until: now + dispatchLeaseMs }).where("tenant_id", "=", candidate.tenant_id).where("run_id", "=", candidate.run_id).where((eb) => eb.or([
+        eb("dispatch_until", "<=", now),
+        eb("dispatch_owner", "is", null)
+      ])).where((eb) => eb.or([
+        eb("delivered", "=", 0),
+        eb("delivered_at", "<=", windowStart)
+      ])).executeTakeFirst();
+      if (Number(claim.numUpdatedRows) !== 1)
+        continue;
+      const box = await storage.db.selectFrom("outbox").select(["delivered", "delivered_at"]).where("tenant_id", "=", candidate.tenant_id).where("run_id", "=", candidate.run_id).executeTakeFirst();
+      if (!box)
+        continue;
+      const current = await storage.db.selectFrom("runs").select(["state", "available_at", "lease_until"]).where("tenant_id", "=", candidate.tenant_id).where("id", "=", candidate.run_id).executeTakeFirst();
+      if (!current || terminalStates.includes(current.state)) {
+        await this.releaseDispatch(candidate.tenant_id, candidate.run_id);
+        continue;
+      }
+      const executorLost = current.state === "running" && current.lease_until < now;
+      const workDue = (current.state === "queued" || current.state === "retry_wait") && current.available_at <= now;
+      if (!executorLost && !workDue) {
+        await this.releaseDispatch(candidate.tenant_id, candidate.run_id);
+        continue;
+      }
+      if (!executorLost && box.delivered === 1) {
+        if (await this.transportActive(candidate.kind, candidate.run_id)) {
+          await storage.db.updateTable("outbox").set({ delivered_at: now, dispatch_owner: null, dispatch_until: 0 }).where("tenant_id", "=", candidate.tenant_id).where("run_id", "=", candidate.run_id).execute();
+          continue;
+        }
+        redeliveries += 1;
+      }
+      await this.boss.send(candidate.kind, { tenantId: candidate.tenant_id, runId: candidate.run_id }, {
+        singletonKey: candidate.run_id,
+        singletonSeconds: 1,
+        startAfter: new Date(current.available_at),
+        group: { id: `${candidate.tenant_id}:${candidate.user_id}` }
+      });
+      await storage.db.updateTable("outbox").set({
+        delivered: 1,
+        delivered_at: now,
+        delivery_attempts: sql10`delivery_attempts + 1`,
+        dispatch_owner: null,
+        dispatch_until: 0
+      }).where("tenant_id", "=", candidate.tenant_id).where("run_id", "=", candidate.run_id).execute();
     }
+    if (redeliveries)
+      process.stderr.write(`Kuyruk uzlaştırması: ${redeliveries} queued iş teslim penceresi aştı; yeniden teslim ediliyor
+`);
   }
   async pause() {
     await new Promise((resolve13) => setTimeout(resolve13, this.options.pollMs ?? 100));
@@ -5063,7 +5995,7 @@ class ForgeWorker {
       }).catch(() => controller.abort());
     }, Math.max(20, Math.floor(leaseMs / 3)));
     try {
-      const result = await this.handler(run, controller.signal);
+      const result = await this.handlerFor(run.kind)(run, controller.signal);
       if (!controller.signal.aborted)
         await this.queue.finish(run, result.state, result.result, result.errorCode ?? null);
     } catch (error) {
@@ -5092,16 +6024,16 @@ class ForgeWorker {
 import { createAssistantMessageEventStream as createAssistantMessageEventStream2 } from "@earendil-works/pi-ai";
 
 // src/application/providers.ts
-import { sql as sql10 } from "kysely";
+import { sql as sql11 } from "kysely";
 import { randomUUID as randomUUID16 } from "node:crypto";
-import { z as z8 } from "zod";
-var providerProfileSchema = z8.object({
-  provider: z8.enum(["openai", "anthropic", "openrouter", "ollama"]),
-  model: z8.string().min(1).max(200),
-  baseUrl: z8.url().optional(),
-  allowPaid: z8.boolean().default(false),
-  maxOutputTokens: z8.number().int().min(64).max(32768).default(4096),
-  contextWindow: z8.number().int().min(1024).max(1e6).optional()
+import { z as z9 } from "zod";
+var providerProfileSchema = z9.object({
+  provider: z9.enum(["openai", "anthropic", "openrouter", "ollama"]),
+  model: z9.string().min(1).max(200),
+  baseUrl: z9.url().optional(),
+  allowPaid: z9.boolean().default(false),
+  maxOutputTokens: z9.number().int().min(64).max(32768).default(4096),
+  contextWindow: z9.number().int().min(1024).max(1e6).optional()
 }).strict();
 
 class ProviderService {
@@ -5129,15 +6061,15 @@ class ProviderService {
   }
   async update(identity, input) {
     await this.identity.authorize(identity, "write");
-    const body = z8.object({
-      role: z8.enum(["skill", "evaluation"]),
-      base_revision: z8.number().int().min(0),
+    const body = z9.object({
+      role: z9.enum(["skill", "evaluation"]),
+      base_revision: z9.number().int().min(0),
       profile: providerProfileSchema,
-      credential: z8.string().min(1).max(16384).optional()
+      credential: z9.string().min(1).max(16384).optional()
     }).strict().parse(input);
     try {
       return await this.identity.db.transaction().execute(async (tx) => {
-        await tx.updateTable("tenants").set({ name: sql10`name` }).where("id", "=", identity.tenantId).execute();
+        await tx.updateTable("tenants").set({ name: sql11`name` }).where("id", "=", identity.tenantId).execute();
         const auth = new IdentityService(tx);
         await auth.authorize(identity, "write");
         const current = await new ProviderService(auth, this.vault).latest(identity, body.role);
@@ -5182,32 +6114,35 @@ class ProviderService {
 }
 
 // src/jobs/budgets.ts
-import { sql as sql11 } from "kysely";
+import { sql as sql12 } from "kysely";
+import { randomUUID as randomUUID17 } from "node:crypto";
 class BudgetService {
   storage;
   constructor(storage) {
     this.storage = storage;
   }
-  async reconcileAccount(identity, limitMicros) {
-    if (!Number.isSafeInteger(limitMicros) || limitMicros < 0)
+  async reconcileAccount(identity, jobLimitMicros) {
+    if (!Number.isSafeInteger(jobLimitMicros) || jobLimitMicros < 0)
       throw new ForgeError("invalid_budget", "Bütçe limiti geçersiz.");
     await this.storage.db.insertInto("budget_accounts").values({
       tenant_id: identity.tenantId,
       user_id: identity.userId,
-      limit_micros: limitMicros,
+      limit_micros: jobLimitMicros,
       reserved_micros: 0,
       spent_micros: 0
-    }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doUpdateSet({ limit_micros: limitMicros }).where("reserved_micros", "=", 0)).execute();
+    }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doUpdateSet({ limit_micros: jobLimitMicros })).execute();
   }
-  async reserve(identity, runId, reservationId, micros) {
+  async reserve(identity, runId, reservationId, micros, jobLimitMicros) {
     if (!Number.isSafeInteger(micros) || micros < 0)
       throw new ForgeError("invalid_budget", "Bütçe rezervasyonu geçersiz.");
+    if (jobLimitMicros !== undefined && (!Number.isSafeInteger(jobLimitMicros) || jobLimitMicros < 0))
+      throw new ForgeError("invalid_budget", "İş bütçesi limiti geçersiz.");
     return this.storage.db.transaction().execute(async (tx) => {
       const run = await tx.selectFrom("runs").select(["user_id", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", runId).executeTakeFirst();
       if (!run || run.user_id !== identity.userId)
         throw new ForgeError("run_unavailable", "Rezervasyon işi bu kullanıcıya ait değil.", 404);
       await new IdentityService(tx).authorize(identity, "run", run.project_id);
-      const account = await tx.updateTable("budget_accounts").set({ reserved_micros: sql11`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).returningAll().executeTakeFirst();
+      const account = await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).returningAll().executeTakeFirst();
       if (!account)
         throw new ForgeError("budget_unconfigured", "Kullanıcı bütçesi tanımlanmamış.", 422);
       const existing = await tx.selectFrom("budget_reservations").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).where("user_id", "=", identity.userId).executeTakeFirst();
@@ -5216,9 +6151,16 @@ class BudgetService {
           throw new ForgeError("reservation_conflict", "Rezervasyon kimliği farklı çağrıya ait.", 409);
         return existing;
       }
-      if (account.reserved_micros + account.spent_micros + micros > account.limit_micros)
-        throw new ForgeError("budget_exhausted", "Hesap bütçesi yetersiz.", 429);
-      await tx.updateTable("budget_accounts").set({ reserved_micros: sql11`reserved_micros + ${micros}` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      const jobLimit = jobLimitMicros ?? account.limit_micros;
+      const heldRow = await tx.selectFrom("budget_reservations").select(sql12`coalesce(sum(case when state = 'settled' then coalesce(actual_micros, 0) else reserved_micros end), 0)`.as("held")).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("run_id", "=", runId).executeTakeFirstOrThrow();
+      const runHeld = Number(heldRow.held);
+      if (runHeld + micros > jobLimit)
+        throw new ForgeError("budget_exhausted", "İş bütçesi yetersiz.", 429, undefined, {
+          job_limit_micros: jobLimit,
+          run_held_micros: runHeld,
+          requested_micros: micros
+        });
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros + ${micros}` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const record2 = {
         tenant_id: identity.tenantId,
         id: reservationId,
@@ -5236,7 +6178,7 @@ class BudgetService {
     if (actualMicros !== null && (!Number.isSafeInteger(actualMicros) || actualMicros < 0))
       throw new ForgeError("invalid_usage", "Maliyet ölçümü geçersiz.");
     return this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("budget_accounts").set({ reserved_micros: sql11`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const reservation = await tx.selectFrom("budget_reservations").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", reservationId).executeTakeFirstOrThrow();
       if (reservation.state === "settled") {
         if (actualMicros !== reservation.actual_micros)
@@ -5248,11 +6190,89 @@ class BudgetService {
         return;
       }
       await tx.updateTable("budget_accounts").set({
-        reserved_micros: sql11`reserved_micros - ${reservation.reserved_micros}`,
-        spent_micros: sql11`spent_micros + ${actualMicros}`
+        reserved_micros: sql12`reserved_micros - ${reservation.reserved_micros}`,
+        spent_micros: sql12`spent_micros + ${actualMicros}`
       }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       await tx.updateTable("budget_reservations").set({ state: "settled", actual_micros: actualMicros }).where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).execute();
     });
+  }
+  async resolveReservation(identity, reservationId, actualMicros) {
+    if (!Number.isSafeInteger(actualMicros) || actualMicros < 0)
+      throw new ForgeError("invalid_usage", "Maliyet ölçümü geçersiz.");
+    return this.storage.db.transaction().execute(async (tx) => {
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      const reservation = await tx.selectFrom("budget_reservations as b").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select([
+        "b.run_id",
+        "b.reserved_micros",
+        "b.actual_micros",
+        "b.state",
+        "r.project_id"
+      ]).where("b.tenant_id", "=", identity.tenantId).where("b.user_id", "=", identity.userId).where("b.id", "=", reservationId).executeTakeFirst();
+      if (!reservation)
+        throw new ForgeError("reservation_unavailable", "Rezervasyon bulunamadı veya yetkiniz yok.", 404);
+      await new IdentityService(tx).authorize(identity, "run", reservation.project_id);
+      if (reservation.state === "settled") {
+        if (reservation.actual_micros !== actualMicros)
+          throw new ForgeError("settlement_conflict", "Çağrı daha önce farklı maliyetle uzlaştırıldı.", 409);
+        return {
+          id: reservationId,
+          run_id: reservation.run_id,
+          project_id: reservation.project_id,
+          state: "settled",
+          reserved_micros: reservation.reserved_micros,
+          actual_micros: actualMicros
+        };
+      }
+      await tx.updateTable("budget_accounts").set({
+        reserved_micros: sql12`reserved_micros - ${reservation.reserved_micros}`,
+        spent_micros: sql12`spent_micros + ${actualMicros}`
+      }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("budget_reservations").set({ state: "settled", actual_micros: actualMicros }).where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).execute();
+      await tx.insertInto("audit_events").values({
+        tenant_id: identity.tenantId,
+        id: randomUUID17(),
+        user_id: identity.userId,
+        project_id: reservation.project_id,
+        kind: "budget.reservation_reconciled",
+        detail: JSON.stringify({
+          reservation_id: reservationId,
+          run_id: reservation.run_id,
+          previous_state: reservation.state,
+          reserved_micros: reservation.reserved_micros,
+          actual_micros: actualMicros
+        }),
+        created_at: Date.now()
+      }).execute();
+      return {
+        id: reservationId,
+        run_id: reservation.run_id,
+        project_id: reservation.project_id,
+        state: "settled",
+        reserved_micros: reservation.reserved_micros,
+        actual_micros: actualMicros
+      };
+    });
+  }
+  async accountSummary(identity) {
+    const [account, held, uncertain] = await Promise.all([
+      this.storage.db.selectFrom("budget_accounts").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).executeTakeFirst(),
+      this.storage.db.selectFrom("budget_reservations").select([
+        sql12`coalesce(sum(case when state = 'reserved' then reserved_micros else 0 end), 0)`.as("in_flight"),
+        sql12`coalesce(sum(case when state = 'unknown' then reserved_micros else 0 end), 0)`.as("uncertain")
+      ]).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).executeTakeFirstOrThrow(),
+      this.storage.db.selectFrom("budget_reservations as b").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select(["b.id", "b.run_id", "b.reserved_micros", "r.project_id"]).where("b.tenant_id", "=", identity.tenantId).where("b.user_id", "=", identity.userId).where("b.state", "=", "unknown").orderBy("b.id").limit(20).execute()
+    ]);
+    return {
+      reserved_micros: Number(held.in_flight),
+      uncertain_micros: Number(held.uncertain),
+      spent_micros: account?.spent_micros ?? 0,
+      uncertain_reservations: uncertain.map((row) => ({
+        id: row.id,
+        run_id: row.run_id,
+        project_id: row.project_id,
+        reserved_micros: row.reserved_micros
+      }))
+    };
   }
 }
 
@@ -5472,7 +6492,7 @@ async function resolveProvider(profile, secret, policy) {
 
 // src/runner/staging.ts
 import { Type } from "@earendil-works/pi-ai";
-import { sql as sql12 } from "kysely";
+import { sql as sql13 } from "kysely";
 class EvolutionStaging {
   store;
   identity;
@@ -5556,7 +6576,7 @@ class EvolutionStaging {
           if (skill.scope_key !== expected || skill.name !== args.name || !skill.active_revision)
             throw new ForgeError("owner_mismatch", "Kanonik ad/kapsam/sürüm eşleşmiyor.");
           await this.store.storage.db.transaction().execute(async (tx) => {
-            await tx.updateTable("tenants").set({ name: sql12`name` }).where("id", "=", this.identity.tenantId).execute();
+            await tx.updateTable("tenants").set({ name: sql13`name` }).where("id", "=", this.identity.tenantId).execute();
             await new JobQueue(this.store.storage).assertLease(tx, this.run);
             await new IdentityService(tx).authorize(this.identity, skill.scope_key === "workspace" ? "admin" : "write", skill.project_id ?? undefined);
             await tx.insertInto("run_revision_pins").values({
@@ -5707,12 +6727,12 @@ class EvolutionStaging {
 }
 
 // src/application/agent-prompts.ts
-import { randomUUID as randomUUID17 } from "node:crypto";
+import { randomUUID as randomUUID18 } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { resolve as resolve13 } from "node:path";
-import { sql as sql13 } from "kysely";
+import { sql as sql14 } from "kysely";
 var AGENT_PROMPT_MAX_CHARS = 32768;
 var AGENT_PROMPT_ANCHORS = [
   "create",
@@ -5795,7 +6815,7 @@ class AgentPromptService {
     const content = validateContent(raw.content);
     const scope = await this.checkedScope(actor, raw.scope);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql13`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const current = await tx.selectFrom("agent_prompts").select("version").where("tenant_id", "=", actor.tenantId).where("profile", "=", profile).where("scope", "=", scope).orderBy("version", "desc").limit(1).executeTakeFirst();
       if ((current?.version ?? 0) !== raw.base_version)
@@ -5819,7 +6839,7 @@ class AgentPromptService {
       }
       await tx.insertInto("audit_events").values({
         tenant_id: actor.tenantId,
-        id: randomUUID17(),
+        id: randomUUID18(),
         user_id: actor.userId,
         project_id: null,
         kind: "agent_prompt.updated",
@@ -5837,7 +6857,7 @@ class AgentPromptService {
     const profile = raw.profile ?? "skill_evolve";
     const scope = await this.checkedScope(actor, raw.scope);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql13`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const source = await tx.selectFrom("agent_prompts").selectAll().where("tenant_id", "=", actor.tenantId).where("profile", "=", profile).where("scope", "=", scope).where("version", "=", raw.version).executeTakeFirst();
       if (!source)
@@ -5863,7 +6883,7 @@ class AgentPromptService {
       }
       await tx.insertInto("audit_events").values({
         tenant_id: actor.tenantId,
-        id: randomUUID17(),
+        id: randomUUID18(),
         user_id: actor.userId,
         project_id: null,
         kind: "agent_prompt.rollback",
@@ -5892,8 +6912,13 @@ class AgentPromptService {
 }
 
 // src/runner/handler.ts
-function productionHandler(storage, dataDir, vault, local) {
+function runnerPackageStore(storage, dataDir, validateScripts, snapshot) {
+  return new PackageStore(storage, dataDir, validateScripts, snapshot.values);
+}
+function productionHandler(storage, dataDir, vault, local, overrides = {}) {
   return async (run, signal) => {
+    if (run.kind !== "skill_evolve")
+      throw new ForgeError("invalid_kind", "Skill üretim handler'ı yalnız skill_evolve işini yürütür.", 422);
     const identity = { tenantId: run.tenant_id, userId: run.user_id };
     const snapshot = JSON.parse(run.config_json);
     const input = JSON.parse(run.input_json);
@@ -5913,7 +6938,7 @@ function productionHandler(storage, dataDir, vault, local) {
       allowDependencyInstall: snapshot.values.dependencyInstall,
       allowedOrigins: snapshot.values.scriptAllowedOrigins
     });
-    const store = new PackageStore(storage, dataDir, (path, manifest) => executor.validate(path, manifest));
+    const store = runnerPackageStore(storage, dataDir, (path, manifest) => executor.validate(path, manifest), snapshot);
     const staging = new EvolutionStaging(store, identity, run);
     try {
       const tools = staging.tools();
@@ -5924,7 +6949,7 @@ function productionHandler(storage, dataDir, vault, local) {
         await storage.db.transaction().execute((tx) => new JobQueue(storage).assertLease(tx, run));
         const id = `${run.id}:${run.fence}:${++call}`;
         const estimate = Math.ceil(model.contextWindow * Math.max(model.cost.input, model.cost.cacheRead, model.cost.cacheWrite) + (options?.maxTokens ?? model.maxTokens) * model.cost.output);
-        await budget.reserve(identity, run.id, id, estimate);
+        await budget.reserve(identity, run.id, id, estimate, snapshot.values.maxCostMicros);
         const result2 = createAssistantMessageEventStream2();
         (async () => {
           let terminal = false;
@@ -5957,7 +6982,8 @@ function productionHandler(storage, dataDir, vault, local) {
             }
           });
           try {
-            for await (const event of resolved.models.streamSimple(model, context, options)) {
+            const events = await (overrides.providerStream ? overrides.providerStream(model, context, options) : resolved.models.streamSimple(model, context, options));
+            for await (const event of events) {
               if (event.type === "done" || event.type === "error")
                 terminal = true;
               if (event.type === "done")
@@ -5980,7 +7006,7 @@ function productionHandler(storage, dataDir, vault, local) {
         return result2;
       };
       const outcome = await new ForgeRunner().run({
-        profile: run.kind,
+        profile: "skill_evolve",
         sessionId: run.session_id,
         model: resolved.model,
         systemPrompt: (await resolvePrompt(storage.db, identity.tenantId, run.project_id)).content,
@@ -6024,12 +7050,12 @@ import {
 } from "node:path";
 
 // src/application/deletion.ts
-import { createHash as createHash15, randomUUID as randomUUID18 } from "node:crypto";
-import { sql as sql14 } from "kysely";
+import { createHash as createHash15, randomUUID as randomUUID19 } from "node:crypto";
+import { sql as sql15 } from "kysely";
 
 // src/skills/remove.ts
-import { constants as constants2 } from "node:fs";
-import { open as open7, lstat as lstat9, readdir as readdir3, unlink as unlink2, rmdir } from "node:fs/promises";
+import { constants as constants3 } from "node:fs";
+import { open as open7, lstat as lstat9, readdir as readdir4, unlink as unlink3, rmdir as rmdir2 } from "node:fs/promises";
 import { resolve as resolve14, join as join14, basename as basename3 } from "node:path";
 import { createHash as createHash14 } from "node:crypto";
 async function removeRevision(root, tenant, path, skillId, revision) {
@@ -6052,7 +7078,7 @@ async function removeRevision(root, tenant, path, skillId, revision) {
     ]) {
       if (segment)
         current = join14(current, segment);
-      const handle = await open7(current, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+      const handle = await open7(current, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
       handles.push(handle);
       current = `/proc/self/fd/${handle.fd}`;
     }
@@ -6067,18 +7093,18 @@ async function removeRevision(root, tenant, path, skillId, revision) {
       try {
         const child = join14(parent, name), info = await lstat9(child);
         if (!info.isDirectory() || info.isSymbolicLink()) {
-          await unlink2(child);
+          await unlink3(child);
           return;
         }
-        const handle = await open7(child, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+        const handle = await open7(child, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
         try {
           const anchor = `/proc/self/fd/${handle.fd}`;
-          for (const entry of await readdir3(anchor))
+          for (const entry of await readdir4(anchor))
             await erase(anchor, entry);
         } finally {
           await handle.close();
         }
-        await rmdir(child);
+        await rmdir2(child);
       } catch (error) {
         if (error.code !== "ENOENT")
           throw error;
@@ -6101,13 +7127,9 @@ class DeletionService {
     this.storage = storage;
     this.dataDir = dataDir;
   }
-  async check(db, actor, project, item) {
+  async check(db, actor, project, item, now) {
     await new IdentityService(db).authorize(actor, "write", project);
-    const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", item.skill_id).where("scope_key", "in", [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project}`
-    ]).executeTakeFirst();
+    const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", item.skill_id).where("scope_key", "in", await visibleScopes(db, actor, project)).executeTakeFirst();
     if (!row)
       throw new ForgeError("skill_unavailable", "Paket bulunamadı.", 404);
     await new IdentityService(db).authorize(actor, scopeWritePermission(row.scope_key), project);
@@ -6133,13 +7155,9 @@ class DeletionService {
     };
     const references2 = [];
     for (const table of tables) {
-      const now = Date.now();
       let guard = db.selectFrom(table).select("skill_id").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).limit(1);
       if (table === "revision_readers")
-        guard = guard.where((eb) => eb.or([
-          eb("expires_at", "is", null),
-          eb("expires_at", ">", now)
-        ]));
+        guard = guard.where((eb) => eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]));
       if (await guard.executeTakeFirst())
         references2.push(labels[table]);
     }
@@ -6156,10 +7174,11 @@ class DeletionService {
       throw new ForgeError("safe_delete_unavailable", "Güvenli dosya silme adapter'ı bu ortamda hazır değil.", 503);
     await new IdentityService(this.storage.db).authorize(actor, "write", input.project_ref);
     const items = [];
+    const now = await this.storage.now();
     for (const item of input.items)
       try {
-        const row = await this.check(this.storage.db, actor, input.project_ref, item);
-        const count = await this.storage.db.selectFrom("skill_revisions").select(sql14`count(*)`.as("n")).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).executeTakeFirstOrThrow();
+        const row = await this.check(this.storage.db, actor, input.project_ref, item, now);
+        const count = await this.storage.db.selectFrom("skill_revisions").select(sql15`count(*)`.as("n")).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).executeTakeFirstOrThrow();
         items.push({
           revision_count: Number(count.n),
           skill_id: row.id,
@@ -6183,11 +7202,7 @@ class DeletionService {
   }
   async pending(actor, project, after = "") {
     await new IdentityService(this.storage.db).authorize(actor, "write", project);
-    const rows = await this.storage.db.selectFrom("package_deletions as d").select(["d.skill_id", "d.scope_key", "d.created_at"]).where("d.tenant_id", "=", actor.tenantId).where("d.scope_key", "in", [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project}`
-    ]).where("d.skill_id", ">", after).where(({ exists, selectFrom }) => exists(selectFrom("package_gc as g").select("g.revision").whereRef("g.tenant_id", "=", "d.tenant_id").whereRef("g.skill_id", "=", "d.skill_id").where("g.state", "=", "pending"))).orderBy("d.skill_id").limit(51).execute();
+    const rows = await this.storage.db.selectFrom("package_deletions as d").select(["d.skill_id", "d.scope_key", "d.created_at"]).where("d.tenant_id", "=", actor.tenantId).where("d.scope_key", "in", await visibleScopes(this.storage.db, actor, project)).where("d.skill_id", ">", after).where(({ exists, selectFrom }) => exists(selectFrom("package_gc as g").select("g.revision").whereRef("g.tenant_id", "=", "d.tenant_id").whereRef("g.skill_id", "=", "d.skill_id").where("g.state", "=", "pending"))).orderBy("d.skill_id").limit(51).execute();
     return {
       items: rows.slice(0, 50),
       next: rows.length > 50 ? rows[49].skill_id : null
@@ -6195,11 +7210,7 @@ class DeletionService {
   }
   async resume(actor, project, skillId) {
     await new IdentityService(this.storage.db).authorize(actor, "write", project);
-    const row = await this.storage.db.selectFrom("package_deletions").selectAll().where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("scope_key", "in", [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project}`
-    ]).executeTakeFirst();
+    const row = await this.storage.db.selectFrom("package_deletions").selectAll().where("tenant_id", "=", actor.tenantId).where("skill_id", "=", skillId).where("scope_key", "in", await visibleScopes(this.storage.db, actor, project)).executeTakeFirst();
     if (!row)
       throw new ForgeError("skill_unavailable", "Silme kaydı bulunamadı.", 404);
     await new IdentityService(this.storage.db).authorize(actor, scopeWritePermission(row.scope_key), project);
@@ -6237,8 +7248,9 @@ class DeletionService {
     for (const item of input.items)
       try {
         const hash3 = createHash15("sha256").update(JSON.stringify({ action: "delete", item })).digest("hex");
+        const dbNow = await this.storage.now();
         await this.storage.db.transaction().execute(async (tx) => {
-          await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", actor.tenantId).execute();
+          await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
           await new IdentityService(tx).authorize(actor, "write", input.project_ref);
           const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
           if (receipt) {
@@ -6248,12 +7260,12 @@ class DeletionService {
             await new IdentityService(tx).authorize(actor, scopeWritePermission(tombstone.scope_key), input.project_ref);
             return;
           }
-          const row = await this.check(tx, actor, input.project_ref, item);
+          const row = await this.check(tx, actor, input.project_ref, item, dbNow);
           const changed = await tx.updateTable("skills").set({ active_revision: null }).where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).where("active_revision", "=", item.revision).where("updated_at", "=", item.updated_at).returning("id").executeTakeFirst();
           if (!changed)
             throw new ForgeError("revision_conflict", "Paket başka işlemle değişti.", 409);
           const now = Date.now();
-          await sql14`INSERT INTO package_gc (tenant_id, skill_id, revision, package_path, state, updated_at) SELECT tenant_id, skill_id, revision, package_path, 'pending', ${now} FROM skill_revisions WHERE tenant_id=${actor.tenantId} AND skill_id=${row.id}`.execute(tx);
+          await sql15`INSERT INTO package_gc (tenant_id, skill_id, revision, package_path, state, updated_at) SELECT tenant_id, skill_id, revision, package_path, 'pending', ${now} FROM skill_revisions WHERE tenant_id=${actor.tenantId} AND skill_id=${row.id}`.execute(tx);
           await tx.deleteFrom("skill_revisions").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).execute();
           await tx.deleteFrom("skills").where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).execute();
           await tx.insertInto("package_deletions").values({
@@ -6278,7 +7290,7 @@ class DeletionService {
           }).execute();
           await tx.insertInto("audit_events").values({
             tenant_id: actor.tenantId,
-            id: randomUUID18(),
+            id: randomUUID19(),
             user_id: actor.userId,
             project_id: input.project_ref,
             kind: "maintenance.delete",
@@ -6367,9 +7379,9 @@ class Throttle {
 }
 
 // src/migration/http.ts
-import { z as z9 } from "zod";
-var sha2 = z9.string().regex(/^[a-f0-9]{64}$/);
-var kind = z9.enum(["package"]);
+import { z as z10 } from "zod";
+var sha2 = z10.string().regex(/^[a-f0-9]{64}$/);
+var kind = z10.enum(["package"]);
 function decode(text, max) {
   if (text.length > Math.ceil(max / 3) * 4 || text.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(text))
     throw new ForgeError("invalid_transfer", "Aktarım base64 kodlaması veya boyutu geçersiz.");
@@ -6380,17 +7392,17 @@ function decode(text, max) {
 }
 function registerMigrationHttp(app, storage, identity, store) {
   app.post("/api/migrations/import", { bodyLimit: 24 * 1024 * 1024 }, async (request) => {
-    const body = z9.object({
+    const body = z10.object({
       kind,
-      project_ref: z9.string().min(1),
+      project_ref: z10.string().min(1),
       source_id: sha2,
       checksum: sha2,
-      content_base64: z9.string().max(23 * 1024 * 1024),
-      scope: z9.enum(["personal", "project"]).optional(),
-      flags: z9.object({
-        managed: z9.boolean(),
-        protected: z9.boolean(),
-        pinned: z9.boolean()
+      content_base64: z10.string().max(23 * 1024 * 1024),
+      scope: z10.enum(["personal", "project"]).optional(),
+      flags: z10.object({
+        managed: z10.boolean(),
+        protected: z10.boolean(),
+        pinned: z10.boolean()
       }).strict().optional()
     }).strict().parse(request.body);
     const actor = identity(request);
@@ -6407,15 +7419,15 @@ function registerMigrationHttp(app, storage, identity, store) {
     }, bytes);
   });
   app.post("/api/migrations/:kind/:id/rollback", async (request) => {
-    const params = z9.object({ kind, id: sha2 }).parse(request.params), actor = identity(request);
+    const params = z10.object({ kind, id: sha2 }).parse(request.params), actor = identity(request);
     return new MigrationImporter(store(actor, "")).rollback(actor, params.id);
   });
 }
 
 // src/application/members.ts
-import { randomUUID as randomUUID19 } from "node:crypto";
-import { sql as sql15 } from "kysely";
-import { z as z10 } from "zod";
+import { randomUUID as randomUUID20 } from "node:crypto";
+import { sql as sql16 } from "kysely";
+import { z as z11 } from "zod";
 class MemberService {
   db;
   constructor(db) {
@@ -6438,17 +7450,17 @@ class MemberService {
     };
   }
   async create(actor, raw) {
-    const input = z10.object({
-      subject: z10.string().min(1).max(1000),
-      display_name: z10.string().min(1).max(200),
-      role: z10.string().min(1).max(64)
+    const input = z11.object({
+      subject: z11.string().min(1).max(1000),
+      display_name: z11.string().min(1).max(200),
+      role: z11.string().min(1).max(64)
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
       const actorRole = await new IdentityService(tx).authorize(actor, "admin");
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
       await tx.insertInto("users").values({
-        id: randomUUID19(),
+        id: randomUUID20(),
         subject: input.subject,
         display_name: input.display_name,
         created_at: Date.now()
@@ -6463,7 +7475,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: null,
-        id: randomUUID19(),
+        id: randomUUID20(),
         kind: "member.provisioned",
         detail: JSON.stringify({
           target_user_id: user.id,
@@ -6475,16 +7487,16 @@ class MemberService {
     });
   }
   async update(actor, target, raw) {
-    const input = z10.object({
-      project_ref: z10.string().min(1).max(100),
-      generation: z10.number().int().nonnegative(),
-      project_generation: z10.number().int().nonnegative().nullable(),
-      role: z10.string().min(1).max(64),
-      disabled: z10.boolean(),
-      project_role: z10.enum(["writer", "reader"]).nullable()
+    const input = z11.object({
+      project_ref: z11.string().min(1).max(100),
+      generation: z11.number().int().nonnegative(),
+      project_generation: z11.number().int().nonnegative().nullable(),
+      role: z11.string().min(1).max(64),
+      disabled: z11.boolean(),
+      project_role: z11.enum(["writer", "reader"]).nullable()
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
       const actorRole = await new IdentityService(tx).authorize(actor, "admin", input.project_ref);
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
       const member = await tx.selectFrom("memberships").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).executeTakeFirst();
@@ -6519,7 +7531,7 @@ class MemberService {
         state: "cancelled",
         error_code: "permission_revoked",
         lease_until: 0,
-        fence: sql15`fence + 1`,
+        fence: sql16`fence + 1`,
         updated_at: Date.now()
       }).where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).where("state", "not in", terminalStates);
       let cancelled = [];
@@ -6535,7 +7547,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: input.project_ref,
-        id: randomUUID19(),
+        id: randomUUID20(),
         kind: "member.updated",
         detail: JSON.stringify({
           target_user_id: target,
@@ -6552,9 +7564,9 @@ class MemberService {
 }
 
 // src/application/organization.ts
-import { randomBytes as randomBytes6, randomUUID as randomUUID20, createHash as createHash16 } from "node:crypto";
-import { sql as sql16 } from "kysely";
-import { z as z11 } from "zod";
+import { randomBytes as randomBytes6, randomUUID as randomUUID21, createHash as createHash16 } from "node:crypto";
+import { sql as sql17 } from "kysely";
+import { z as z12 } from "zod";
 var INVITE_TTL_MAX_MS = 30 * 86400000;
 var INVITE_TTL_DEFAULT_MS = 7 * 86400000;
 var INVITE_PENDING_LIMIT = 50;
@@ -6607,7 +7619,7 @@ var TENANT_TABLES = [
 function audit(tx, entry) {
   return tx.insertInto("audit_events").values({
     tenant_id: entry.tenant_id,
-    id: randomUUID20(),
+    id: randomUUID21(),
     user_id: entry.user_id,
     project_id: entry.project_id ?? null,
     kind: entry.kind,
@@ -6630,7 +7642,7 @@ class OrganizationService {
       throw new ForgeError("invalid_organization", "Organizasyon adı 1–200 karakter olmalıdır.");
     return this.db.transaction().execute(async (tx) => {
       const tenant = {
-        id: randomUUID20(),
+        id: randomUUID21(),
         name: clean,
         created_at: Date.now()
       };
@@ -6652,12 +7664,12 @@ class OrganizationService {
     });
   }
   async createInvite(actor, raw) {
-    const input = z11.object({
-      role: z11.string().min(1).max(64),
-      ttlMs: z11.number().int().positive().max(INVITE_TTL_MAX_MS).optional()
+    const input = z12.object({
+      role: z12.string().min(1).max(64),
+      ttlMs: z12.number().int().positive().max(INVITE_TTL_MAX_MS).optional()
     }).strict().parse({ role: raw.role, ttlMs: raw.ttlMs });
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const actorRole = await auth.authorize(actor, "admin");
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
@@ -6671,7 +7683,7 @@ class OrganizationService {
       const token = randomBytes6(32).toString("base64url");
       const invite = {
         tenant_id: actor.tenantId,
-        id: randomUUID20(),
+        id: randomUUID21(),
         token_hash: createHash16("sha256").update(token).digest("hex"),
         role: input.role,
         invited_by: actor.userId,
@@ -6731,7 +7743,7 @@ class OrganizationService {
   }
   async revokeInvite(actor, id) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const updated = await tx.updateTable("invitations").set({ revoked: 1 }).where("tenant_id", "=", actor.tenantId).where("id", "=", id).where("revoked", "=", 0).where("accepted_at", "is", null).executeTakeFirst();
       if (Number(updated.numUpdatedRows ?? 0) < 1)
@@ -6746,10 +7758,10 @@ class OrganizationService {
     });
   }
   async acceptInvite(raw) {
-    const input = z11.object({
-      token: z11.string().min(20).max(200),
-      subject: z11.string().min(1).max(1000),
-      display_name: z11.string().min(1).max(200)
+    const input = z12.object({
+      token: z12.string().min(20).max(200),
+      subject: z12.string().min(1).max(1000),
+      display_name: z12.string().min(1).max(200)
     }).strict().parse(raw);
     const tokenHash = createHash16("sha256").update(input.token).digest("hex");
     return this.db.transaction().execute(async (tx) => {
@@ -6763,7 +7775,7 @@ class OrganizationService {
       if (invite.expires_at <= Date.now())
         throw new ForgeError("invite_expired", "Davetin süresi dolmuş.", 410);
       await tx.insertInto("users").values({
-        id: randomUUID20(),
+        id: randomUUID21(),
         subject: input.subject,
         display_name: input.display_name,
         created_at: Date.now()
@@ -6810,7 +7822,7 @@ class OrganizationService {
     if (toUserId === actor.userId)
       throw new ForgeError("transfer_self_denied", "Devir kendine yapılamaz.");
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -6825,7 +7837,7 @@ class OrganizationService {
       const now = Date.now();
       const offer = {
         tenant_id: actor.tenantId,
-        id: randomUUID20(),
+        id: randomUUID21(),
         to_user_id: toUserId,
         created_by: actor.userId,
         expires_at: now + TRANSFER_TTL_MS,
@@ -6844,7 +7856,7 @@ class OrganizationService {
   }
   async acceptTransfer(actor, offerId) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const offer = await tx.selectFrom("transfer_offers").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", offerId).executeTakeFirst();
       if (!offer || offer.accepted_at)
         throw new ForgeError("transfer_invalid", "Devir teklifi geçersiz.", 404);
@@ -6878,7 +7890,7 @@ class OrganizationService {
   async requestDeletion(actor, name) {
     const clean = name.trim();
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -6907,7 +7919,7 @@ class OrganizationService {
         state: "cancelled",
         error_code: "deletion_frozen",
         lease_until: 0,
-        fence: sql16`fence + 1`,
+        fence: sql17`fence + 1`,
         updated_at: now
       }).where("tenant_id", "=", actor.tenantId).where("state", "not in", terminalStates).returning("id").execute();
       if (cancelled.length)
@@ -6921,7 +7933,7 @@ class OrganizationService {
   }
   async cancelDeletion(actor) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -6939,7 +7951,7 @@ class OrganizationService {
   async confirmDeletion(actor, name) {
     const clean = name.trim();
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -6964,13 +7976,13 @@ class OrganizationService {
 // src/application/bindings.ts
 import { stat, realpath as realpath3 } from "node:fs/promises";
 import { basename as basename4, resolve as resolve15 } from "node:path";
-import { z as z12 } from "zod";
-import { sql as sql17 } from "kysely";
-var inputSchema = z12.object({
-  project_id: z12.string().min(1).max(100),
-  client_id: z12.string().min(1).max(200),
-  path: z12.string().min(1).max(4096),
-  local_name: z12.string().min(1).max(200).optional()
+import { z as z13 } from "zod";
+import { sql as sql18 } from "kysely";
+var inputSchema = z13.object({
+  project_id: z13.string().min(1).max(100),
+  client_id: z13.string().min(1).max(200),
+  path: z13.string().min(1).max(4096),
+  local_name: z13.string().min(1).max(200).optional()
 });
 async function fingerprint(path) {
   let canonical;
@@ -7003,7 +8015,7 @@ class BindingService {
     const { canonical, print } = await fingerprint(resolve15(input.path));
     const localName = input.local_name ?? basename4(canonical);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       await auth.authorize(actor, "write", input.project_id);
       await tx.insertInto("project_bindings").values({
@@ -7026,9 +8038,9 @@ class BindingService {
     });
   }
   async verify(actor, raw) {
-    const input = z12.object({
-      client_id: z12.string().min(1).max(200),
-      path: z12.string().min(1).max(4096)
+    const input = z13.object({
+      client_id: z13.string().min(1).max(200),
+      path: z13.string().min(1).max(4096)
     }).strict().parse(raw);
     await new IdentityService(this.db).authorize(actor, "read");
     let canonical = null;
@@ -7076,7 +8088,7 @@ class BindingService {
 }
 
 // src/application/telemetry.ts
-import { randomUUID as randomUUID21 } from "node:crypto";
+import { randomUUID as randomUUID22 } from "node:crypto";
 
 // src/telemetry/redact.ts
 var sensitive = /authorization|cookie|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key/i;
@@ -7203,7 +8215,7 @@ class TelemetryService {
     });
     if (result.scrubbed_runs + result.deleted_events + result.deleted_lessons + result.deleted_observations)
       await this.storage.db.insertInto("audit_events").values({
-        id: randomUUID21(),
+        id: randomUUID22(),
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: project,
@@ -7243,19 +8255,19 @@ class TelemetryService {
 }
 
 // src/application/maintenance.ts
-import { createHash as createHash17, randomUUID as randomUUID22 } from "node:crypto";
-import { sql as sql18 } from "kysely";
-import { z as z13 } from "zod";
-var itemSchema = z13.object({
-  skill_id: z13.string().min(1).max(100),
-  revision: z13.string().regex(/^[a-f0-9]{64}$/),
-  updated_at: z13.number().int().nonnegative()
+import { createHash as createHash17, randomUUID as randomUUID23 } from "node:crypto";
+import { sql as sql19 } from "kysely";
+import { z as z14 } from "zod";
+var itemSchema = z14.object({
+  skill_id: z14.string().min(1).max(100),
+  revision: z14.string().regex(/^[a-f0-9]{64}$/),
+  updated_at: z14.number().int().nonnegative()
 }).strict();
-var maintenanceSchema = z13.object({
-  project_ref: z13.string().min(1).max(100),
-  operation_id: z13.string().min(1).max(200),
-  action: z13.enum(["archive", "restore", "delete"]),
-  items: z13.array(itemSchema).min(1).max(100)
+var maintenanceSchema = z14.object({
+  project_ref: z14.string().min(1).max(100),
+  operation_id: z14.string().min(1).max(200),
+  action: z14.enum(["archive", "restore", "delete"]),
+  items: z14.array(itemSchema).min(1).max(100)
 }).strict();
 
 class MaintenanceService {
@@ -7266,11 +8278,7 @@ class MaintenanceService {
     this.dataDir = dataDir;
   }
   async skill(db, actor, project, id) {
-    const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", id).where("scope_key", "in", [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project}`
-    ]).executeTakeFirst();
+    const row = await db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", id).where("scope_key", "in", await visibleScopes(db, actor, project)).executeTakeFirst();
     if (!row)
       throw new ForgeError("skill_unavailable", "Paket bu kapsamda bulunamadı.", 404);
     return row;
@@ -7286,17 +8294,13 @@ class MaintenanceService {
   }
   async report(actor, project, options = {}) {
     await new IdentityService(this.storage.db).authorize(actor, "read", project);
-    const days = z13.number().int().min(1).max(365).parse(options.days ?? 30), since = Date.now() - days * 86400000;
-    let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("scope_key", "in", [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project}`
-    ]);
+    const days = z14.number().int().min(1).max(365).parse(options.days ?? 30), since = Date.now() - days * 86400000;
+    let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("scope_key", "in", await visibleScopes(this.storage.db, actor, project));
     if (options.after)
       query = query.where("id", ">", options.after);
     if (options.state && options.state !== "all")
       query = query.where("archived", "=", options.state === "archived" ? 1 : 0);
-    const limit2 = z13.number().int().min(1).max(50).parse(options.limit ?? 50);
+    const limit2 = z14.number().int().min(1).max(50).parse(options.limit ?? 50);
     const rows = await query.orderBy("id").limit(limit2 + 1).execute();
     const selected = rows.slice(0, limit2), ids = selected.map((s) => s.id);
     const counts = ids.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", "kind"]).select((eb) => [
@@ -7386,7 +8390,7 @@ class MaintenanceService {
     for (const item of input.items) {
       try {
         items.push(await this.storage.db.transaction().execute(async (tx) => {
-          await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
+          await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
           await new IdentityService(tx).authorize(actor, "write", input.project_ref);
           const hash3 = createHash17("sha256").update(JSON.stringify({ action, item })).digest("hex");
           const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
@@ -7423,7 +8427,7 @@ class MaintenanceService {
             tenant_id: actor.tenantId,
             user_id: actor.userId,
             project_id: input.project_ref,
-            id: randomUUID22(),
+            id: randomUUID23(),
             kind: `maintenance.${action}`,
             detail: JSON.stringify({
               ...result,
@@ -7446,9 +8450,9 @@ class MaintenanceService {
 }
 
 // src/application/packages.ts
-import { sql as sql19 } from "kysely";
-import { z as z14 } from "zod";
-import { createHash as createHash18, randomUUID as randomUUID23 } from "node:crypto";
+import { sql as sql20 } from "kysely";
+import { z as z15 } from "zod";
+import { createHash as createHash18, randomUUID as randomUUID24 } from "node:crypto";
 class PackageManager {
   store;
   constructor(store) {
@@ -7473,13 +8477,13 @@ class PackageManager {
     });
   }
   async edit(identity, skillId, raw) {
-    const input = z14.object({
-      base_revision: z14.string().regex(/^[a-f0-9]{64}$/),
-      rebase: z14.boolean().default(false),
-      changes: z14.array(z14.object({
-        path: z14.string().max(240),
-        original_hash: z14.string().regex(/^[a-f0-9]{64}$/).nullable(),
-        content: z14.string().max(1024 * 1024).nullable()
+    const input = z15.object({
+      base_revision: z15.string().regex(/^[a-f0-9]{64}$/),
+      rebase: z15.boolean().default(false),
+      changes: z15.array(z15.object({
+        path: z15.string().max(240),
+        original_hash: z15.string().regex(/^[a-f0-9]{64}$/).nullable(),
+        content: z15.string().max(1024 * 1024).nullable()
       }).strict()).min(1).max(16)
     }).strict().parse(raw);
     const skill = await this.store.authorizedSkill(identity, skillId, true);
@@ -7520,13 +8524,13 @@ class PackageManager {
     return { scope: "personal" };
   }
   async configure(identity, skillId, raw) {
-    const input = z14.object({
-      base_revision: z14.string().regex(/^[a-f0-9]{64}$/),
-      base_updated_at: z14.number().int().nonnegative().optional(),
-      managed: z14.boolean().optional(),
-      pinned: z14.boolean().optional(),
-      protected: z14.boolean().optional(),
-      archived: z14.boolean().optional()
+    const input = z15.object({
+      base_revision: z15.string().regex(/^[a-f0-9]{64}$/),
+      base_updated_at: z15.number().int().nonnegative().optional(),
+      managed: z15.boolean().optional(),
+      pinned: z15.boolean().optional(),
+      protected: z15.boolean().optional(),
+      archived: z15.boolean().optional()
     }).strict().parse(raw);
     const skill = await this.store.authorizedSkill(identity, skillId, true);
     if (input.archived && (skill.protected || skill.pinned || !skill.managed))
@@ -7538,13 +8542,13 @@ class PackageManager {
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => key !== "base_revision" && key !== "base_updated_at").map(([key, value]) => [key, value ? 1 : 0]));
       const result = await tx.updateTable("skills").set({
         ...patch,
-        updated_at: sql19`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
+        updated_at: sql20`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
       }).where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).where("active_revision", "=", input.base_revision).where("updated_at", "=", skill.updated_at).returningAll().executeTakeFirst();
       if (!result)
         throw new ForgeError("revision_conflict", "Paket yapılandırılırken aktif sürüm değişti.", 409);
       await tx.insertInto("audit_events").values({
         tenant_id: identity.tenantId,
-        id: randomUUID23(),
+        id: randomUUID24(),
         user_id: identity.userId,
         project_id: skill.project_id,
         kind: "skill.configured",
@@ -7572,13 +8576,13 @@ import { basename as basename5 } from "node:path";
 // src/application/execution-results.ts
 import { mkdir as mkdir9, open as open8 } from "node:fs/promises";
 import { join as join15 } from "node:path";
-import { randomUUID as randomUUID24 } from "node:crypto";
+import { randomUUID as randomUUID25 } from "node:crypto";
 async function storeExecutionResult(dataDir, id, executed) {
   const bytes = Buffer.from(JSON.stringify(executed.result));
   const artifacts = [...executed.artifacts];
   let resultPath;
   if (bytes.length > 8192) {
-    resultPath = `forge-result-${randomUUID24()}.json`;
+    resultPath = `forge-result-${randomUUID25()}.json`;
     const directory = join15(dataDir, "execution", executed.execution_id, "artifacts");
     await mkdir9(directory, { recursive: true, mode: 448 });
     const fd = await open8(join15(directory, resultPath), "wx", 384);
@@ -7667,16 +8671,16 @@ function byteChunk(bytes, offset) {
 }
 
 // src/telemetry/observations.ts
-import { randomUUID as randomUUID25 } from "node:crypto";
-import { sql as sql20 } from "kysely";
-async function observe(db, actor, project, kind2, items, correlation = randomUUID25()) {
+import { randomUUID as randomUUID26 } from "node:crypto";
+import { sql as sql21 } from "kysely";
+async function observe(db, actor, project, kind2, items, correlation = randomUUID26()) {
   if (!items.length)
     return;
   const rows = items.map((item) => ({
     tenant_id: actor.tenantId,
     user_id: actor.userId,
     project_id: project,
-    id: randomUUID25(),
+    id: randomUUID26(),
     skill_id: item.skill_id,
     revision: item.revision,
     kind: kind2,
@@ -7744,14 +8748,14 @@ class ObservationBatch {
     try {
       await this.db.transaction().execute(async (tx) => {
         for (const item of group) {
-          await sql20`savepoint forge_observation`.execute(tx);
+          await sql21`savepoint forge_observation`.execute(tx);
           try {
             await insert(tx, item.rows);
           } catch (error) {
-            await sql20`rollback to savepoint forge_observation`.execute(tx);
+            await sql21`rollback to savepoint forge_observation`.execute(tx);
             errors.set(item, error);
           }
-          await sql20`release savepoint forge_observation`.execute(tx);
+          await sql21`release savepoint forge_observation`.execute(tx);
         }
       });
       for (const item of group) {
@@ -7771,73 +8775,145 @@ class ObservationBatch {
   }
 }
 
+// src/application/run-reports.ts
+import { createHash as createHash19 } from "node:crypto";
+class RunReports {
+  queue;
+  cursors;
+  constructor(queue, cursors) {
+    this.queue = queue;
+    this.cursors = cursors;
+  }
+  publicRun(run, detail = false) {
+    const result = run.result_json ? JSON.parse(run.result_json) : null;
+    const bytes = Buffer.byteLength(run.result_json ?? "null");
+    return {
+      run_id: run.id,
+      kind: run.kind,
+      status: run.state,
+      created_at: run.created_at,
+      updated_at: run.updated_at,
+      attempt: run.attempt,
+      error_code: run.error_code,
+      result: detail && bytes <= 8192 ? result : undefined,
+      result_available: run.result_json !== null,
+      result_truncated: run.result_json !== null && (!detail || bytes > 8192),
+      result_bytes: bytes,
+      result_summary: result ? redact({
+        decision: typeof result.decision === "string" ? result.decision.slice(0, 32) : undefined,
+        reason: typeof result.reason === "string" ? result.reason.slice(0, 500) : undefined,
+        usage: result.usage ? Object.fromEntries(["calls", "tokens", "cost_micros", "elapsed_ms"].map((key) => [
+          key,
+          typeof result.usage[key] === "number" && Number.isFinite(result.usage[key]) ? result.usage[key] : null
+        ])) : null,
+        content_expired: result.content_expired === true
+      }) : null
+    };
+  }
+  async report(identity, value) {
+    const binding = [
+      identity.tenantId,
+      identity.userId,
+      "forge_report",
+      { ...value, cursor: undefined }
+    ];
+    if (value.run_id) {
+      const run = await this.queue.get(identity, value.run_id);
+      if (run.project_id !== value.project_ref)
+        throw new ForgeError("project_mismatch", "İş başka projeye ait.", 403);
+      if (value.result_content) {
+        const resultBytes = Buffer.from(run.result_json ?? "null");
+        const resultBinding = [
+          ...binding,
+          createHash19("sha256").update(resultBytes).digest("hex")
+        ];
+        const chunk = byteChunk(resultBytes, value.cursor ? this.cursors.decode(value.cursor, resultBinding) : 0);
+        return {
+          run_id: run.id,
+          status: run.state,
+          kind: "result_json",
+          ...chunk,
+          next: undefined,
+          next_cursor: chunk.next !== null ? this.cursors.encode(resultBinding, chunk.next) : null
+        };
+      }
+      return this.publicRun(run, true);
+    }
+    if (value.result_content)
+      throw new ForgeError("invalid_filter", "İş sonucu içeriği için run_id gerekir.");
+    let query = this.queue.storage.db.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", value.project_ref);
+    if (value.state)
+      query = query.where("state", "=", value.state);
+    if (value.cursor)
+      query = query.where("id", ">", this.cursors.decode(value.cursor, binding));
+    const rows = await query.orderBy("id").limit(value.limit + 1).execute();
+    return {
+      items: rows.slice(0, value.limit).map((row) => this.publicRun(row)),
+      next_cursor: rows.length > value.limit ? this.cursors.encode(binding, rows[value.limit - 1].id) : null
+    };
+  }
+}
+
 // src/application/forge.ts
 import { join as join16 } from "node:path";
-import { createHash as createHash19, randomUUID as randomUUID26 } from "node:crypto";
-import { sql as sql21 } from "kysely";
+import { createHash as createHash20, randomUUID as randomUUID27 } from "node:crypto";
+import { sql as sql22 } from "kysely";
 
-// src/mcp/schemas.ts
-import { z as z15 } from "zod";
-var ref = z15.string().min(1).max(100);
-var revision = z15.string().regex(/^[a-f0-9]{64}$/);
-var key = z15.string().min(1).max(200);
+// src/domain/tool-contracts.ts
+import { z as z16 } from "zod";
+var ref = z16.string().min(1).max(100);
+var revision = z16.string().regex(/^[a-f0-9]{64}$/);
+var key = z16.string().min(1).max(200);
 var toolSchemas = {
-  forge_search: z15.object({
+  forge_search: z16.object({
     project_ref: ref,
-    query: z15.string().max(200).default(""),
-    scope: z15.enum(["personal", "project", "workspace", "environment"]).optional(),
-    limit: z15.number().int().min(1).max(20).default(5),
-    cursor: z15.string().max(3000).optional()
+    query: z16.string().max(200).default(""),
+    scope: z16.enum(["personal", "project", "workspace", "environment"]).optional(),
+    limit: z16.number().int().min(1).max(20).default(5),
+    cursor: z16.string().max(3000).optional()
   }).strict(),
-  forge_load: z15.object({
+  forge_load: z16.object({
     project_ref: ref,
     skill_id: ref,
     revision,
-    path: z15.string().max(240).default("SKILL.md"),
-    inventory: z15.boolean().default(false),
-    cursor: z15.string().max(3000).optional()
+    path: z16.string().max(240).default("SKILL.md"),
+    inventory: z16.boolean().default(false),
+    cursor: z16.string().max(3000).optional()
   }).strict(),
-  forge_run: z15.object({
+  forge_run: z16.object({
     project_ref: ref,
     skill_id: ref,
     revision,
-    entrypoint: z15.string().max(64),
-    args: z15.record(z15.string(), z15.unknown()),
+    entrypoint: z16.string().max(64),
+    args: z16.record(z16.string(), z16.unknown()),
     idempotency_key: key
   }).strict(),
-  forge_handoff: z15.object({
+  forge_handoff: z16.object({
     project_ref: ref,
-    summary: z15.string().min(1).max(8000),
+    summary: z16.string().min(1).max(8000),
     idempotency_key: key,
-    source: z15.object({
-      client: z15.string().max(100),
-      session: z15.string().max(200).optional()
+    source: z16.object({
+      client: z16.string().max(100),
+      session: z16.string().max(200).optional()
     }).strict(),
-    evidence: z15.array(z15.object({
-      kind: z15.enum(["test", "command", "observation"]),
-      summary: z15.string().max(2000),
-      reference: z15.string().max(500).optional()
+    evidence: z16.array(z16.object({
+      kind: z16.enum(["test", "command", "observation"]),
+      summary: z16.string().max(2000),
+      reference: z16.string().max(500).optional()
     }).strict()).max(12).default([])
   }).strict(),
-  forge_report: z15.object({
+  forge_report: z16.object({
     project_ref: ref,
     run_id: ref.optional(),
-    section: z15.enum(["jobs", "maintenance", "execution"]).default("jobs"),
+    section: z16.enum(["jobs", "maintenance", "execution"]).default("jobs"),
     execution_id: ref.optional(),
-    artifact_reference: z15.string().max(3000).optional(),
-    result_content: z15.boolean().default(false),
-    observation_days: z15.number().int().min(1).max(365).optional(),
-    state: z15.string().max(30).optional(),
-    limit: z15.number().int().min(1).max(20).default(10),
-    cursor: z15.string().max(3000).optional()
+    artifact_reference: z16.string().max(3000).optional(),
+    result_content: z16.boolean().default(false),
+    observation_days: z16.number().int().min(1).max(365).optional(),
+    state: z16.string().max(30).optional(),
+    limit: z16.number().int().min(1).max(20).default(10),
+    cursor: z16.string().max(3000).optional()
   }).strict()
-};
-var toolDescriptions = {
-  forge_search: "Search authorized skill metadata. Returns at most 5 default/20 max matches and an opaque cursor; no package content.",
-  forge_load: "Read only a required file from a pinned revision, default SKILL.md. Text/base64 chunks at most 24 KiB; follow cursor for remainder. inventory=true pages all package file metadata without content.",
-  forge_run: "Execute a registered JSON entrypoint at a pinned revision in an isolated sandbox. Use one stable idempotency key for retries. Results over 8 KiB become an artifact; lists are paginated through forge_report section=execution.",
-  forge_handoff: "Durably accept a concise verified reusable experience before your final answer. No raw history or private reasoning. Accepted work continues independently.",
-  forge_report: "Read concise authorized job status/results, section=maintenance for scoped observations, or section=execution with execution_id for paginated artifacts. Add artifact_reference or result_content=true to read 24 KiB chunks. Loading is not successful application. Filter by run_id, state or cursor; acceptance is not completion."
 };
 
 // src/application/cursor.ts
@@ -7877,6 +8953,7 @@ class ForgeService {
   queue;
   packages;
   cursors;
+  reports;
   constructor(storage, dataDir, signingKey, policy = {}) {
     this.storage = storage;
     this.dataDir = dataDir;
@@ -7884,6 +8961,7 @@ class ForgeService {
     this.queue = new JobQueue(storage, policy);
     this.packages = new PackageStore(storage, dataDir, undefined, policy);
     this.cursors = new CursorCodec(signingKey);
+    this.reports = new RunReports(this.queue, this.cursors);
   }
   async artifact(identity, executionId, reference) {
     const execution = await this.storage.db.selectFrom("executions").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", executionId).executeTakeFirst();
@@ -7897,32 +8975,6 @@ class ForgeService {
     return {
       path: value.path,
       bytes: await secureRead(join16(this.dataDir, "execution", value.execution, "artifacts"), value.path)
-    };
-  }
-  publicRun(run, detail = false) {
-    const result = run.result_json ? JSON.parse(run.result_json) : null;
-    const bytes = Buffer.byteLength(run.result_json ?? "null");
-    return {
-      run_id: run.id,
-      kind: run.kind,
-      status: run.state,
-      created_at: run.created_at,
-      updated_at: run.updated_at,
-      attempt: run.attempt,
-      error_code: run.error_code,
-      result: detail && bytes <= 8192 ? result : undefined,
-      result_available: run.result_json !== null,
-      result_truncated: run.result_json !== null && (!detail || bytes > 8192),
-      result_bytes: bytes,
-      result_summary: result ? redact({
-        decision: typeof result.decision === "string" ? result.decision.slice(0, 32) : undefined,
-        reason: typeof result.reason === "string" ? result.reason.slice(0, 500) : undefined,
-        usage: result.usage ? Object.fromEntries(["calls", "tokens", "cost_micros", "elapsed_ms"].map((key2) => [
-          key2,
-          typeof result.usage[key2] === "number" && Number.isFinite(result.usage[key2]) ? result.usage[key2] : null
-        ])) : null,
-        content_expired: result.content_expired === true
-      }) : null
     };
   }
   async invoke(name, identity, raw, signal) {
@@ -7948,9 +9000,17 @@ class ForgeService {
         after
       });
       await observe(this.storage.db, identity, value2.project_ref, "search_impression", found.items.filter((item) => item.revision !== null));
+      const next_cursor = found.next ? this.cursors.encode(binding, found.next) : null;
+      const result_bytes = Buffer.byteLength(JSON.stringify({ items: found.items, next_cursor }));
       return {
         items: found.items,
-        next_cursor: found.next ? this.cursors.encode(binding, found.next) : null
+        next_cursor,
+        scanned: found.scanned,
+        scored: found.scored,
+        queries: found.queries,
+        latency_ms: found.elapsed_ms,
+        result_bytes,
+        token_estimate: Math.ceil(result_bytes / 4)
       };
     }
     if (name === "forge_load") {
@@ -8089,40 +9149,7 @@ class ForgeService {
           next_cursor: report.next ? this.cursors.encode(binding, report.next) : null
         };
       }
-      if (value2.run_id) {
-        const run = await this.queue.get(identity, value2.run_id);
-        if (run.project_id !== value2.project_ref)
-          throw new ForgeError("project_mismatch", "İş başka projeye ait.", 403);
-        if (value2.result_content) {
-          const resultBytes = Buffer.from(run.result_json ?? "null");
-          const resultBinding = [
-            ...binding,
-            createHash19("sha256").update(resultBytes).digest("hex")
-          ];
-          const chunk = byteChunk(resultBytes, value2.cursor ? this.cursors.decode(value2.cursor, resultBinding) : 0);
-          return {
-            run_id: run.id,
-            status: run.state,
-            kind: "result_json",
-            ...chunk,
-            next: undefined,
-            next_cursor: chunk.next !== null ? this.cursors.encode(resultBinding, chunk.next) : null
-          };
-        }
-        return this.publicRun(run, true);
-      }
-      if (value2.result_content)
-        throw new ForgeError("invalid_filter", "İş sonucu içeriği için run_id gerekir.");
-      let query = this.storage.db.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", value2.project_ref);
-      if (value2.state)
-        query = query.where("state", "=", value2.state);
-      if (value2.cursor)
-        query = query.where("id", ">", this.cursors.decode(value2.cursor, binding));
-      const rows = await query.orderBy("id").limit(value2.limit + 1).execute();
-      return {
-        items: rows.slice(0, value2.limit).map((row) => this.publicRun(row)),
-        next_cursor: rows.length > value2.limit ? this.cursors.encode(binding, rows[value2.limit - 1].id) : null
-      };
+      return this.reports.report(identity, value2);
     }
     const value = toolSchemas.forge_run.parse(input);
     if (Buffer.byteLength(JSON.stringify(value.args)) > 32768)
@@ -8130,9 +9157,9 @@ class ForgeService {
     const loaded = await this.packages.files(identity, value.skill_id, value.revision);
     if (loaded.skill.project_id && loaded.skill.project_id !== value.project_ref)
       throw new ForgeError("project_mismatch", "Paket başka projeye ait.", 403);
-    const hash3 = createHash19("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash3 = createHash20("sha256").update(JSON.stringify(value)).digest("hex");
     const accepted = await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql21`name` }).where("id", "=", identity.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql22`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       const existing = await tx.selectFrom("executions").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", value.project_ref).where("idempotency_key", "=", value.idempotency_key).executeTakeFirst();
       if (existing) {
@@ -8142,7 +9169,7 @@ class ForgeService {
       }
       const row = {
         tenant_id: identity.tenantId,
-        id: randomUUID26(),
+        id: randomUUID27(),
         user_id: identity.userId,
         project_id: value.project_ref,
         idempotency_key: value.idempotency_key,
@@ -8198,7 +9225,7 @@ class ForgeService {
       clearInterval(permissionTimer);
     }
     await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql21`name` }).where("id", "=", identity.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql22`name` }).where("id", "=", identity.tenantId).execute();
       try {
         await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       } catch {
@@ -8216,6 +9243,15 @@ class ForgeService {
   }
 }
 
+// src/mcp/schemas.ts
+var toolDescriptions = {
+  forge_search: "Search authorized skill metadata. Returns at most 5 default/20 max matches and an opaque cursor; no package content.",
+  forge_load: "Read only a required file from a pinned revision, default SKILL.md. Text/base64 chunks at most 24 KiB; follow cursor for remainder. inventory=true pages all package file metadata without content.",
+  forge_run: "Execute a registered JSON entrypoint at a pinned revision in an isolated sandbox. Use one stable idempotency key for retries. Results over 8 KiB become an artifact; lists are paginated through forge_report section=execution.",
+  forge_handoff: "Durably accept a concise verified reusable experience before your final answer. No raw history or private reasoning. Accepted work continues independently.",
+  forge_report: "Read concise authorized job status/results, section=maintenance for scoped observations, or section=execution with execution_id for paginated artifacts. Add artifact_reference or result_content=true to read 24 KiB chunks. Loading is not successful application. Filter by run_id, state or cursor; acceptance is not completion."
+};
+
 // src/http/server.ts
 import staticFiles from "@fastify/static";
 import { existsSync as existsSync2 } from "node:fs";
@@ -8223,9 +9259,9 @@ import { resolve as resolve16 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual as timingSafeEqual2, createHash as createHash20 } from "node:crypto";
+import { timingSafeEqual as timingSafeEqual2, createHash as createHash21 } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { z as z16, ZodError as ZodError2 } from "zod";
+import { z as z17, ZodError as ZodError2 } from "zod";
 
 // src/mcp/published-schemas.ts
 function publishedSchema(schema) {
@@ -8585,7 +9621,7 @@ async function createHttpServer(config) {
           sessionOnly = true;
           identity = await identityService.sessionIdentity(sessionToken);
         }
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash20("sha256").update(sessionToken).digest("hex")))
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash21("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
         if (sessionOnly && ![
           "/api/my-memberships",
@@ -8656,12 +9692,12 @@ async function createHttpServer(config) {
     publicThrottle.check(request, "auth-pair");
     if (!localOwner)
       throw new ForgeError("pairing_disabled", "Sunucu profilinde OIDC girişini kullanın.", 403);
-    const { code } = z16.object({ code: z16.string().min(20).max(200) }).strict().parse(request.body);
+    const { code } = z17.object({ code: z17.string().min(20).max(200) }).strict().parse(request.body);
     const token = await identityService.redeemPairing(code);
     reply.setCookie("forge_session", token, cookieOptions);
     return {
       authenticated: true,
-      csrf: createHash20("sha256").update(token).digest("hex")
+      csrf: createHash21("sha256").update(token).digest("hex")
     };
   });
   app.post("/api/pairing", async (request) => {
@@ -8745,7 +9781,7 @@ async function createHttpServer(config) {
     identity: requestIdentity(request),
     role: await identityService.authorize(requestIdentity(request), "read"),
     projects: await identityService.listProjects(requestIdentity(request)),
-    csrf: request.cookies.forge_session ? createHash20("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash21("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/logout", async (request, reply) => {
     if (request.cookies.forge_session)
@@ -8757,34 +9793,41 @@ async function createHttpServer(config) {
     items: await providers.list(requestIdentity(request))
   }));
   app.put("/api/providers", async (request) => providers.update(requestIdentity(request), request.body));
-  app.get("/api/projects", async (request) => ({
-    items: await identityService.listProjects(requestIdentity(request))
-  }));
+  app.get("/api/projects", async (request) => {
+    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
+    const page = await identityService.listProjectsPage(requestIdentity(request), query.after);
+    if (query.after !== undefined && !page.items.length && page.next === null) {
+      const probe = await identityService.listProjectsPage(requestIdentity(request), undefined);
+      if (!probe.items.some((row) => row.id === query.after))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+    }
+    return page;
+  });
   app.post("/api/projects", async (request) => {
-    const body = z16.object({
-      name: z16.string().min(1).max(200),
-      environment_id: z16.string().min(1).max(100).optional()
+    const body = z17.object({
+      name: z17.string().min(1).max(200),
+      environment_id: z17.string().min(1).max(100).optional()
     }).parse(request.body);
     return identityService.createProject(requestIdentity(request), body.name, body.environment_id);
   });
   app.get("/api/settings", async (request) => {
-    const query = z16.object({ scope: z16.string().default("workspace") }).parse(request.query);
+    const query = z17.object({ scope: z17.string().default("workspace") }).parse(request.query);
     return settings.get(requestIdentity(request), query.scope);
   });
   app.put("/api/settings", async (request) => {
-    const body = z16.object({
-      scope: z16.string(),
-      base_revision: z16.number().int().min(0),
-      values: z16.unknown()
+    const body = z17.object({
+      scope: z17.string(),
+      base_revision: z17.number().int().min(0),
+      values: z17.unknown()
     }).strict().parse(request.body);
     return settings.update(requestIdentity(request), body.scope, body.base_revision, body.values);
   });
   app.get("/api/settings/effective", async (request) => {
-    const query = z16.object({ project_ref: z16.string().optional() }).parse(request.query);
+    const query = z17.object({ project_ref: z17.string().optional() }).parse(request.query);
     return settings.effective(requestIdentity(request), query.project_ref);
   });
   app.post("/api/projects/:id/bindings", async (request) => {
-    const { id } = z16.object({ id: z16.string() }).parse(request.params);
+    const { id } = z17.object({ id: z17.string() }).parse(request.params);
     return bindings.bind(requestIdentity(request), {
       ...request.body,
       project_id: id
@@ -8802,9 +9845,9 @@ async function createHttpServer(config) {
   const bindings = new BindingService(storage.db);
   const agentPrompts = new AgentPromptService(storage.db);
   app.get("/api/members", async (request) => {
-    const q = z16.object({
-      project_ref: z16.string(),
-      after: z16.string().max(100).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(100).optional()
     }).parse(request.query);
     return members.list(requestIdentity(request), q.project_ref, q.after);
   });
@@ -8813,10 +9856,10 @@ async function createHttpServer(config) {
   app.get("/api/tenants", async (request) => organizations.listTenants(requestIdentity(request).userId));
   app.get("/api/my-memberships", async (request) => ({
     items: await organizations.listTenants(requestIdentity(request).userId),
-    csrf: request.cookies.forge_session ? createHash20("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash21("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/tenants/switch", async (request, reply) => {
-    const body = z16.object({ tenant_id: z16.string().min(1) }).parse(request.body);
+    const body = z17.object({ tenant_id: z17.string().min(1) }).parse(request.body);
     const identity = requestIdentity(request);
     const mine = await organizations.listTenants(identity.userId);
     if (!mine.some((m) => m.tenant_id === body.tenant_id && !m.disabled))
@@ -8825,7 +9868,7 @@ async function createHttpServer(config) {
     return { tenant_id: body.tenant_id };
   });
   app.post("/api/organizations", async (request) => {
-    const body = z16.object({ name: z16.string().min(1).max(200) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1).max(200) }).parse(request.body);
     return organizations.createOrganization(requestIdentity(request).userId, body.name);
   });
   app.post("/api/invitations", async (request) => organizations.createInvite(requestIdentity(request), request.body));
@@ -8836,16 +9879,16 @@ async function createHttpServer(config) {
     return organizations.acceptInvite(request.body);
   });
   app.post("/api/organization/transfer", async (request) => {
-    const body = z16.object({ to_user_id: z16.string().min(1) }).parse(request.body);
+    const body = z17.object({ to_user_id: z17.string().min(1) }).parse(request.body);
     return organizations.offerTransfer(requestIdentity(request), body.to_user_id);
   });
   app.post("/api/organization/transfer/:id/accept", async (request) => organizations.acceptTransfer(requestIdentity(request), request.params.id));
   app.post("/api/organization/deletion/request", async (request) => {
-    const body = z16.object({ name: z16.string().min(1) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
     return organizations.requestDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/confirm", async (request) => {
-    const body = z16.object({ name: z16.string().min(1) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
     return organizations.confirmDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/cancel", async (request) => organizations.cancelDeletion(requestIdentity(request)));
@@ -8856,9 +9899,9 @@ async function createHttpServer(config) {
   app.delete("/api/roles/:name", async (request) => roles.remove(requestIdentity(request), request.params.name));
   app.post("/api/roles/:name/restore", async (request) => roles.restore(requestIdentity(request), request.params.name));
   app.get("/api/agent-prompts", async (request) => {
-    const q = z16.object({
-      scope: z16.string().min(1).max(200),
-      profile: z16.string().max(64).optional()
+    const q = z17.object({
+      scope: z17.string().min(1).max(200),
+      profile: z17.string().max(64).optional()
     }).parse(request.query);
     const actor = requestIdentity(request);
     return {
@@ -8869,13 +9912,22 @@ async function createHttpServer(config) {
   app.put("/api/agent-prompts", async (request) => agentPrompts.update(requestIdentity(request), request.body));
   app.post("/api/agent-prompts/rollback", async (request) => agentPrompts.rollback(requestIdentity(request), request.body));
   app.get("/api/packages/integrity", async (request) => {
-    const query = z16.object({
-      after_skill: z16.string().optional(),
-      after_revision: z16.string().regex(/^[a-f0-9]{64}$/).optional()
+    const query = z17.object({
+      after_skill: z17.string().optional(),
+      after_revision: z17.string().regex(/^[a-f0-9]{64}$/).optional()
     }).parse(request.query);
     if (Boolean(query.after_skill) !== Boolean(query.after_revision))
       throw new ForgeError("invalid_cursor", "İki cursor alanı birlikte gerekiyor.", 400);
-    return new PackageStore(storage, config.dataDir).reconcile(requestIdentity(request), query.after_skill ? { skill_id: query.after_skill, revision: query.after_revision } : undefined);
+    return new PackageStore(storage, config.dataDir).reconcile(requestIdentity(request), query.after_skill ? { skill_id: query.after_skill, revision: query.after_revision } : undefined, { reclaim: false });
+  });
+  app.post("/api/packages/integrity", async (request) => {
+    const body = z17.object({
+      recover_ownerless_before: z17.number().int().positive().optional()
+    }).strict().parse(request.body ?? {});
+    return new PackageStore(storage, config.dataDir).reclaim(requestIdentity(request), {
+      recoverOwnerlessBefore: body.recover_ownerless_before,
+      audit: true
+    });
   });
   const packageManager = (actor, projectId) => {
     return new PackageManager(new PackageStore(storage, config.dataDir, async (path, manifest) => {
@@ -8910,58 +9962,66 @@ async function createHttpServer(config) {
       clearInterval(retentionTimer);
     await retentionWork;
   });
-  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z16.object({ project_ref: z16.string() }).parse(request.query).project_ref));
-  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z16.object({ project_ref: z16.string() }).strict().parse(request.body).project_ref));
+  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z17.object({ project_ref: z17.string() }).parse(request.query).project_ref));
+  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z17.object({ project_ref: z17.string() }).strict().parse(request.body).project_ref));
   const maintenance = new MaintenanceService(storage, config.dataDir);
   const deletions = new DeletionService(storage, config.dataDir);
   app.get("/api/maintenance/deletions", async (request) => {
-    const q = z16.object({
-      project_ref: z16.string(),
-      after: z16.string().max(100).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(100).optional()
     }).strict().parse(request.query);
     return deletions.pending(requestIdentity(request), q.project_ref, q.after);
   });
   app.post("/api/maintenance/deletions/resume", async (request) => {
-    const q = z16.object({ project_ref: z16.string(), skill_id: z16.string().max(100) }).strict().parse(request.body);
+    const q = z17.object({ project_ref: z17.string(), skill_id: z17.string().max(100) }).strict().parse(request.body);
     return deletions.resume(requestIdentity(request), q.project_ref, q.skill_id);
   });
   app.get("/api/maintenance", async (request) => {
-    const q = z16.object({
-      project_ref: z16.string(),
-      days: z16.coerce.number().int().min(1).max(365).optional(),
-      after: z16.string().max(100).optional(),
-      state: z16.enum(["active", "archived", "all"]).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      days: z17.coerce.number().int().min(1).max(365).optional(),
+      after: z17.string().max(100).optional(),
+      state: z17.enum(["active", "archived", "all"]).optional()
     }).parse(request.query);
     return maintenance.report(requestIdentity(request), q.project_ref, q);
   });
   app.post("/api/maintenance/preview", async (request) => maintenance.preview(requestIdentity(request), request.body));
   app.post("/api/maintenance/apply", async (request) => maintenance.apply(requestIdentity(request), request.body));
   app.get("/api/overview", async (request) => {
-    const actor = requestIdentity(request), { project_ref } = z16.object({ project_ref: z16.string() }).parse(request.query);
+    const actor = requestIdentity(request), { project_ref } = z17.object({ project_ref: z17.string() }).parse(request.query);
     await identityService.authorize(actor, "read", project_ref);
-    const scope = [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project_ref}`
-    ];
-    const [active, packages, profiles, usage, jobs, account, events] = await Promise.all([
+    const scope = await visibleScopes(storage.db, actor, project_ref);
+    const [
+      active,
+      packages,
+      profiles,
+      usage,
+      jobs,
+      account,
+      effective,
+      events
+    ] = await Promise.all([
       storage.db.selectFrom("runs").select((eb) => eb.fn.countAll().as("n")).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", project_ref).where("state", "not in", terminalStates).executeTakeFirstOrThrow(),
       storage.db.selectFrom("skills").select((eb) => eb.fn.countAll().as("n")).where("tenant_id", "=", actor.tenantId).where("scope_key", "in", scope).where("archived", "=", 0).executeTakeFirstOrThrow(),
       providers.list(actor),
       storage.db.selectFrom("budget_reservations as b").innerJoin("runs as r", (j) => j.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select(["b.actual_micros", "b.state"]).where("b.tenant_id", "=", actor.tenantId).where("b.user_id", "=", actor.userId).where("r.project_id", "=", project_ref).limit(1e4).execute(),
       forge.invoke("forge_report", actor, { project_ref, limit: 5 }),
-      storage.db.selectFrom("budget_accounts").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).executeTakeFirst(),
+      new BudgetService(storage).accountSummary(actor),
+      settings.effective(actor, project_ref),
       storage.db.selectFrom("audit_events").select(["id", "kind", "created_at", "detail"]).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where((eb) => eb.or([
         eb("project_id", "=", project_ref),
         eb("project_id", "is", null)
       ])).orderBy("created_at", "desc").limit(5).execute()
     ]);
     return {
-      account_budget: account ? {
-        limit_micros: account.limit_micros,
+      account_budget: {
+        job_limit_micros: effective.values.maxCostMicros,
         reserved_micros: account.reserved_micros,
-        spent_micros: account.spent_micros
-      } : null,
+        uncertain_micros: account.uncertain_micros,
+        spent_micros: account.spent_micros,
+        uncertain_reservations: account.uncertain_reservations
+      },
       active_jobs: Number(active.n),
       skill_packages: Number(packages.n),
       model_status: profiles.some((p) => p.profile) ? "configured" : "unconfigured",
@@ -8974,10 +10034,25 @@ async function createHttpServer(config) {
       }))
     };
   });
+  app.post("/api/budget/reservations/:id/reconcile", async (request) => {
+    const { id } = z17.object({ id: z17.string().min(1).max(200) }).parse(request.params);
+    const body = z17.object({ actual_micros: z17.number().int().min(0) }).strict().parse(request.body);
+    const actor = requestIdentity(request);
+    const budget = new BudgetService(storage);
+    const resolved = await budget.resolveReservation(actor, id, body.actual_micros);
+    const summary = await budget.accountSummary(actor);
+    return {
+      ...resolved,
+      reserved_micros: summary.reserved_micros,
+      uncertain_micros: summary.uncertain_micros,
+      spent_micros: summary.spent_micros
+    };
+  });
   app.get("/api/logs", async (request) => {
-    const actor = requestIdentity(request), query = z16.object({
-      project_ref: z16.string(),
-      kind: z16.string().max(100).optional()
+    const actor = requestIdentity(request), query = z17.object({
+      project_ref: z17.string(),
+      kind: z17.string().max(100).optional(),
+      after: z17.string().max(200).optional()
     }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
     let selected = storage.db.selectFrom("audit_events").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where((eb) => eb.or([
@@ -8986,18 +10061,48 @@ async function createHttpServer(config) {
     ]));
     if (query.kind)
       selected = selected.where("kind", "=", query.kind);
+    let next = null;
+    if (query.after) {
+      const sep2 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep2));
+      const id = query.after.slice(sep2 + 1);
+      if (sep2 <= 0 || !id || !Number.isSafeInteger(at))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where((eb) => eb.or([
+        eb("created_at", "<", at),
+        eb.and([eb("created_at", "=", at), eb("id", "<", id)])
+      ]));
+    }
+    const rows = await selected.orderBy("created_at", "desc").orderBy("id", "desc").limit(101).execute();
+    const page = rows.length > 100 ? rows.slice(0, 100) : rows;
+    if (rows.length > 100) {
+      const anchor = page[99];
+      next = `${anchor.created_at}:${anchor.id}`;
+    }
     return {
-      items: (await selected.orderBy("created_at", "desc").limit(100).execute()).map((row) => ({
+      items: page.map((row) => ({
         ...row,
         detail: redact(JSON.parse(row.detail))
-      }))
+      })),
+      next
     };
   });
   app.get("/api/installations", async (request) => {
-    const actor = requestIdentity(request), query = z16.object({ project_ref: z16.string() }).parse(request.query);
+    const actor = requestIdentity(request), query = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(200).optional()
+    }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
-    const items = await storage.db.selectFrom("client_installations").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", query.project_ref).limit(100).execute();
+    let selected = storage.db.selectFrom("client_installations").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", query.project_ref);
+    if (query.after !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(query.after))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where("id", ">", query.after);
+    }
+    const rows = await selected.orderBy("id").limit(101).execute();
+    const items = rows.length > 100 ? rows.slice(0, 100) : rows;
     return {
+      next: rows.length > 100 ? items[99].id : null,
       items: items.map((row) => ({
         ...row,
         capabilities: JSON.parse(row.capabilities_json),
@@ -9008,13 +10113,13 @@ async function createHttpServer(config) {
     };
   });
   app.post("/api/installations", async (request) => {
-    const actor = requestIdentity(request), body = z16.object({
-      id: z16.string().regex(/^[a-f0-9]{64}$/),
-      project_ref: z16.string(),
-      client: z16.enum(["codex", "claude", "chatgpt"]),
-      version: z16.string().max(100).nullable().default(null),
-      directory: z16.string().max(2000),
-      event: z16.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
+    const actor = requestIdentity(request), body = z17.object({
+      id: z17.string().regex(/^[a-f0-9]{64}$/),
+      project_ref: z17.string(),
+      client: z17.enum(["codex", "claude", "chatgpt"]),
+      version: z17.string().max(100).nullable().default(null),
+      directory: z17.string().max(2000),
+      event: z17.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
     }).strict().parse(request.body);
     await identityService.authorize(actor, "run", body.project_ref);
     const existing = await storage.db.selectFrom("client_installations").select(["user_id", "project_id"]).where("tenant_id", "=", actor.tenantId).where("id", "=", body.id).executeTakeFirst();
@@ -9048,15 +10153,30 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/revisions", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const items = await storage.db.selectFrom("skill_revisions").select([
+    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
+    let selected = storage.db.selectFrom("skill_revisions").select([
       "revision",
       "created_at",
       "created_by",
       "run_id",
       "manifest_json",
       "validation_json"
-    ]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id).orderBy("created_at", "desc").limit(50).execute();
+    ]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id);
+    if (query.after) {
+      const sep2 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep2));
+      const rev = query.after.slice(sep2 + 1);
+      if (sep2 <= 0 || !rev || !Number.isSafeInteger(at))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where((eb) => eb.or([
+        eb("created_at", "<", at),
+        eb.and([eb("created_at", "=", at), eb("revision", "<", rev)])
+      ]));
+    }
+    const rows = await selected.orderBy("created_at", "desc").orderBy("revision", "desc").limit(51).execute();
+    const items = rows.length > 50 ? rows.slice(0, 50) : rows;
     return {
+      next: rows.length > 50 ? `${rows[49].created_at}:${rows[49].revision}` : null,
       items: items.map((row) => ({
         ...row,
         file_count: JSON.parse(row.manifest_json).files.length,
@@ -9069,9 +10189,9 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/manifest", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const query = z16.object({
-      revision: z16.string().regex(/^[a-f0-9]{64}$/),
-      after: z16.coerce.number().int().min(0).max(256).default(0)
+    const query = z17.object({
+      revision: z17.string().regex(/^[a-f0-9]{64}$/),
+      after: z17.coerce.number().int().min(0).max(256).default(0)
     }).parse(request.query);
     const row = await storage.db.selectFrom("skill_revisions").select(["manifest_json", "validation_json"]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id).where("revision", "=", query.revision).executeTakeFirst();
     if (!row)
@@ -9093,10 +10213,10 @@ async function createHttpServer(config) {
   });
   app.put("/api/skills/:id", async (request) => packageManager(requestIdentity(request)).configure(requestIdentity(request), request.params.id, request.body));
   app.put("/api/skills/:id/scope", async (request) => {
-    const body = z16.object({
-      scope: z16.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z16.string().min(1).max(100).optional(),
-      expected_revision: z16.string().nullable()
+    const body = z17.object({
+      scope: z17.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z17.string().min(1).max(100).optional(),
+      expected_revision: z17.string().nullable()
     }).strict().parse(request.body);
     return forge.packages.setScope(requestIdentity(request), request.params.id, {
       scope: body.scope,
@@ -9105,31 +10225,31 @@ async function createHttpServer(config) {
     });
   });
   app.post("/api/skills/import", { bodyLimit: 8 * 1024 * 1024 }, async (request) => {
-    const body = z16.object({
-      archive: z16.string().max(7 * 1024 * 1024),
-      scope: z16.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z16.string(),
-      base_revision: z16.string().nullable().default(null)
+    const body = z17.object({
+      archive: z17.string().max(7 * 1024 * 1024),
+      scope: z17.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z17.string(),
+      base_revision: z17.string().nullable().default(null)
     }).strict().parse(request.body);
     return packageManager(requestIdentity(request), body.project_ref).import(requestIdentity(request), Buffer.from(body.archive, "base64"), body.scope, body.project_ref, body.base_revision);
   });
   app.get("/api/skills/:id/export", async (request, reply) => {
-    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z16.object({ revision: z16.string() }).parse(request.query).revision);
+    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z17.object({ revision: z17.string() }).parse(request.query).revision);
     return reply.type("application/zip").header("content-disposition", `attachment; filename="${value.name}"`).send(value.bytes);
   });
   app.post("/api/skills/:id/rollback", async (request) => {
-    const body = z16.object({ target_revision: z16.string(), base_revision: z16.string() }).strict().parse(request.body);
+    const body = z17.object({ target_revision: z17.string(), base_revision: z17.string() }).strict().parse(request.body);
     const skill = await forge.packages.authorizedSkill(requestIdentity(request), request.params.id, true);
     return packageManager(requestIdentity(request), skill.project_id ?? undefined).rollback(requestIdentity(request), request.params.id, body.target_revision, body.base_revision);
   });
-  app.get("/api/runs", async (request) => forge.invoke("forge_report", requestIdentity(request), decodeQueryToolInput(request.query)));
+  app.get("/api/runs", async (request) => forge.reports.report(requestIdentity(request), toolSchemas.forge_report.parse(decodeQueryToolInput(request.query))));
   app.get("/api/runs/:id/attempts", async (request) => {
-    const query = z16.object({ after: z16.coerce.number().int().nonnegative().default(0) }).parse(request.query);
+    const query = z17.object({ after: z17.coerce.number().int().nonnegative().default(0) }).parse(request.query);
     return forge.queue.attempts(requestIdentity(request), request.params.id, query.after);
   });
   app.post("/api/runs/:id/cancel", async (request) => forge.queue.cancel(requestIdentity(request), request.params.id));
   app.get("/api/artifacts/:id", async (request, reply) => {
-    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z16.object({ reference: z16.string().max(3000) }).parse(request.query).reference);
+    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z17.object({ reference: z17.string().max(3000) }).parse(request.query).reference);
     return reply.type("application/octet-stream").header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(basename5(artifact.path))}`).send(artifact.bytes);
   });
   app.post("/api/tools/:name", async (request) => {
