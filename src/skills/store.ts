@@ -396,20 +396,21 @@ export class PackageStore {
       };
     },
   ) {
-    const scope = await this.scope(identity, input.scope, input.projectId);
-    let resolvedScope = scope;
-    if (input.scope === "environment" && !input.projectId && input.skillId) {
-      // Update of an environment skill after its last project left the
-      // environment: keep the stored scope_key instead of requiring a
-      // representative project. New environment skills still need one.
-      const current = await this.storage.db
-        .selectFrom("skills")
-        .select("scope_key")
-        .where("tenant_id", "=", identity.tenantId)
-        .where("id", "=", input.skillId)
-        .executeTakeFirst();
-      if (current?.scope_key.startsWith("environment:"))
-        resolvedScope = current.scope_key;
+    let resolvedScope: string;
+    if (input.scope === "environment" && input.skillId && !input.projectId) {
+      // Issue #7: an existing environment skill keeps its stored scope even
+      // when its environment lost every representative project. Authorized
+      // manager writes ride the stored scope; creating a NEW environment
+      // package still requires an explicit project_ref.
+      const current = await this.authorizedSkill(identity, input.skillId, true);
+      if (!current.scope_key.startsWith("environment:"))
+        throw new ForgeError(
+          "project_required",
+          "Proje/ortam kapsamı açık project_ref gerektirir.",
+        );
+      resolvedScope = current.scope_key;
+    } else {
+      resolvedScope = await this.scope(identity, input.scope, input.projectId);
     }
     const auth = new IdentityService(this.storage.db);
     await auth.authorize(
