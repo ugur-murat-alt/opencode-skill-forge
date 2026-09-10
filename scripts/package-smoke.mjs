@@ -90,6 +90,9 @@ try {
       join(root, artifact.filename),
     ],
     install,
+    // Native dependency builds (e.g. better-sqlite3) legitimately take
+    // several minutes on Windows runners; Linux/macOS use prebuilt binaries.
+    process.platform === "win32" ? 900_000 : 240_000,
   );
   // Inspect the actual installed tree, including nested dependency copies.
   const openCodePackages = [];
