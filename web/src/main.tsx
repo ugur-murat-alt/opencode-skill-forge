@@ -280,7 +280,7 @@ function App() {
   );
   const pages: Record<string, React.ReactNode> = {
     overview: <Overview project={project} />,
-    library: <Library project={project} />,
+    library: <Library project={project} tenant={account.identity.tenantId} />,
     jobs: <Jobs project={project} />,
     organizations: (
       <Organizations
@@ -291,7 +291,7 @@ function App() {
     ),
     roles: <Roles />,
     invitations: <Invitations />,
-    prompts: <AgentPrompts />,
+    prompts: <AgentPrompts tenant={account.identity.tenantId} />,
     maintenance: <Maintenance key={project} project={project} />,
     installations: <Installations project={project} />,
     projects,

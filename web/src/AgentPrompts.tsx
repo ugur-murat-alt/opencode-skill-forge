@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { api, errorCode } from "./api";
 import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Refresh, date } from "./ui";
@@ -11,11 +11,77 @@ interface PromptRow {
 interface ActiveRow extends PromptRow {
   content: string;
 }
+interface PromptDraft {
+  text: string;
+  base: number;
+}
 
-export function AgentPrompts() {
+/** Issue #31: unsent prompt text is kept per tenant+scope. The tenant is part
+ * of the key, so a draft written in one tenant can never be offered in
+ * another; the visible tenant is passed by the shell. Drafts also survive a
+ * browser refresh through sessionStorage (per tab, never sent to a server). */
+export function promptScopeKey(tenant: string, scope: string): string {
+  return `${tenant}\u0000${scope}`;
+}
+const PROMPT_STORAGE_PREFIX = "forge-prompt-draft:";
+const promptDrafts = new Map<string, PromptDraft>();
+export function readPromptDraft(key: string): PromptDraft | null {
+  let draft = promptDrafts.get(key);
+  if (!draft && typeof sessionStorage !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(`${PROMPT_STORAGE_PREFIX}${key}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<PromptDraft>;
+        if (parsed && typeof parsed.text === "string") {
+          draft = { text: parsed.text, base: Number(parsed.base ?? 0) };
+          promptDrafts.set(key, draft);
+        }
+      }
+    } catch {}
+  }
+  return draft ? { ...draft } : null;
+}
+export function writePromptDraft(key: string, draft: PromptDraft): void {
+  promptDrafts.set(key, { ...draft });
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(
+      `${PROMPT_STORAGE_PREFIX}${key}`,
+      JSON.stringify(draft),
+    );
+  } catch {}
+}
+export function clearPromptDraft(key: string): void {
+  promptDrafts.delete(key);
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.removeItem(`${PROMPT_STORAGE_PREFIX}${key}`);
+  } catch {}
+}
+function snapshotPromptDrafts(): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  for (const [key, draft] of promptDrafts) snapshot[key] = draft.text;
+  if (typeof sessionStorage !== "undefined") {
+    try {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const storageKey = sessionStorage.key(i) ?? "";
+        if (!storageKey.startsWith(PROMPT_STORAGE_PREFIX)) continue;
+        const key = storageKey.slice(PROMPT_STORAGE_PREFIX.length);
+        const parsed = JSON.parse(
+          sessionStorage.getItem(storageKey) ?? "{}",
+        ) as Partial<PromptDraft>;
+        if (typeof parsed.text === "string" && !(key in snapshot))
+          snapshot[key] = parsed.text;
+      }
+    } catch {}
+  }
+  return snapshot;
+}
+
+export function AgentPrompts({ tenant }: { tenant: string }) {
   const [scope, setScope] = useState("org");
-  const [text, setText] = useState("");
-  const [base, setBase] = useState(0);
+  const [drafts, setDrafts] =
+    useState<Record<string, string>>(snapshotPromptDrafts);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const { t, lang } = useLang();
@@ -24,15 +90,39 @@ export function AgentPrompts() {
     active: ActiveRow | null;
     history: PromptRow[];
   }>(`/api/agent-prompts?scope=${encodeURIComponent(scope)}`);
+  const active = resource.data?.active;
+  const scopeKey = promptScopeKey(tenant, scope);
+  const text = drafts[scopeKey] ?? active?.content ?? "";
+  const base = readPromptDraft(scopeKey)?.base ?? active?.version ?? 0;
+  const dirty =
+    drafts[scopeKey] !== undefined && drafts[scopeKey] !== active?.content;
   function save(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
+    // Issue #31: the request carries a fixed snapshot; a refresh or a scope
+    // move during the save cannot mix newer editor text into it.
+    const snapshot = text;
+    const baseVersion = base;
     setBusy(true);
     setError("");
     void api("/api/agent-prompts", {
       method: "PUT",
-      body: JSON.stringify({ scope, base_version: base, content: text }),
+      body: JSON.stringify({
+        scope,
+        base_version: baseVersion,
+        content: snapshot,
+      }),
     })
-      .then(() => resource.refresh())
+      .then(() => {
+        setDrafts((current) => {
+          if (current[scopeKey] !== snapshot) return current;
+          const next = { ...current };
+          delete next[scopeKey];
+          return next;
+        });
+        clearPromptDraft(scopeKey);
+        return resource.refresh();
+      })
       .catch((e) => setError(errorCode(e)))
       .finally(() => setBusy(false));
   }
@@ -47,11 +137,6 @@ export function AgentPrompts() {
       .catch((e) => setError(errorCode(e)))
       .finally(() => setBusy(false));
   }
-  const active = resource.data?.active;
-  useEffect(() => {
-    setText(active?.content ?? "");
-    setBase(active?.version ?? 0);
-  }, [scope, active?.content, active?.version]);
   return (
     <>
       <div className="title-row">
@@ -83,7 +168,12 @@ export function AgentPrompts() {
               rows={10}
               value={text}
               disabled={busy}
-              onChange={(e) => setText(e.target.value)}
+              title={dirty ? t("prompts.dirty") : undefined}
+              onChange={(e) => {
+                const value = e.target.value;
+                setDrafts((current) => ({ ...current, [scopeKey]: value }));
+                writePromptDraft(scopeKey, { text: value, base });
+              }}
               required
             />
           </label>

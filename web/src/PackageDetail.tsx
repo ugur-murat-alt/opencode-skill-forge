@@ -32,31 +32,221 @@ type Loaded = {
   next_cursor: string | null;
   total_bytes: number;
 };
-type Change = {
+export type Change = {
   path: string;
   original_hash: string | null;
   content: string | null;
+  /** Issue #31: revision the candidate was staged against; stripped before
+   * the publish request so the server contract stays unchanged. */
+  staged_in?: string;
 };
+export type DraftScope = {
+  tenant: string;
+  project: string;
+  skillId: string;
+};
+export type DraftSnapshot = {
+  drafts: Record<string, string>;
+  bases: Record<string, string>;
+  changes: Change[];
+  rebase: boolean;
+};
+
+// Issue #31: drafts and staged candidates survive unmounting (page, project,
+// tenant or package transitions) in a module store, and survive a browser
+// refresh through sessionStorage (per tab, never sent to the server). The
+// scope key includes the visible tenant, so a draft from one tenant can
+// never be applied to another; explicit Kapat/discard clears only its own
+// scope.
+const DRAFT_STORAGE_PREFIX = "forge-draft:";
+const MAX_PERSISTED_BYTES = 128 * 1024;
+const draftSnapshots = new Map<string, DraftSnapshot>();
+
+export function draftScopeKey(scope: DraftScope): string {
+  return `${scope.tenant}\u0000${scope.project}\u0000${scope.skillId}`;
+}
+export function draftKeyOf(revision: string, path: string): string {
+  return `${revision}:${path}`;
+}
+export function revisionOfDraftKey(key: string): string {
+  const separator = key.indexOf(":");
+  return separator === -1 ? "" : key.slice(0, separator);
+}
+export function pathOfDraftKey(key: string): string {
+  const separator = key.indexOf(":");
+  return separator === -1 ? key : key.slice(separator + 1);
+}
+function copySnapshot(snapshot: DraftSnapshot): DraftSnapshot {
+  return {
+    drafts: { ...snapshot.drafts },
+    bases: { ...snapshot.bases },
+    changes: snapshot.changes.map((change) => ({ ...change })),
+    rebase: snapshot.rebase,
+  };
+}
+function loadPersistedDraft(key: string): DraftSnapshot | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`${DRAFT_STORAGE_PREFIX}${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DraftSnapshot>;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      drafts: parsed.drafts ?? {},
+      bases: parsed.bases ?? {},
+      changes: Array.isArray(parsed.changes) ? parsed.changes : [],
+      rebase: Boolean(parsed.rebase),
+    };
+  } catch {
+    return null;
+  }
+}
+function persistDraft(key: string, snapshot: DraftSnapshot): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    const raw = JSON.stringify(snapshot);
+    if (raw.length > MAX_PERSISTED_BYTES) {
+      sessionStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${key}`);
+      return;
+    }
+    sessionStorage.setItem(`${DRAFT_STORAGE_PREFIX}${key}`, raw);
+  } catch {}
+}
+function removePersistedDraft(key: string): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${key}`);
+  } catch {}
+}
+export function writeDraftSnapshot(key: string, snapshot: DraftSnapshot): void {
+  if (
+    Object.keys(snapshot.drafts).length === 0 &&
+    snapshot.changes.length === 0
+  ) {
+    draftSnapshots.delete(key);
+    removePersistedDraft(key);
+    return;
+  }
+  draftSnapshots.set(key, copySnapshot(snapshot));
+  persistDraft(key, snapshot);
+}
+export function readDraftSnapshot(key: string): DraftSnapshot | null {
+  let snapshot = draftSnapshots.get(key);
+  if (!snapshot) {
+    const persisted = loadPersistedDraft(key);
+    if (persisted) {
+      draftSnapshots.set(key, persisted);
+      snapshot = persisted;
+    }
+  }
+  return snapshot ? copySnapshot(snapshot) : null;
+}
+export function clearDraftSnapshot(key: string): void {
+  draftSnapshots.delete(key);
+  removePersistedDraft(key);
+}
+export function stagedContentFor(
+  snapshot: Pick<DraftSnapshot, "changes">,
+  revision: string,
+  path: string,
+): string | null | undefined {
+  return snapshot.changes.find(
+    (change) =>
+      change.path === path &&
+      (change.staged_in === undefined || change.staged_in === revision),
+  )?.content;
+}
+/** One draft key is dirty when its editor text differs from both the staged
+ * candidate and the content the edit started from. */
+export function draftDirty(
+  snapshot: Pick<DraftSnapshot, "drafts" | "bases" | "changes">,
+  revision: string,
+  path: string,
+): boolean {
+  const key = draftKeyOf(revision, path);
+  const value = snapshot.drafts[key];
+  if (value === undefined) return false;
+  const staged = stagedContentFor(snapshot, revision, path);
+  if (staged !== undefined && staged === value) return false;
+  return snapshot.bases[key] !== value;
+}
+/** True when any unpublished work exists: staged candidates count even when
+ * the editor equals the candidate (stage is not publish), and any file's
+ * unsent draft counts even while another file is open. */
+export function unpublishedWork(
+  snapshot: Pick<DraftSnapshot, "drafts" | "bases" | "changes">,
+): boolean {
+  if (snapshot.changes.length > 0) return true;
+  return Object.entries(snapshot.drafts).some(([key, value]) => {
+    const path = pathOfDraftKey(key);
+    const revision = revisionOfDraftKey(key);
+    const staged = stagedContentFor(snapshot, revision, path);
+    if (staged !== undefined && staged === value) return false;
+    return snapshot.bases[key] !== value;
+  });
+}
+/** Drafts newer than the staged candidate for the selected revision; these
+ * would be lost by publishing the candidate snapshot. */
+export function unstagedDraftCount(
+  snapshot: Pick<DraftSnapshot, "drafts" | "bases" | "changes">,
+  revision: string,
+): number {
+  return snapshot.changes.reduce((count, change) => {
+    const key = draftKeyOf(revision, change.path);
+    const value = snapshot.drafts[key];
+    if (value === undefined) return count;
+    if (value === change.content) return count;
+    if (value === snapshot.bases[key]) return count;
+    return count + 1;
+  }, 0);
+}
+function omitKeys(
+  values: Record<string, string>,
+  keys: Set<string>,
+): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values))
+    if (!keys.has(key)) next[key] = value;
+  return next;
+}
+
 export function PackageDetail({
   skill,
   project,
+  tenant,
   close,
   refresh,
 }: {
   skill: Skill;
   project: string;
+  tenant: string;
   close: () => void;
   refresh: () => Promise<void>;
 }) {
   const { t, lang } = useLang();
-  const [revision, setRevision] = useState(skill.revision),
+  const scopeKey = draftScopeKey({
+    tenant,
+    project,
+    skillId: skill.skill_id,
+  });
+  const storedState = useState<DraftSnapshot | null>(() =>
+    readDraftSnapshot(scopeKey),
+  )[0];
+  const [revision, setRevision] = useState(
+      storedState?.changes[0]?.staged_in ?? skill.revision,
+    ),
     [path, setPath] = useState("SKILL.md"),
     [loaded, setLoaded] = useState<Loaded | null>(null),
-    // Issue #17: drafts live per revision+path so file/revision switches
+    // Issue #17/#31: drafts live per revision+path so file/revision switches
     // never silently drop unsent user text.
-    [drafts, setDrafts] = useState<Record<string, string>>({}),
-    [changes, setChanges] = useState<Change[]>([]),
-    [rebase, setRebase] = useState(false),
+    [drafts, setDrafts] = useState<Record<string, string>>(
+      storedState?.drafts ?? {},
+    ),
+    [bases, setBases] = useState<Record<string, string>>(
+      storedState?.bases ?? {},
+    ),
+    [changes, setChanges] = useState<Change[]>(storedState?.changes ?? []),
+    [rebase, setRebase] = useState(storedState?.rebase ?? false),
     [newPath, setNewPath] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -75,6 +265,27 @@ export function PackageDetail({
     manifest = useResource<Manifest>(
       `/api/skills/${skill.skill_id}/manifest?revision=${revision}`,
     );
+  const stateRef = useRef<DraftSnapshot>({
+    drafts,
+    bases,
+    changes,
+    rebase,
+  });
+  stateRef.current = { drafts, bases, changes, rebase };
+  const closingRef = useRef(false);
+  // Persist on every change so a transition cannot lose the latest text...
+  useEffect(() => {
+    writeDraftSnapshot(scopeKey, stateRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts, bases, changes, rebase, scopeKey]);
+  // ...and again on unmount for a state update that did not flush first.
+  useEffect(() => {
+    const scope = scopeKey;
+    return () => {
+      if (!closingRef.current) writeDraftSnapshot(scope, stateRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey]);
   useEffect(() => {
     setLoaded(null);
     generation.current++;
@@ -82,13 +293,21 @@ export function PackageDetail({
       generation.current++;
     };
   }, [revision, path]);
-  const draftKey = `${revision}:${path}`;
-  const stagedContent = changes.find((c) => c.path === path)?.content;
+  const draftKey = draftKeyOf(revision, path);
+  const stagedContent = stagedContentFor({ changes }, revision, path);
   const draft = drafts[draftKey] ?? stagedContent ?? loaded?.content ?? "";
-  const dirty =
-    drafts[draftKey] !== undefined &&
-    drafts[draftKey] !== stagedContent &&
-    drafts[draftKey] !== loaded?.content;
+  const currentFileDirty = draftDirty(
+    { drafts, bases, changes },
+    revision,
+    path,
+  );
+  const dirty = unpublishedWork({ drafts, bases, changes });
+  const unstagedCount = unstagedDraftCount(
+    { drafts, bases, changes },
+    revision,
+  );
+  const activeRevision = revision === skill.revision;
+  const staleRevision = !activeRevision && dirty;
   async function load(cursor?: string) {
     const token = ++generation.current;
     setBusy(true);
@@ -148,28 +367,58 @@ export function PackageDetail({
       return;
     }
     setChanges([
-      ...changes.filter((c) => c.path !== path),
-      { path, original_hash: hash, content },
+      ...changes.filter(
+        (c) => !(c.path === path && (c.staged_in ?? revision) === revision),
+      ),
+      { path, original_hash: hash, content, staged_in: revision },
     ]);
   }
+  function finishClose(discard: boolean) {
+    closingRef.current = true;
+    if (discard) clearDraftSnapshot(scopeKey);
+    close();
+  }
   async function publish() {
+    // Issue #31: publish sends a captured snapshot of the candidates. The
+    // button is blocked while a newer editor draft exists for a staged file,
+    // so the last user text can never silently diverge from the request.
+    if (unstagedCount > 0 || changes.length === 0) return;
     setBusy(true);
     setError("");
+    const snapshot = changes.map(({ staged_in: _stagedIn, ...rest }) => rest);
+    const publishedKeys = new Set(
+      changes.map((change) =>
+        draftKeyOf(change.staged_in ?? revision, change.path),
+      ),
+    );
     try {
       await api(`/api/skills/${skill.skill_id}/edit`, {
         method: "POST",
         body: JSON.stringify({
           base_revision: skill.revision,
-          changes,
+          changes: snapshot,
           rebase,
         }),
       });
-      await refresh();
-      close();
     } catch (e) {
       setError(errorCode(e));
-    } finally {
       setBusy(false);
+      return;
+    }
+    setChanges((current) =>
+      current.filter(
+        (change) => !snapshot.some((sent) => sent.path === change.path),
+      ),
+    );
+    setDrafts((current) => omitKeys(current, publishedKeys));
+    setBases((current) => omitKeys(current, publishedKeys));
+    setRebase(false);
+    closingRef.current = true;
+    clearDraftSnapshot(scopeKey);
+    try {
+      await refresh();
+    } finally {
+      close();
     }
   }
   async function configure(key: string, value: boolean) {
@@ -193,7 +442,11 @@ export function PackageDetail({
     }
   }
   async function rollback() {
+    // Issue #31: rolling back abandons every unpublished candidate and
+    // draft, so it asks before a real loss.
+    if (dirty && !window.confirm(t("pkgdetail.confirmRollback"))) return;
     setBusy(true);
+    setError("");
     try {
       await api(`/api/skills/${skill.skill_id}/rollback`, {
         method: "POST",
@@ -202,13 +455,15 @@ export function PackageDetail({
           target_revision: revision,
         }),
       });
-      await refresh();
-      close();
     } catch (e) {
       setError(errorCode(e));
-    } finally {
       setBusy(false);
+      return;
     }
+    closingRef.current = true;
+    clearDraftSnapshot(scopeKey);
+    await refresh();
+    close();
   }
   async function run() {
     setBusy(true);
@@ -235,10 +490,11 @@ export function PackageDetail({
     }
   }
   const editable =
-    revision === skill.revision &&
     !skill.pinned &&
     !skill.protected &&
-    skill.managed;
+    skill.managed &&
+    (activeRevision || dirty);
+  const canPublish = changes.length > 0 && unstagedCount === 0;
   return (
     <section className="panel">
       <div className="section-heading">
@@ -246,10 +502,10 @@ export function PackageDetail({
         <button
           disabled={busy}
           onClick={() => {
-            // Issue #17: closing is the only flow that discards drafts, so
-            // it warns only when unsent text would actually be lost.
+            // Issue #17/#31: closing is the only flow that discards drafts
+            // and candidates, so it warns when unsent work would be lost.
             if (dirty && !window.confirm(t("pkgdetail.confirmClose"))) return;
-            close();
+            finishClose(true);
           }}
         >
           {t("common.close")}
@@ -282,12 +538,17 @@ export function PackageDetail({
           {t("pkgdetail.downloadZip")}
         </a>
         <button
-          disabled={busy || revision === skill.revision}
+          disabled={busy || activeRevision}
           onClick={() => void rollback()}
         >
           {t("pkgdetail.rollbackTo")}
         </button>
       </div>
+      {staleRevision && (
+        <p data-testid="stale-revision-note">
+          <small>{t("pkgdetail.revisionRefreshNote")}</small>
+        </p>
+      )}
       <div className="file-list" aria-label={t("pkgdetail.filesAria")}>
         {manifest.data?.files.map((f) => (
           <button
@@ -340,13 +601,14 @@ export function PackageDetail({
                   rows={12}
                   value={draft}
                   disabled={busy}
-                  title={dirty ? t("pkgdetail.dirty") : undefined}
-                  onChange={(e) =>
-                    setDrafts((current) => ({
-                      ...current,
-                      [draftKey]: e.target.value,
-                    }))
-                  }
+                  title={currentFileDirty ? t("pkgdetail.dirty") : undefined}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    const key = draftKey;
+                    if (drafts[key] === undefined)
+                      setBases((current) => ({ ...current, [key]: draft }));
+                    setDrafts((current) => ({ ...current, [key]: value }));
+                  }}
                 />
               </label>
               <div className="toolbar">
@@ -397,7 +659,12 @@ export function PackageDetail({
                 }
                 setChanges([
                   ...changes,
-                  { path: newPath, original_hash: null, content: "" },
+                  {
+                    path: newPath,
+                    original_hash: null,
+                    content: "",
+                    staged_in: revision,
+                  },
                 ]);
                 setNewPath("");
               }}
@@ -427,6 +694,7 @@ export function PackageDetail({
                         className="code-editor"
                         rows={6}
                         value={c.content}
+                        disabled={busy}
                         onChange={(e) =>
                           setChanges(
                             changes.map((item) =>
@@ -459,9 +727,14 @@ export function PackageDetail({
                 />{" "}
                 {t("pkgdetail.rebaseLabel")}
               </label>
+              {unstagedCount > 0 && (
+                <p data-testid="unstaged-draft-note">
+                  <small>{t("pkgdetail.stageBeforePublish")}</small>
+                </p>
+              )}
               <button
                 className="primary"
-                disabled={busy}
+                disabled={busy || !canPublish}
                 onClick={() => void publish()}
               >
                 <Save size={16} />

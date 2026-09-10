@@ -18,7 +18,13 @@ interface Skill {
   why?: string[];
   other_scopes?: string[];
 }
-export function Library({ project }: { project: string }) {
+export function Library({
+  project,
+  tenant,
+}: {
+  project: string;
+  tenant: string;
+}) {
   const [search, setSearch] = useState(""),
     [query, setQuery] = useState(""),
     [scope, setScope] = useState(""),
@@ -199,9 +205,13 @@ export function Library({ project }: { project: string }) {
       </section>
       {selected && (
         <PackageDetail
-          key={`${selected.skill_id}:${selected.revision}`}
+          // Issue #31: the key stays on the package identity. A refreshed
+          // active revision updates props instead of remounting the detail,
+          // so an in-progress draft survives the list refresh.
+          key={selected.skill_id}
           skill={selected}
           project={project}
+          tenant={tenant}
           close={() => setSelected(null)}
           refresh={resource.refresh}
         />

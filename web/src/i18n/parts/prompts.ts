@@ -1,6 +1,7 @@
 export const promptsTr = {
   title: "Ajan promptları",
   subtitle: "Sürümlü sistem promptu: ortam kuruluşu ezer.",
+  dirty: "Kaydedilmemiş metin var",
   scope: "Kapsam",
   orgDefault: "Kuruluş varsayılanı",
   systemPrompt: "Sistem promptu",
@@ -17,6 +18,7 @@ export const promptsTr = {
 export const promptsEn = {
   title: "Agent prompts",
   subtitle: "Versioned system prompt: environment overrides organization.",
+  dirty: "Unsaved text present",
   scope: "Scope",
   orgDefault: "Organization default",
   systemPrompt: "System prompt",

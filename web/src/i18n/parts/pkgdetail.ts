@@ -1,6 +1,12 @@
 export const pkgdetailTr = {
   dirty: "Kaydedilmemiş değişiklik var",
   confirmClose: "Kaydedilmemiş taslaklar silinecek. Kapatılsın mı?",
+  confirmRollback:
+    "Seçili sürüme dönmek yayımlanmamış taslak ve adayları bırakır. Devam edilsin mi?",
+  revisionRefreshNote:
+    "Aktif sürüm yenilendi; bu dosyadaki taslağınız korunuyor. Yayımlamadan önce sürüm seçimini doğrulayın.",
+  stageBeforePublish:
+    "Dosyada adaya eklenmemiş daha yeni bir değişiklik var; önce adaya ekleyin.",
   newPathPh: "references/example.md",
   versionLabel: "Sürüm",
   verified: "Doğrulandı",
@@ -62,6 +68,12 @@ export const pkgdetailTr = {
 export const pkgdetailEn = {
   dirty: "Unsaved changes present",
   confirmClose: "Unsaved drafts will be discarded. Close anyway?",
+  confirmRollback:
+    "Rolling back to the selected revision discards unpublished drafts and candidates. Continue?",
+  revisionRefreshNote:
+    "The active revision was refreshed; your draft for this file is preserved. Verify the revision selection before publishing.",
+  stageBeforePublish:
+    "A newer change in this file is not staged yet; stage it first.",
   newPathPh: "references/example.md",
   versionLabel: "Revision",
   verified: "Verified",
