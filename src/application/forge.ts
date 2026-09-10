@@ -35,7 +35,9 @@ export class ForgeService {
     readonly policy: Settings = {},
   ) {
     this.queue = new JobQueue(storage, policy);
-    this.packages = new PackageStore(storage, dataDir);
+    // Issue #9: the store's search must use the same operator policy input
+    // as the queue and the settings service, or operator caps vanish.
+    this.packages = new PackageStore(storage, dataDir, undefined, policy);
     this.cursors = new CursorCodec(signingKey);
   }
   async artifact(identity: Identity, executionId: string, reference: string) {
