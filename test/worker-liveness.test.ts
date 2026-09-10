@@ -83,7 +83,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       expect(executions).toBe(1);
       const attempts = await storage.db
         .selectFrom("run_attempts")
-        .select("id")
+        .select("worker_id")
         .where("tenant_id", "=", owner.tenantId)
         .where("run_id", "=", runId)
         .execute();
