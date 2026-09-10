@@ -319,6 +319,132 @@ try {
       check("search-scores", /0\.\d+/.test(score), score.slice(0, 60));
     });
 
+    // Sayfalanmış manifest yarışı (issue #20): bekleyen R1 sayfası R2
+    // görünümünü asla ezip birleştiremez.
+    await safe("paged-manifest", async () => {
+      const files = {
+        "paged-many/SKILL.md":
+          "---\nname: paged-many\ndescription: Many file paging fixture.\n---\nBody.\n",
+      };
+      for (let i = 0; i < 44; i++)
+        files[`paged-many/references/doc-${String(i).padStart(2, "0")}.md`] =
+          `Reference doc ${i}.`;
+      const zippedMany = zipSync(
+        Object.fromEntries(
+          Object.entries(files).map(([k, v]) => [
+            k,
+            new TextEncoder().encode(v),
+          ]),
+        ),
+      );
+      let packed = "";
+      for (let i = 0; i < zippedMany.length; i += 8192)
+        packed += String.fromCharCode(...zippedMany.subarray(i, i + 8192));
+      const importedMany = await fetch(`${base}/api/skills/import`, {
+        method: "POST",
+        headers: { ...ownerHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          archive: Buffer.from(packed, "binary").toString("base64"),
+          project_ref: project.id,
+          scope: "project",
+          base_revision: null,
+        }),
+      });
+      check("paged-many-import", importedMany.ok, importedMany.status);
+      const importedBody = await importedMany.json();
+      const skillId = importedBody.skill_id;
+      const revisionR1 = importedBody.revision;
+      const manifestR1 = await (
+        await fetch(
+          `${base}/api/skills/${skillId}/manifest?revision=${revisionR1}`,
+          {
+            headers: ownerHeaders,
+          },
+        )
+      ).json();
+      const edited = await fetch(`${base}/api/skills/${skillId}/edit`, {
+        method: "POST",
+        headers: { ...ownerHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          base_revision: revisionR1,
+          changes: [
+            {
+              path: "SKILL.md",
+              original_hash: manifestR1.files.find((f) => f.path === "SKILL.md")
+                .hash,
+              content: manifestR1.files.find((f) => f.path === "SKILL.md")
+                ? "---\nname: paged-many\ndescription: Many file paging fixture v2.\n---\nBody.\n"
+                : null,
+            },
+          ],
+        }),
+      });
+      check("paged-many-edit", edited.ok, edited.status);
+      const activeRevision = (await edited.json()).revision;
+
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page
+        .locator('[data-testid="tenant-switch"]')
+        .selectOption({ label: "Kişisel çalışma alanı" });
+      await page
+        .locator('[data-testid="scope-badge"]')
+        .getByText("Kişisel")
+        .waitFor({ timeout: 8000 });
+      await page
+        .locator(".project-switcher select")
+        .selectOption({ label: "Acceptance" });
+      await page.goto(`${base}/#library`, { waitUntil: "networkidle" });
+      await page.locator("table").waitFor({ timeout: 8000 });
+      await page.getByRole("button", { name: "paged-many" }).click();
+      const versionSelect = page
+        .locator("select")
+        .filter({ has: page.locator('option', { hasText: '·' }) })
+        .first();
+      await versionSelect.waitFor({ timeout: 8000 });
+      // Etkin revision R2; R1'e geç (ikinci seçenek).
+      await versionSelect.selectOption({ index: 1 });
+      await page
+        .locator(".file-list button")
+        .filter({ hasText: "references/doc-00" })
+        .first()
+        .waitFor({ timeout: 8000 });
+      let release;
+      const gate = new Promise((r) => {
+        release = r;
+      });
+      let delayedOnce = false;
+      await page.route("**/api/skills/*/manifest*", async (route) => {
+        if (route.request().url().includes("after=") && !delayedOnce) {
+          delayedOnce = true;
+          await gate;
+          return route.continue();
+        }
+        return route.continue();
+      });
+      await page.getByRole("button", { name: "Diğer dosyalar" }).click();
+      await page.waitForTimeout(300);
+      // R2'ye dön: yeni manifest yüklenir (after'sız, gecikmez).
+      await versionSelect.selectOption({ index: 0 });
+      await page
+        .locator(".file-list button")
+        .filter({ hasText: "SKILL.md" })
+        .first()
+        .waitFor({ timeout: 8000 });
+      const before = await page.locator(".file-list button").count();
+      release();
+      await page.waitForTimeout(800);
+      const after = await page.locator(".file-list button").count();
+      check(
+        "paged-manifest-no-stale-merge",
+        after === before && after > 0,
+        `files ${before} -> ${after} (active ${activeRevision.slice(0, 8)})`,
+      );
+      await page.unroute("**/api/skills/*/manifest*");
+      await page
+        .getByRole("button", { name: "Kapat", exact: true })
+        .click();
+    });
+
     // Rol akışı: oluştur → sil (silinmişe düşer) → geri yükle.
     await safe("role-flow", async () => {
       await page.goto(`${base}/#roles`, { waitUntil: "networkidle" });

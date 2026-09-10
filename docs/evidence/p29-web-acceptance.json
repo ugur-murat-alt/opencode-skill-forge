@@ -1,5 +1,5 @@
 {
-  "passed": 40,
+  "passed": 43,
   "failed": 0,
   "results": [
     {
@@ -10,7 +10,7 @@
     {
       "name": "pairing-code",
       "ok": true,
-      "detail": "leme kodu (5 dakika, tek kullanım): tZYJ4T7uXBik20-cEEESmKOl-n7H9rz9jHPHFI0UD0s\n"
+      "detail": "leme kodu (5 dakika, tek kullanım): qmnK_DyfJ3qMtE2N8KnGNzq5ymSyGn1sXa2UrcmKyPg\n"
     },
     {
       "name": "seed-skill",
@@ -115,12 +115,27 @@
     {
       "name": "tenant-tab2-follows",
       "ok": true,
-      "detail": "local,b584d719-d7fc-4555-a436-895bd35363a4"
+      "detail": "local,b89b6fab-2e11-4c7e-ae96-431762fced1f"
     },
     {
       "name": "search-scores",
       "ok": true,
-      "detail": "0.500"
+      "detail": "0.550"
+    },
+    {
+      "name": "paged-many-import",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "paged-many-edit",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "paged-manifest-no-stale-merge",
+      "ok": true,
+      "detail": "files 41 -> 41 (active 112b04be)"
     },
     {
       "name": "role-create",
@@ -140,7 +155,7 @@
     {
       "name": "invite-create",
       "ok": true,
-      "detail": "DmkgrWQjxkUO8adla4it"
+      "detail": "eIHzWsMGTNulTGM51ThJ"
     },
     {
       "name": "invite-revoke",
@@ -175,7 +190,7 @@
     {
       "name": "locale-date",
       "ok": true,
-      "detail": "17.09.2026 03:24 -> 9/17/26, 3:24 AM"
+      "detail": "17.09.2026 04:29 -> 9/17/26, 4:29 AM"
     },
     {
       "name": "aria-en",

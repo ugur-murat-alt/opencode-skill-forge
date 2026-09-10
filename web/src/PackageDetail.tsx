@@ -108,14 +108,27 @@ export function PackageDetail({
     }
   }
   async function moreFiles() {
+    // Issue #20: bind the paged response to its request lifecycle. The
+    // shared generation token bumps on any revision/path change, so a stale
+    // page can never merge into a newer revision's file list; the cursor
+    // check deduplicates concurrent clicks on the same page.
+    const requestCursor = manifest.data?.next;
+    if (requestCursor === null || requestCursor === undefined) return;
+    const token = generation.current;
     try {
       const next = await api<Manifest>(
-        `/api/skills/${skill.skill_id}/manifest?revision=${revision}&after=${manifest.data!.next}`,
+        `/api/skills/${skill.skill_id}/manifest?revision=${revision}&after=${requestCursor}`,
       );
-      manifest.setData({
-        ...next,
-        files: [...manifest.data!.files, ...next.files],
-      });
+      if (token !== generation.current) return;
+      manifest.setData((current) =>
+        current && current.next === requestCursor
+          ? {
+              ...current,
+              files: [...current.files, ...next.files],
+              next: next.next,
+            }
+          : current,
+      );
     } catch (e) {
       setError(errorCode(e));
     }
@@ -270,7 +283,7 @@ export function PackageDetail({
           </button>
         ))}
         {manifest.data?.next !== null && manifest.data?.next !== undefined && (
-          <button onClick={() => void moreFiles()}>
+          <button disabled={busy} onClick={() => void moreFiles()}>
             {t("pkgdetail.moreFiles")}
           </button>
         )}
