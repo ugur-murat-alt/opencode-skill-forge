@@ -1240,6 +1240,40 @@ export class PackageStore {
       };
     });
   }
+  /**
+   * Issue #24: exact global ranking with bounded, measured candidate discovery.
+   *
+   * Result order (the defined, tested contract — see
+   * test/search-rank-order.test.ts): score DESC, scope priority DESC,
+   * updated_at DESC, id ASC. A "group" is every authorized record sharing one
+   * skill name; the group is represented by its best member and carries the
+   * other scopes in other_scopes/other_skill_ids.
+   *
+   * Catalog enumeration (empty query) walks name groups through a stable
+   * keyset over (scope priority, updated_at, id), one bounded page per
+   * request, so the whole authorized catalog is reachable without the old
+   * arbitrary 100-row id cut.
+   *
+   * Query search discovers name groups through a SQL upper-bound stream
+   * ordered by (name-tier bound, name) and exact-scores their members with the
+   * unchanged scoring engine. It stops as soon as the unvisited bound proves
+   * no remaining group can enter the page, so the first page is the global
+   * top-k instead of the top of an arbitrary id batch. `GROUP_BATCH` bounds
+   * rows per discovery round; `scanned`/`scored`/`queries` report the measured
+   * work instead of hiding it.
+   *
+   * Cursors:
+   *   r1:<score>:<priority>:<updated>:<id> — rank anchor of the last returned
+   *     group. The next request returns groups strictly after it. Under
+   *     concurrent writes this is best-effort: a returned group whose rank
+   *     changes can reappear and a group whose rank moves ahead of the anchor
+   *     can be skipped. A quiet catalog traverses completely and without
+   *     duplicates.
+   *   scan:<id> — issue #6 compatibility: candidate rows with id <= anchor are
+   *     treated as already consumed (legacy id-keyset scan phase).
+   *   <score>:<id>[:...] — legacy #6 rank anchor; the named result and every
+   *     better-scored group are skipped and the rest is re-ranked.
+   */
   async search(
     identity: Identity,
     input: {
@@ -1250,6 +1284,8 @@ export class PackageStore {
       limit?: number;
     },
   ) {
+    const started = performance.now();
+    let queries = 0;
     await new IdentityService(this.storage.db).authorize(
       identity,
       "read",
@@ -1279,37 +1315,59 @@ export class PackageStore {
       1,
       Math.min(20, effective.values.searchMaxResults ?? 20, input.limit ?? 5),
     );
-    const terms = searchText(input.query ?? "")
+    const filterTerms = searchText(input.query ?? "")
       .split(/\s+/)
       .filter(Boolean)
       .slice(0, 10);
-    let query = this.storage.db
-      .selectFrom("skills")
-      .selectAll()
-      .where("tenant_id", "=", identity.tenantId)
-      .where("scope_key", "in", scopes)
-      .where("archived", "=", 0)
-      .where("active_revision", "is not", null);
-    for (const term of terms)
-      query = query.where(
-        sql<boolean>`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`,
-      );
-    // Issue #6: bounded keyset scan. Each request walks the next batch of
-    // candidates in stable id order (ranked within the batch). Cursor forms:
-    //   `scan:<id>`            — scan phase: continue after this candidate id
-    //   `<score>:<resultId>`   — legacy rank anchor inside the FIRST batch
-    //   `<score>:<resultId>:<prevBatchLastId|->` — rank anchor inside the
-    //                             batch that follows prevBatchLastId
-    // so traversal reaches the whole authorized set without arbitrary cuts.
-    const BATCH = 100;
-    let candidateAnchor: string | null = null;
-    let rankAnchor: { score: number; id: string } | null = null;
+    // Scoring terms mirror src/skills/scoring.ts: NFKC, lowercase, split on
+    // non letter/number, drop 1-character noise.
+    const scoreTerms = (input.query ?? "")
+      .normalize("NFKC")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((term) => term.length >= 2);
     const invalidCursor = () =>
       new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+    interface SearchRank {
+      score: number;
+      priority: number;
+      updatedAt: number;
+      id: string;
+    }
+    const compareRank = (a: SearchRank, b: SearchRank) =>
+      b.score - a.score ||
+      b.priority - a.priority ||
+      b.updatedAt - a.updatedAt ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const rankAfter = (a: SearchRank, b: SearchRank) => compareRank(a, b) > 0;
+    const encodeRank = (rank: SearchRank) =>
+      `r1:${rank.score.toFixed(3)}:${rank.priority}:${rank.updatedAt}:${rank.id}`;
+    let rankCursor: SearchRank | null = null;
+    let legacyAnchor: SearchRank | null = null;
+    let scanAnchor: string | null = null;
     if (input.after) {
-      if (input.after.startsWith("scan:")) {
-        candidateAnchor = input.after.slice("scan:".length);
-        if (!candidateAnchor) throw invalidCursor();
+      if (input.after.startsWith("r1:")) {
+        const parts = input.after.slice("r1:".length).split(":");
+        const [rawScore, rawPriority, rawUpdated, id] = parts;
+        const score = Number(rawScore);
+        const priority = Number(rawPriority);
+        const updatedAt = Number(rawUpdated);
+        if (
+          parts.length !== 4 ||
+          !id ||
+          !Number.isFinite(score) ||
+          score < 0 ||
+          score > 1 ||
+          !Number.isInteger(priority) ||
+          priority < 0 ||
+          !Number.isSafeInteger(updatedAt) ||
+          updatedAt < 0
+        )
+          throw invalidCursor();
+        rankCursor = { score, priority, updatedAt, id };
+      } else if (input.after.startsWith("scan:")) {
+        scanAnchor = input.after.slice("scan:".length);
+        if (!scanAnchor) throw invalidCursor();
       } else {
         const parts = input.after.split(":");
         const score = Number(parts[0]);
@@ -1320,123 +1378,335 @@ export class PackageStore {
           !id ||
           !Number.isFinite(score) ||
           score < 0 ||
-          score > 1
+          score > 1 ||
+          (parts.length === 3 && !parts[2])
         )
           throw invalidCursor();
-        rankAnchor = { score, id };
-        if (parts.length === 3) {
-          if (!parts[2]!) throw invalidCursor();
-          // "-" marks the first batch; otherwise re-fetch that batch.
-          candidateAnchor = parts[2] === "-" ? null : parts[2]!;
-        }
+        legacyAnchor = { score, priority: -1, updatedAt: -1, id };
       }
     }
-    if (candidateAnchor) query = query.where("id", ">", candidateAnchor);
-    const scannedRows = await query
-      .orderBy("id")
-      .limit(BATCH + 1)
-      .execute();
-    const moreCandidates = scannedRows.length > BATCH;
-    const rows = moreCandidates ? scannedRows.slice(0, BATCH) : scannedRows;
-    const since = Date.now() - 30 * 86400000;
-    const usageRows = rows.length
-      ? await this.storage.db
-          .selectFrom("skill_observations")
-          .select(["skill_id", (eb) => eb.fn.countAll<number>().as("n")])
-          .where("tenant_id", "=", identity.tenantId)
-          .where(
-            "skill_id",
-            "in",
-            rows.map((r) => r.id),
-          )
-          .where("kind", "in", ["loaded", "entrypoint_executed"])
-          .where("created_at", ">", since)
-          .groupBy("skill_id")
-          .execute()
-      : [];
-    const usage = new Map(usageRows.map((r) => [r.skill_id, Number(r.n)]));
-    type Ranked = { row: (typeof rows)[number]; score: number; why: string[] };
-    const ranked: Ranked[] = rows
-      .map((row) => ({
-        row,
-        ...scoreSkill(input.query ?? "", {
-          name: row.name,
-          description: row.description,
-          updatedAt: row.updated_at,
-          usage: usage.get(row.id) ?? 0,
-        }),
-      }))
-      .filter((r) => r.score >= minScore && (!input.query || r.score > 0))
-      .sort(
-        (a, b) =>
-          b.score - a.score ||
-          scopePriority(b.row.scope_key) - scopePriority(a.row.scope_key) ||
-          b.row.updated_at - a.row.updated_at ||
-          (a.row.id < b.row.id ? -1 : 1),
-      );
-    const merged: (Ranked & { other_scopes: string[]; other_ids: string[] })[] =
-      [];
-    for (const item of ranked) {
-      const key = item.row.name.normalize("NFKC").toLowerCase();
-      const existing = merged.find(
-        (m) => m.row.name.normalize("NFKC").toLowerCase() === key,
-      );
-      if (existing) {
-        existing.other_scopes.push(item.row.scope_key);
-        existing.other_ids.push(item.row.id);
-      } else merged.push({ ...item, other_scopes: [], other_ids: [] });
-    }
-    let start = 0;
-    // Rank anchors resume inside the current batch and stay best-effort under
-    // concurrent writes (same caveat as before); `scan:` anchors advance the
-    // keyset deterministically by candidate id.
-    if (rankAnchor) {
-      const sep = rankAnchor.id;
-      const anchor = merged.findIndex(
-        (m) =>
-          m.score.toFixed(3) === rankAnchor!.score.toFixed(3) &&
-          m.row.id === sep,
-      );
-      if (anchor >= 0) start = anchor + 1;
-      else
-        start = merged.findIndex(
-          (m) =>
-            m.score < rankAnchor!.score ||
-            (m.score.toFixed(3) === rankAnchor!.score.toFixed(3) &&
-              m.row.id > sep),
+    const base = () => {
+      let query = this.storage.db
+        .selectFrom("skills")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("scope_key", "in", scopes)
+        .where("archived", "=", 0)
+        .where("active_revision", "is not", null);
+      if (scanAnchor) query = query.where("id", ">", scanAnchor);
+      for (const term of filterTerms)
+        query = query.where(
+          sql<boolean>`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`,
         );
-      if (start < 0) start = merged.length;
+      return query;
+    };
+    const eligible = (rank: SearchRank) => {
+      if (legacyAnchor) {
+        if (rank.score > legacyAnchor.score) return false;
+        if (rank.id === legacyAnchor.id && rank.score === legacyAnchor.score)
+          return false;
+      }
+      return !rankCursor || rankAfter(rank, rankCursor);
+    };
+    const since = Date.now() - 30 * 86400000;
+    interface SearchItem {
+      skill_id: string;
+      name: string;
+      description: string;
+      scope: string;
+      revision: string | null;
+      updated_at: number;
+      managed: boolean;
+      pinned: boolean;
+      protected: boolean;
+      reason: "metadata_match" | "inventory";
+      score: number;
+      why: string[];
+      other_scopes: string[];
+      other_skill_ids: string[];
     }
-    const page = merged.slice(start, start + limit);
-    const last = page[page.length - 1];
-    const lastCandidate = rows[rows.length - 1];
+    const buildItem = (
+      row: Skill,
+      score: number,
+      why: string[],
+      others: Skill[],
+      reason: "metadata_match" | "inventory",
+    ): SearchItem => ({
+      skill_id: row.id,
+      name: row.name,
+      description: row.description,
+      scope: row.scope_key,
+      revision: row.active_revision,
+      updated_at: row.updated_at,
+      managed: Boolean(row.managed),
+      pinned: Boolean(row.pinned),
+      protected: Boolean(row.protected),
+      reason,
+      score,
+      why,
+      other_scopes: others.map((other) => other.scope_key),
+      other_skill_ids: others.map((other) => other.id),
+    });
+    let items: SearchItem[] = [];
     let next: string | null = null;
-    if (start + limit < merged.length && last) {
-      // Rank anchor inside this batch; the third part re-fetches the batch.
-      next = `${last.score.toFixed(3)}:${last.row.id}:${candidateAnchor ?? "-"}`;
-    } else if (moreCandidates && lastCandidate)
-      next = `scan:${lastCandidate.id}`;
+    // Diagnostics (issue #24): scanned counts candidate rows this request read
+    // for ranking (discovery rows plus member rows), scored counts rows passed
+    // to the exact scorer, queries counts SQL round trips.
+    let scanned = 0;
+    let scored = 0;
+    if (!input.query) {
+      // Catalog enumeration: bounded keyset over group representatives.
+      const scopePrioritySql = sql<number>`case
+        when scope_key like 'project:%' then 4
+        when scope_key like 'environment:%' then 3
+        when scope_key = 'workspace' then 2
+        else 1 end`;
+      const ranked = base()
+        .selectAll("skills")
+        .select(scopePrioritySql.as("scope_priority"))
+        .select(
+          sql<number>`row_number() over (partition by name order by ${scopePrioritySql} desc, updated_at desc, id asc)`.as(
+            "row_number",
+          ),
+        );
+      let repsQuery = this.storage.db
+        .selectFrom(ranked.as("ranked"))
+        .selectAll("ranked")
+        .where("ranked.row_number", "=", 1);
+      if (rankCursor)
+        repsQuery = repsQuery.where(
+          sql<boolean>`(
+            ranked.scope_priority < ${rankCursor.priority}
+            or (
+              ranked.scope_priority = ${rankCursor.priority}
+              and (
+                ranked.updated_at < ${rankCursor.updatedAt}
+                or (
+                  ranked.updated_at = ${rankCursor.updatedAt}
+                  and ranked.id > ${rankCursor.id}
+                )
+              )
+            )
+          )`,
+        );
+      // Legacy anchors cannot map onto the stable group keyset exactly; the
+      // anchored candidate id is treated as consumed to guarantee progress.
+      if (!rankCursor && legacyAnchor)
+        repsQuery = repsQuery.where("ranked.id", ">", legacyAnchor.id);
+      const reps = await repsQuery
+        .orderBy("ranked.scope_priority", "desc")
+        .orderBy("ranked.updated_at", "desc")
+        .orderBy("ranked.id", "asc")
+        .limit(limit + 1)
+        .execute();
+      queries++;
+      scanned += reps.length;
+      const names = reps.map((rep) => rep.name);
+      const members = names.length
+        ? await base().selectAll("skills").where("name", "in", names).execute()
+        : [];
+      if (names.length) queries++;
+      scanned += members.length;
+      const grouped = new Map<string, Skill[]>();
+      for (const member of members) {
+        const list = grouped.get(member.name);
+        if (list) list.push(member);
+        else grouped.set(member.name, [member]);
+      }
+      const ordered = (rows: Skill[]) =>
+        [...rows].sort(
+          (a, b) =>
+            scopePriority(b.scope_key) - scopePriority(a.scope_key) ||
+            b.updated_at - a.updated_at ||
+            (a.id < b.id ? -1 : 1),
+        );
+      items = reps.slice(0, limit).map((rep) => {
+        const group = ordered(grouped.get(rep.name) ?? [rep]);
+        const primary = group[0]!;
+        return buildItem(
+          primary,
+          0.5,
+          ["inventory"],
+          group.slice(1),
+          "inventory",
+        );
+      });
+      const last = reps[limit - 1];
+      next =
+        reps.length > limit && last
+          ? encodeRank({
+              score: 0.5,
+              priority: Number(last.scope_priority),
+              updatedAt: Number(last.updated_at),
+              id: last.id,
+            })
+          : null;
+    } else {
+      // Query search: exact top-k through a bounded upper-bound group stream.
+      // The bound is scaled to integers (50/65/75/100) so SQLite/PostgreSQL
+      // both return numbers and comparisons never hit float formatting.
+      const searchBound = (terms: string[]) => {
+        if (!terms.length) return sql<number>`50`;
+        const nameText = sql<string>`replace(name, '-', ' ')`;
+        let hits = sql<number>`0`;
+        for (const term of terms) {
+          const hit = sql<number>`case when (' ' || ${nameText} || ' ') like ${`% ${term} %`} then 1 else 0 end`;
+          hits = sql<number>`(${hits} + ${hit})`;
+        }
+        return sql<number>`case when ${hits} = ${terms.length} then 100 when ${hits} > 0 then 75 else 65 end`;
+      };
+      const GROUP_BATCH = 4096;
+      const bound = searchBound(scoreTerms);
+      interface Scored {
+        row: Skill;
+        score: number;
+        why: string[];
+        priority: number;
+      }
+      interface Group {
+        name: string;
+        primary: Scored;
+        others: Scored[];
+        rank: SearchRank;
+      }
+      const heap: Group[] = [];
+      let stream: { ub: number; name: string } | null = null;
+      let exhausted = false;
+      let lastUb = 100;
+      while (!exhausted) {
+        const grouped = base()
+          .select("name")
+          .select(sql<number>`max(${bound})`.as("group_ub"))
+          .select(sql<number>`count(*)`.as("member_count"))
+          .groupBy("name");
+        let groupQuery = this.storage.db
+          .selectFrom(grouped.as("g"))
+          .selectAll("g")
+          .orderBy("g.group_ub", "desc")
+          .orderBy("g.name", "asc")
+          .limit(GROUP_BATCH);
+        if (stream)
+          groupQuery = groupQuery.where(
+            sql<boolean>`(g.group_ub < ${stream.ub} or (g.group_ub = ${stream.ub} and g.name > ${stream.name}))`,
+          );
+        const groups = await groupQuery.execute();
+        queries++;
+        if (!groups.length) {
+          exhausted = true;
+          break;
+        }
+        for (const group of groups) scanned += Number(group.member_count);
+        const names = groups.map((group) => group.name);
+        const members = await base()
+          .selectAll("skills")
+          .where("name", "in", names)
+          .execute();
+        queries++;
+        scored += members.length;
+        scanned += members.length;
+        const usageRows = members.length
+          ? await this.storage.db
+              .selectFrom("skill_observations")
+              .select(["skill_id", (eb) => eb.fn.countAll<number>().as("n")])
+              .where("tenant_id", "=", identity.tenantId)
+              .where(
+                "skill_id",
+                "in",
+                members.map((member) => member.id),
+              )
+              .where("kind", "in", ["loaded", "entrypoint_executed"])
+              .where("created_at", ">", since)
+              .groupBy("skill_id")
+              .execute()
+          : [];
+        if (members.length) queries++;
+        const usage = new Map(
+          usageRows.map((row) => [row.skill_id, Number(row.n)]),
+        );
+        const groupedMembers = new Map<string, Skill[]>();
+        for (const member of members) {
+          const list = groupedMembers.get(member.name);
+          if (list) list.push(member);
+          else groupedMembers.set(member.name, [member]);
+        }
+        for (const group of groups) {
+          const candidates = (groupedMembers.get(group.name) ?? [])
+            .map((row) => ({
+              row,
+              priority: scopePriority(row.scope_key),
+              ...scoreSkill(input.query ?? "", {
+                name: row.name,
+                description: row.description,
+                updatedAt: row.updated_at,
+                usage: usage.get(row.id) ?? 0,
+              }),
+            }))
+            .filter(
+              (candidate) =>
+                candidate.score >= minScore &&
+                (!input.query || candidate.score > 0),
+            )
+            .sort(
+              (a, b) =>
+                b.score - a.score ||
+                b.priority - a.priority ||
+                b.row.updated_at - a.row.updated_at ||
+                (a.row.id < b.row.id ? -1 : 1),
+            );
+          if (!candidates.length) continue;
+          const primary = candidates[0]!;
+          const rank: SearchRank = {
+            score: primary.score,
+            priority: primary.priority,
+            updatedAt: primary.row.updated_at,
+            id: primary.row.id,
+          };
+          if (!eligible(rank)) continue;
+          heap.push({
+            name: group.name,
+            primary,
+            others: candidates.slice(1),
+            rank,
+          });
+        }
+        heap.sort((a, b) => compareRank(a.rank, b.rank));
+        if (heap.length > limit + 1) heap.length = limit + 1;
+        const lastGroup = groups.at(-1)!;
+        lastUb = Number(lastGroup.group_ub);
+        const full = groups.length === GROUP_BATCH;
+        if (full) stream = { ub: lastUb, name: lastGroup.name };
+        else exhausted = true;
+        const pageScore =
+          heap.length >= limit ? heap[limit - 1]!.rank.score : null;
+        // Safe stop proof: every unvisited group has exact score <= its UB <=
+        // lastUb. Only a strictly lower bound lets us ignore the ties.
+        if (pageScore !== null && lastUb * 10 < Math.round(pageScore * 1000))
+          break;
+      }
+      const pageGroups = heap.slice(0, limit);
+      items = pageGroups.map((group) =>
+        buildItem(
+          group.primary.row,
+          group.primary.score,
+          group.primary.why,
+          group.others.map((other) => other.row),
+          "metadata_match",
+        ),
+      );
+      const pageLast = pageGroups.at(-1);
+      const canContinue =
+        heap.length > limit ||
+        (!exhausted &&
+          heap.length === limit &&
+          lastUb / 100 >= minScore - 1e-9);
+      next = canContinue && pageLast ? encodeRank(pageLast.rank) : null;
+    }
     return {
-      items: page.map((item) => ({
-        skill_id: item.row.id,
-        name: item.row.name,
-        description: item.row.description,
-        scope: item.row.scope_key,
-        revision: item.row.active_revision,
-        updated_at: item.row.updated_at,
-        managed: Boolean(item.row.managed),
-        pinned: Boolean(item.row.pinned),
-        protected: Boolean(item.row.protected),
-        reason: input.query ? "metadata_match" : "inventory",
-        score: item.score,
-        why: item.why,
-        other_scopes: item.other_scopes,
-        other_skill_ids: item.other_ids,
-      })),
+      items,
       next,
-      // Bounded work per request: candidate rows scanned plus one usage
-      // aggregate for the batch (issue #6 acceptance: measured, not silent).
-      scanned: rows.length,
+      scanned,
+      scored,
+      queries,
+      elapsed_ms: Math.round((performance.now() - started) * 10) / 10,
     };
   }
   /** Issue #12/#27: süresi geçmiş sahipli okuma pin'lerini atomik expiry

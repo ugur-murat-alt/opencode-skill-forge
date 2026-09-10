@@ -173,11 +173,24 @@ export class ForgeService {
           revision: string;
         }[],
       );
+      const next_cursor = found.next
+        ? this.cursors.encode(binding, found.next)
+        : null;
+      // Issue #24: the store's measurements must not be dropped here. The
+      // token estimate is the measured JSON payload size / 4 (English/JSON
+      // rule of thumb) so callers can budget agent context.
+      const result_bytes = Buffer.byteLength(
+        JSON.stringify({ items: found.items, next_cursor }),
+      );
       return {
         items: found.items,
-        next_cursor: found.next
-          ? this.cursors.encode(binding, found.next)
-          : null,
+        next_cursor,
+        scanned: found.scanned,
+        scored: found.scored,
+        queries: found.queries,
+        latency_ms: found.elapsed_ms,
+        result_bytes,
+        token_estimate: Math.ceil(result_bytes / 4),
       };
     }
     if (name === "forge_load") {

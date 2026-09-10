@@ -20,9 +20,12 @@ function files(index: number, named: boolean) {
   };
 }
 
-/** Issue #6: catalog listing and term search must reach the whole authorized
- * set through keyset paging instead of stopping at the first 100 candidates. */
-test("P2 #6 search traversal reaches every package beyond the first 100", async () => {
+/** Issue #6/#24: catalog listing and term search must reach the whole
+ * authorized set through keyset paging instead of stopping at the first 100
+ * candidates. Issue #24: results are collected into flat arrays first, so the
+ * duplicate/skip checks see every returned row instead of a Map that hides
+ * repeated ids by construction. */
+test("P2 #6/#24 search traversal reaches every package beyond the first 100 without repeats", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-page-"));
   const storage = await openDatabase({ dataDir: root });
   try {
@@ -30,8 +33,10 @@ test("P2 #6 search traversal reaches every package beyond the first 100", async 
     const owner = await identities.bootstrapLocal();
     const project = await identities.createProject(owner, "Catalog");
     const store = new PackageStore(storage, root);
-    for (let i = 1; i <= TOTAL; i++)
-      await store.publish(owner, {
+    const expectedCatalog = new Set<string>();
+    const expectedTermed = new Set<string>();
+    for (let i = 1; i <= TOTAL; i++) {
+      const published = await store.publish(owner, {
         name:
           i <= TERMED
             ? `deploy-target-${String(i).padStart(3, "0")}`
@@ -41,8 +46,11 @@ test("P2 #6 search traversal reaches every package beyond the first 100", async 
         baseRevision: null,
         files: files(i, i <= TERMED),
       });
+      expectedCatalog.add(published.skill_id);
+      if (i <= TERMED) expectedTermed.add(published.skill_id);
+    }
     const collect = async (query: string | undefined) => {
-      const seen = new Map<string, string>();
+      const flat: { skill_id: string; name: string }[] = [];
       let after: string | null | undefined;
       for (let pages = 0; pages < 400; pages++) {
         const result = await store.search(owner, {
@@ -50,23 +58,36 @@ test("P2 #6 search traversal reaches every package beyond the first 100", async 
           query,
           ...(after ? { after: after! } : {}),
         });
-        for (const item of result.items) seen.set(item.skill_id, item.name);
-        if (!result.next) return { seen, pages: pages + 1 };
+        flat.push(
+          ...result.items.map((item) => ({
+            skill_id: item.skill_id,
+            name: item.name,
+          })),
+        );
+        if (!result.next) return { flat, pages: pages + 1 };
         after = result.next;
       }
       throw new Error("pagination did not terminate");
     };
     const catalog = await collect(undefined);
-    expect(catalog.seen.size).toBe(TOTAL);
-    // Kararlı keyset: kayıt kaybı ya da tekrarı yok.
-    expect(catalog.seen.size).toBe(new Set(catalog.seen.keys()).size);
+    // Flat arrays expose real duplicates and skips instead of a Map key set.
+    expect(catalog.flat).toHaveLength(TOTAL);
+    expect(new Set(catalog.flat.map((row) => row.skill_id)).size).toBe(TOTAL);
+    expect(new Set(catalog.flat.map((row) => row.name)).size).toBe(TOTAL);
+    expect(new Set(catalog.flat.map((row) => row.skill_id))).toEqual(
+      expectedCatalog,
+    );
     const term = await collect("deploy");
-    expect(term.seen.size).toBe(TERMED);
+    expect(term.flat).toHaveLength(TERMED);
+    expect(new Set(term.flat.map((row) => row.skill_id)).size).toBe(TERMED);
+    expect(new Set(term.flat.map((row) => row.skill_id))).toEqual(
+      expectedTermed,
+    );
     expect(
-      [...term.seen.values()].every((n) => n.startsWith("deploy-target-")),
+      term.flat.every((row) => row.name.startsWith("deploy-target-")),
     ).toBe(true);
   } finally {
     await storage.close();
     await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
