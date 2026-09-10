@@ -190,6 +190,114 @@ try {
       );
     });
 
+    // Tenant bağlamı: açık tenant başlığı, iki sekmeli A/B yazım güvenliği.
+    await safe("tenant-context", async () => {
+      // org-flow bu blokta Kabul Org'da bırakır; önce ekranı Kişisel'e döndür.
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page
+        .locator('[data-testid="tenant-switch"]')
+        .selectOption({ label: "Kişisel çalışma alanı" });
+      await page
+        .locator('[data-testid="scope-badge"]')
+        .getByText("Kişisel")
+        .waitFor({ timeout: 8000 });
+      const personalValue = await page
+        .locator('[data-testid="tenant-switch"] option', {
+          hasText: "Kişisel",
+        })
+        .first()
+        .getAttribute("value");
+      check("tenant-id-visible", Boolean(personalValue), String(personalValue));
+      const tab1Tenants = new Set();
+      const tab2Tenants = new Set();
+      await page.route("**/api/**", (route) => {
+        const tenant = route.request().headers()["x-forge-tenant"];
+        if (tenant) tab1Tenants.add(tenant);
+        return route.continue();
+      });
+      try {
+        const tab = await browser.newPage();
+        try {
+          await tab.context().addCookies(await page.context().cookies());
+          await tab.route("**/api/**", (route) => {
+            const tenant = route.request().headers()["x-forge-tenant"];
+            if (tenant) tab2Tenants.add(tenant);
+            return route.continue();
+          });
+          await page.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
+          await page
+            .locator("form textarea")
+            .fill(
+              "A-org-metni; create, update, no-op, reject, untrusted kararlarıyla çalış.",
+            );
+          await page.getByRole("button", { name: "Kaydet" }).click();
+          await page
+            .locator("pre.prompt-content")
+            .getByText("A-org-metni")
+            .waitFor({ timeout: 8000 });
+          // İkinci sekme çerezi Kabul Org'a çevirir; ilk sekme yine kendi
+          // ekran tenant'ına yazabilmeli (açık header).
+          await tab.goto(`${base}/#organizations`, {
+            waitUntil: "networkidle",
+          });
+          await tab
+            .locator('[data-testid="tenant-switch"]')
+            .selectOption({ label: "Kabul Org" });
+          await tab
+            .locator('[data-testid="scope-badge"]')
+            .getByText("Kabul Org")
+            .waitFor({ timeout: 8000 });
+          // Aynı profil çerezi paylaşırsa ilk sekmenin çerezi de döner;
+          // senaryo bunu kabul anında taklit eder.
+          await page.context().addCookies(await tab.context().cookies());
+          await tab.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
+          await tab.waitForTimeout(400);
+          const hasPrompt =
+            (await tab.locator("pre.prompt-content").count()) > 0;
+          const kabulPrompt = hasPrompt
+            ? await tab.locator("pre.prompt-content").innerText()
+            : "";
+          check(
+            "tenant-ab-isolated",
+            !kabulPrompt.includes("A-org-metni"),
+            kabulPrompt.slice(0, 80),
+          );
+          await tab
+            .locator('[data-testid="tenant-switch"]')
+            .selectOption({ label: "Kişisel çalışma alanı" });
+          await tab
+            .locator('[data-testid="scope-badge"]')
+            .getByText("Kişisel")
+            .waitFor({ timeout: 8000 });
+          await tab.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
+          await tab.waitForTimeout(400);
+          const ownPrompt = await tab.locator("pre.prompt-content").innerText();
+          check(
+            "tenant-ab-writes-own",
+            ownPrompt.includes("A-org-metni"),
+            ownPrompt.slice(0, 80),
+          );
+          // Birinci sekme asla çerezin düştüğü tenant'a savrulmamalı.
+          const stray = [...tab1Tenants].filter((v) => v !== personalValue);
+          check(
+            "tenant-tab1-pinned",
+            tab1Tenants.size > 0 && stray.length === 0,
+            [...tab1Tenants].join(","),
+          );
+          check(
+            "tenant-tab2-follows",
+            [...tab2Tenants].some((v) => v !== personalValue),
+            [...tab2Tenants].join(","),
+          );
+        } finally {
+          await tab.unroute("**/api/**");
+          await tab.close();
+        }
+      } finally {
+        await page.unroute("**/api/**");
+      }
+    });
+
     // Kütüphane skor görünümü.
     await safe("library-flow", async () => {
       await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
@@ -276,6 +384,15 @@ try {
 
     // Prompt akışı: iki farklı içerik kaydet, eskiye dön, içerik doğrula.
     await safe("prompt-flow", async () => {
+      // Bu akış taze (v0) bir organizasyon promptu bekler; Kabul Org'a geç.
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page
+        .locator('[data-testid="tenant-switch"]')
+        .selectOption({ label: "Kabul Org" });
+      await page
+        .locator('[data-testid="scope-badge"]')
+        .getByText("Kabul Org")
+        .waitFor({ timeout: 8000 });
       await page.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
       const marker1 = `kabul1-${Date.now()}`;
       const marker2 = `kabul2-${Date.now()}`;
