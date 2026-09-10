@@ -102,6 +102,7 @@ jobs:
         if: always()
         run: |
           set +e
+          set -o pipefail
           mkdir -p artifacts/web-acceptance/failure
           node scripts/web-acceptance.mjs --port 38472 \
             --report artifacts/web-acceptance/failure/report.json \
