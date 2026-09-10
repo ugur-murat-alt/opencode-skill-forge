@@ -1613,6 +1613,11 @@ class PackageStore {
         await new IdentityService(tx).authorize(identity, scopeWritePermission(input.scope), input.projectId);
         if (input.run)
           await new JobQueue(this.storage).assertLease(tx, input.run);
+        if (existing) {
+          const current = await tx.selectFrom("skills").select(["scope_key", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", id).executeTakeFirst();
+          if (current?.scope_key !== resolvedScope || current.project_id !== (input.scope === "project" ? input.projectId : null))
+            throw new ForgeError("revision_conflict", "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.", 409);
+        }
         const now = Date.now();
         if (!existing)
           await tx.insertInto("skills").values({
@@ -1653,6 +1658,7 @@ class PackageStore {
           search_text: searchText(`${input.name} ${manifest.description}`),
           updated_at: sql5`case when updated_at >= ${now} then updated_at + 1 else ${now} end`
         }).where("tenant_id", "=", identity.tenantId).where("id", "=", id).where("managed", "=", 1).where("protected", "=", 0).where("pinned", "=", 0);
+        update = update.where("scope_key", "=", resolvedScope).where("project_id", input.scope === "project" ? "=" : "is", input.scope === "project" ? input.projectId : null);
         update = input.baseRevision === null ? update.where("active_revision", "is", null) : update.where("active_revision", "=", input.baseRevision);
         if (Number((await update.executeTakeFirst()).numUpdatedRows) !== 1)
           throw new ForgeError("revision_conflict", "Paket eşzamanlı değişti veya korumaya alındı.", 409);

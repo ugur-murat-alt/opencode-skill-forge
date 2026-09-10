@@ -1448,7 +1448,7 @@ Kural: her issue kendi kabul ölçütleriyle kapanır; kanıt `docs/evidence/iss
 - publishRebased aynı publish yolunu kullandığı için kapsam değişimi sonrası
   rebase artık revision_conflict ile durur; immutable revision davranışı korunur.
 
-#### #3 tenant bağlamı (kapanış: <feat sha>)
+#### #3 tenant bağlamı (kapanış: 8f8ebce + 125ea7a)
 - Kırmızı: `test/tenant-header.test.ts` — api() `/api/*` çağrılarında görünen ekran
   tenant'ını `x-forge-tenant` taşımıyor; /auth yolları taşımamalı; yetkisiz açık
   tenant 403 (sunucu sözleşme kilidi). 4/4 yeşil olduktan sonra 5/5.

@@ -21,8 +21,7 @@ function trackedFiles(): string[] {
 }
 
 const WINDOWS_INVALID_CHARS = /["<>|?*:]/;
-const RESERVED_DEVICE =
-  /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+const RESERVED_DEVICE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 const TRAILING_DOT_OR_SPACE = /[ .]$/;
 
 test("tracked paths are Windows-checkout portable", () => {
@@ -41,7 +40,8 @@ test("tracked paths are Windows-checkout portable", () => {
           offenders.push(`${path}: trailing dot/space`);
       }
     }
-    if (/[\u0000-\u001f]/.test(path)) offenders.push(`${path}: control character`);
+    if (path.split("").some((c) => c.charCodeAt(0) < 32))
+      offenders.push(`${path}: control character`);
   }
   expect(offenders).toEqual([]);
 });
