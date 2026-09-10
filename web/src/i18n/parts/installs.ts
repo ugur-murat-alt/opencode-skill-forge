@@ -30,6 +30,13 @@ export const installsTr = {
   versionUnknown: "Sürüm bildirilmedi",
   neverSeen: "Henüz gözlenmedi",
   emptyInstalls: "Henüz kayıtlı istemci yok",
+  loadMore: "Devamını yükle",
+  loadingMore: "Yükleniyor…",
+  shownCount: "{count} kayıt gösteriliyor",
+  partialRetry:
+    "Sonraki sayfa yüklenemedi: {code}. Yüklü kayıtlar korunuyor; yeniden deneyin.",
+  limitNotice:
+    "Sayfa sınırına ulaşıldı; eksik kayıtlar devam düğmesiyle alınır.",
 };
 export const installsEn = {
   chatTitle: "ChatGPT App",
@@ -63,4 +70,10 @@ export const installsEn = {
   versionUnknown: "Version not reported",
   neverSeen: "Not observed yet",
   emptyInstalls: "No registered clients yet",
+  loadMore: "Load more",
+  loadingMore: "Loading…",
+  shownCount: "showing {count} records",
+  partialRetry:
+    "Next page failed: {code}. Loaded records are preserved; retry.",
+  limitNotice: "Page limit reached; load the missing records with continue.",
 };

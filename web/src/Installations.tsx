@@ -4,7 +4,7 @@ import { errorCode } from "./api";
 import { useLang } from "./i18n/lang";
 import { useResource, ErrorNotice, Empty, Status, date } from "./ui";
 export function Installations({ project }: { project: string }) {
-  const { t, lang } = useLang();
+  const { t, lang, err } = useLang();
   const resource = useResource<{
     items: {
       id: string;
@@ -16,9 +16,7 @@ export function Installations({ project }: { project: string }) {
       capabilities: { handoff: string };
     }[];
     next?: string | null;
-  }>(`/api/installations?project_ref=${encodeURIComponent(project)}`, {
-    follow: true,
-  });
+  }>(`/api/installations?project_ref=${encodeURIComponent(project)}`);
   const [client, setClient] = useState("codex"),
     [directory, setDirectory] = useState(""),
     [copied, setCopied] = useState(false),
@@ -117,6 +115,40 @@ export function Installations({ project }: { project: string }) {
         </table>
         {resource.data?.items.length === 0 && (
           <Empty title={t("installs.emptyInstalls")} />
+        )}
+        {(resource.next !== null || resource.incomplete) && (
+          <div className="toolbar">
+            <button
+              data-testid="installations-load-more"
+              disabled={resource.loadingMore}
+              onClick={() => void resource.loadMore()}
+            >
+              {resource.loadingMore
+                ? t("installs.loadingMore")
+                : t("installs.loadMore")}
+            </button>
+            <small className="description" data-testid="installations-count">
+              {t("installs.shownCount", {
+                count: resource.data?.items.length ?? 0,
+              })}
+            </small>
+          </div>
+        )}
+        {resource.pageError && (
+          <p
+            className="error"
+            role="alert"
+            data-testid="installations-page-error"
+          >
+            {t("installs.partialRetry", {
+              code: err(resource.pageError),
+            })}
+          </p>
+        )}
+        {resource.incomplete && (
+          <p className="helper" data-testid="installations-limit-notice">
+            {t("installs.limitNotice")}
+          </p>
         )}
       </section>
     </>

@@ -22,9 +22,11 @@ interface Offer {
 export function Organizations({
   userId,
   onSwitch,
+  onSelectTenant,
 }: {
   userId: string;
   onSwitch: () => void;
+  onSelectTenant: (tenantId: string) => void;
 }) {
   const tenants = useResource<Tenant[]>("/api/tenants");
   const offers = useResource<Offer[]>("/api/organization/transfer/offers");
@@ -109,14 +111,7 @@ export function Organizations({
                   <button
                     className="link-button"
                     disabled={busy}
-                    onClick={() =>
-                      void run(() =>
-                        api("/api/tenants/switch", {
-                          method: "POST",
-                          body: JSON.stringify({ tenant_id: row.tenant_id }),
-                        }),
-                      )
-                    }
+                    onClick={() => onSelectTenant(row.tenant_id)}
                   >
                     {t("common.select")}
                   </button>

@@ -1,11 +1,15 @@
 import { Maintenance } from "./Maintenance";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Menu, LogOut, Sun, Moon } from "lucide-react";
 import {
-  api,
+  activeTenantValue,
   ApiError,
+  api,
+  beginTenantTransition,
+  currentTenantTransition,
   errorCode,
+  settleTenantTransition,
   setActiveTenant,
   setCsrfToken,
   type Account,
@@ -63,13 +67,14 @@ function LangToggle() {
   );
 }
 /** Issue #5 recovery: session-only membership list, auto-switch to an active
- * tenant, or a clear membership screen when nothing is active. */
+ * tenant, or a clear membership screen when nothing is active. The switch
+ * goes through the single transition coordinator (issue #22). */
 function Membership({
   onRetry,
-  onRecovered,
+  onRecover,
 }: {
   onRetry: () => void;
-  onRecovered: () => void;
+  onRecover: (tenantId: string) => void;
 }) {
   const { t } = useLang();
   const [state, setState] = useState<"pending" | "none">("pending");
@@ -78,19 +83,14 @@ function Membership({
       items: { tenant_id: string; disabled: number }[];
       csrf: string | null;
     }>("/api/my-memberships")
-      .then(async (value) => {
+      .then((value) => {
         if (value.csrf) setCsrfToken(value.csrf);
         const active = value.items.find((item) => !item.disabled);
         if (!active) {
           setState("none");
           return;
         }
-        setActiveTenant(active.tenant_id);
-        await api("/api/tenants/switch", {
-          method: "POST",
-          body: JSON.stringify({ tenant_id: active.tenant_id }),
-        });
-        onRecovered();
+        onRecover(active.tenant_id);
       })
       .catch(() => setState("none"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,27 +114,62 @@ function App() {
   const { t, err } = useLang();
   const [account, setAccount] = useState<Account | null | undefined>(undefined),
     [error, setError] = useState(""),
+    [switchError, setSwitchError] = useState(""),
+    [switching, setSwitching] = useState(false),
     [membership, setMembership] = useState(false),
     [project, setProject] = useState(""),
     [page, setPage] = useState(location.hash.slice(1) || "overview"),
     [scopeTick, setScopeTick] = useState(0),
     [menu, setMenu] = useState(false);
+  const loadGeneration = useRef(0);
+  const projectRef = useRef("");
+  const switchQueue = useRef<Promise<void>>(Promise.resolve());
+  projectRef.current = project;
   function reloaded() {
     setScopeTick((t) => t + 1);
     void load();
   }
-  async function load() {
+  /** Commit account, tenant and project selection together. A stale /api/me
+   * response (issue #22) is discarded by generation, and a selection beyond
+   * the first /api/me page is verified against the authoritative project
+   * scope instead of being reset (issue #29). */
+  async function load(tenant?: string): Promise<boolean> {
+    const request = ++loadGeneration.current;
+    const options = tenant === undefined ? {} : { tenant };
     try {
-      const next = await api<Account>("/api/me");
+      const next = await api<Account>("/api/me", {}, options);
+      if (request !== loadGeneration.current) return false;
+      let selected = next.projects.some(
+        (item) => item.id === projectRef.current,
+      )
+        ? projectRef.current
+        : "";
+      if (!selected && projectRef.current) {
+        try {
+          await api(
+            `/api/settings/effective?project_ref=${encodeURIComponent(projectRef.current)}`,
+            {},
+            options,
+          );
+          if (request !== loadGeneration.current) return false;
+          selected = projectRef.current;
+        } catch (probeError) {
+          if (request !== loadGeneration.current) return false;
+          selected =
+            probeError instanceof ApiError &&
+            (probeError.status === 403 || probeError.status === 404)
+              ? ""
+              : projectRef.current;
+        }
+      }
       setActiveTenant(next.identity.tenantId);
       setAccount(next);
-      setProject((current) =>
-        next.projects.some((item) => item.id === current)
-          ? current
-          : (next.projects[0]?.id ?? ""),
-      );
+      setProject(selected || next.projects[0]?.id || "");
+      setMembership(false);
       setError("");
+      return true;
     } catch (error) {
+      if (request !== loadGeneration.current) return false;
       if (error instanceof ApiError && error.status === 401) setAccount(null);
       else if (
         error instanceof ApiError &&
@@ -142,7 +177,62 @@ function App() {
       )
         setMembership(true);
       else setError(errorCode(error));
+      return false;
     }
+  }
+  /** Issue #22: one coordinator for the top selector, the organization table
+   * row and membership recovery. Switch POSTs are serialized so the cookie
+   * cannot be left behind by out-of-order completions; the account read is
+   * bound to the target tenant explicitly and only the newest generation may
+   * commit the screen context. */
+  function requestTenantSwitch(target: string) {
+    if (!target) return;
+    if (target === (account?.identity.tenantId ?? activeTenantValue())) return;
+    const generation = beginTenantTransition();
+    setSwitching(true);
+    setSwitchError("");
+    const task = switchQueue.current.then(async () => {
+      if (generation !== currentTenantTransition()) return;
+      const previous = activeTenantValue();
+      try {
+        await api(
+          "/api/tenants/switch",
+          { method: "POST", body: JSON.stringify({ tenant_id: target }) },
+          { tenant: target },
+        );
+      } catch (error) {
+        if (generation === currentTenantTransition()) {
+          setSwitchError(errorCode(error));
+          settleTenantTransition(generation);
+          setSwitching(false);
+        }
+        return;
+      }
+      if (generation !== currentTenantTransition()) return;
+      void completeTenantSwitch(generation, target, previous);
+    });
+    switchQueue.current = task.catch(() => {});
+  }
+  async function completeTenantSwitch(
+    generation: number,
+    target: string,
+    previous: string,
+  ) {
+    const committed = await load(target);
+    if (generation !== currentTenantTransition()) return;
+    if (committed) {
+      setScopeTick((t) => t + 1);
+    } else if (previous) {
+      // The cookie moved but the visible context could not commit; put the
+      // server session back so context and cookie stay consistent.
+      await api(
+        "/api/tenants/switch",
+        { method: "POST", body: JSON.stringify({ tenant_id: previous }) },
+        { tenant: previous },
+      ).catch(() => {});
+    }
+    settleTenantTransition(generation);
+    setSwitching(false);
   }
   useEffect(() => {
     void load();
@@ -160,10 +250,7 @@ function App() {
           setMembership(false);
           void load();
         }}
-        onRecovered={() => {
-          setMembership(false);
-          void load();
-        }}
+        onRecover={(tenantId) => requestTenantSwitch(tenantId)}
       />
     );
   if (error)
@@ -186,7 +273,9 @@ function App() {
       project={project}
       admin={account.role === "founder" || account.role === "admin"}
       userId={account.identity.userId}
-      onChange={load}
+      onChange={async () => {
+        await load();
+      }}
     />
   );
   const pages: Record<string, React.ReactNode> = {
@@ -194,7 +283,11 @@ function App() {
     library: <Library project={project} />,
     jobs: <Jobs project={project} />,
     organizations: (
-      <Organizations userId={account.identity.userId} onSwitch={reloaded} />
+      <Organizations
+        userId={account.identity.userId}
+        onSwitch={reloaded}
+        onSelectTenant={requestTenantSwitch}
+      />
     ),
     roles: <Roles />,
     invitations: <Invitations />,
@@ -260,8 +353,10 @@ function App() {
               project={project}
               projects={account.projects}
               onProject={setProject}
-              onSwitch={reloaded}
+              onSwitch={requestTenantSwitch}
               tick={scopeTick}
+              switching={switching}
+              error={switchError}
             />
             <LangToggle />
             <ThemeToggle />

@@ -95,6 +95,7 @@ export const tr = {
     defaultEnv: "varsayılan",
     noProject: "proje yok",
     selectProject: "Proje seçin",
+    moreProjects: "Daha fazla proje yükle",
   },
   roles: {
     title: "Roller",
@@ -392,6 +393,8 @@ export const tr = {
     stop_unavailable: "Servise ulaşılamadı; durmuş olduğu doğrulanamadı.",
     stop_unverified: "Süreç çıkışı doğrulanamadı.",
     tenant_frozen: "Organizasyon silinmeyi bekliyor; yeni üye kabul edilmez.",
+    tenant_switch_pending:
+      "Organizasyon geçişi tamamlanıyor; işlemi yeni bağlamda yeniden deneyin.",
     tenant_unavailable: "Organizasyon bulunamadı.",
     tool_denied: "Bu rol bu araca erişemez.",
     tool_unavailable: "Araç bulunamadı.",

@@ -97,6 +97,7 @@ export const en: typeof tr = {
     defaultEnv: "default",
     noProject: "no project",
     selectProject: "Select a project",
+    moreProjects: "Load more projects",
   },
   roles: {
     title: "Roles",
@@ -409,6 +410,8 @@ export const en: typeof tr = {
     stop_unverified: "Process exit could not be verified.",
     tenant_frozen:
       "Organization is pending deletion; new members are not accepted.",
+    tenant_switch_pending:
+      "Organization switch is completing; retry in the new context.",
     tenant_unavailable: "Organization not found.",
     tool_denied: "This role cannot access this tool.",
     tool_unavailable: "Tool not found.",
