@@ -912,7 +912,50 @@ export class PackageStore {
       query = query.where(
         sql<boolean>`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`,
       );
-    const rows = await query.orderBy("id").limit(100).execute();
+    // Issue #6: bounded keyset scan. Each request walks the next batch of
+    // candidates in stable id order (ranked within the batch). Cursor forms:
+    //   `scan:<id>`            — scan phase: continue after this candidate id
+    //   `<score>:<resultId>`   — legacy rank anchor inside the FIRST batch
+    //   `<score>:<resultId>:<prevBatchLastId|->` — rank anchor inside the
+    //                             batch that follows prevBatchLastId
+    // so traversal reaches the whole authorized set without arbitrary cuts.
+    const BATCH = 100;
+    let candidateAnchor: string | null = null;
+    let rankAnchor: { score: number; id: string } | null = null;
+    const invalidCursor = () =>
+      new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+    if (input.after) {
+      if (input.after.startsWith("scan:")) {
+        candidateAnchor = input.after.slice("scan:".length);
+        if (!candidateAnchor) throw invalidCursor();
+      } else {
+        const parts = input.after.split(":");
+        const score = Number(parts[0]);
+        const id = parts[1];
+        if (
+          parts.length < 2 ||
+          parts.length > 3 ||
+          !id ||
+          !Number.isFinite(score) ||
+          score < 0 ||
+          score > 1
+        )
+          throw invalidCursor();
+        rankAnchor = { score, id };
+        if (parts.length === 3) {
+          if (!parts[2]!) throw invalidCursor();
+          // "-" marks the first batch; otherwise re-fetch that batch.
+          candidateAnchor = parts[2] === "-" ? null : parts[2]!;
+        }
+      }
+    }
+    if (candidateAnchor) query = query.where("id", ">", candidateAnchor);
+    const scannedRows = await query
+      .orderBy("id")
+      .limit(BATCH + 1)
+      .execute();
+    const moreCandidates = scannedRows.length > BATCH;
+    const rows = moreCandidates ? scannedRows.slice(0, BATCH) : scannedRows;
     const since = Date.now() - 30 * 86400000;
     const usageRows = rows.length
       ? await this.storage.db
@@ -962,30 +1005,35 @@ export class PackageStore {
       } else merged.push({ ...item, other_scopes: [], other_ids: [] });
     }
     let start = 0;
-    // Cursor resume is best-effort under concurrent writes: the ranking is
-    // recomputed (score desc, scope priority, recency, id) and reading
-    // continues after the anchor; a deleted anchor falls back to the nearest
-    // position, which may skip or repeat entries on a changed dataset.
-    if (input.after) {
-      const sep = input.after.indexOf(":");
-      const score = Number(input.after.slice(0, sep));
-      const id = input.after.slice(sep + 1);
-      if (sep <= 0 || !id || !Number.isFinite(score) || score < 0 || score > 1)
-        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+    // Rank anchors resume inside the current batch and stay best-effort under
+    // concurrent writes (same caveat as before); `scan:` anchors advance the
+    // keyset deterministically by candidate id.
+    if (rankAnchor) {
+      const sep = rankAnchor.id;
       const anchor = merged.findIndex(
-        (m) => m.score.toFixed(3) === score.toFixed(3) && m.row.id === id,
+        (m) =>
+          m.score.toFixed(3) === rankAnchor!.score.toFixed(3) &&
+          m.row.id === sep,
       );
       if (anchor >= 0) start = anchor + 1;
       else
         start = merged.findIndex(
           (m) =>
-            m.score < score ||
-            (m.score.toFixed(3) === score.toFixed(3) && m.row.id > id),
+            m.score < rankAnchor!.score ||
+            (m.score.toFixed(3) === rankAnchor!.score.toFixed(3) &&
+              m.row.id > sep),
         );
       if (start < 0) start = merged.length;
     }
     const page = merged.slice(start, start + limit);
     const last = page[page.length - 1];
+    const lastCandidate = rows[rows.length - 1];
+    let next: string | null = null;
+    if (start + limit < merged.length && last) {
+      // Rank anchor inside this batch; the third part re-fetches the batch.
+      next = `${last.score.toFixed(3)}:${last.row.id}:${candidateAnchor ?? "-"}`;
+    } else if (moreCandidates && lastCandidate)
+      next = `scan:${lastCandidate.id}`;
     return {
       items: page.map((item) => ({
         skill_id: item.row.id,
@@ -1003,10 +1051,10 @@ export class PackageStore {
         other_scopes: item.other_scopes,
         other_skill_ids: item.other_ids,
       })),
-      next:
-        start + limit < merged.length && last
-          ? `${last.score.toFixed(3)}:${last.row.id}`
-          : null,
+      next,
+      // Bounded work per request: candidate rows scanned plus one usage
+      // aggregate for the batch (issue #6 acceptance: measured, not silent).
+      scanned: rows.length,
     };
   }
   async reconcile(
