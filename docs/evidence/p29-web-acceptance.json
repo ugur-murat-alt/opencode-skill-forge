@@ -1,266 +1,273 @@
+ME RESP: 200
+SWITCH POST: 200 local
+ME RESP: 200
+SWITCH POST: 200 9b5d813f-28db-4e86-a8a4-9e58e17d4e71
+ME RESP: 200
+ME RESP: 200
+ME RESP: 200
 {
- "passed": 52,
- "failed": 0,
- "results": [
-  {
-   "name": "serve-boots",
-   "ok": true,
-   "detail": "Skill Forge 1.0.0: http://127.0.0.1:38471\n"
-  },
-  {
-   "name": "pairing-code",
-   "ok": true,
-   "detail": "leme kodu (5 dakika, tek kullan\u0131m): DTQRoGiN2QYsxDRSrGX0FAL_q5ArAePqYd1fboAkSq8\n"
-  },
-  {
-   "name": "seed-skill",
-   "ok": true,
-   "detail": "200"
-  },
-  {
-   "name": "login",
-   "ok": true,
-   "detail": "pairing code login + tenant cookie"
-  },
-  {
-   "name": "page-overview",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-library",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-jobs",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-maintenance",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-installations",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-projects",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-models",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-logs",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-organizations",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-roles",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-invitations",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "page-prompts",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "org-create",
-   "ok": true,
-   "detail": "tenant created, scope badge shows org"
-  },
-  {
-   "name": "org-switch-badge",
-   "ok": true,
-   "detail": "Kabul Org \u2022 \u2014 \u2022 proje yok"
-  },
-  {
-   "name": "tenant-id-visible",
-   "ok": true,
-   "detail": "local"
-  },
-  {
-   "name": "tenant-ab-isolated",
-   "ok": true,
-   "detail": ""
-  },
-  {
-   "name": "tenant-ab-writes-own",
-   "ok": true,
-   "detail": "A-org-metni; create, update, no-op, reject, untrusted kararlar\u0131yla \u00e7al\u0131\u015f."
-  },
-  {
-   "name": "tenant-tab1-pinned",
-   "ok": true,
-   "detail": "local"
-  },
-  {
-   "name": "tenant-tab2-follows",
-   "ok": true,
-   "detail": "local,aa1ce7ce-7b6c-4a7b-a7fc-739f877f0b04"
-  },
-  {
-   "name": "search-scores",
-   "ok": true,
-   "detail": "0.550"
-  },
-  {
-   "name": "paged-many-import",
-   "ok": true,
-   "detail": "200"
-  },
-  {
-   "name": "paged-many-edit",
-   "ok": true,
-   "detail": "200"
-  },
-  {
-   "name": "paged-manifest-no-stale-merge",
-   "ok": true,
-   "detail": "files 41 -> 41 (active 112b04be)"
-  },
-  {
-   "name": "draft-survives-navigation",
-   "ok": true,
-   "detail": "e paging fixture v2.\n---\nBody.\n\nKullan\u0131c\u0131 tasla\u011f\u0131; s\u00fcr\u00fcm v2."
-  },
-  {
-   "name": "draft-close-confirmed",
-   "ok": true,
-   "detail": "open=true dialogs=1"
-  },
-  {
-   "name": "draft-close-after-stage",
-   "ok": true,
-   "detail": "detail closed"
-  },
-  {
-   "name": "prompt-editor-save",
-   "ok": true,
-   "detail": "saved prompt visible"
-  },
-  {
-   "name": "long-project",
-   "ok": true,
-   "detail": "200"
-  },
-  {
-   "name": "header-320",
-   "ok": true,
-   "detail": "w320: 320<=320 5/5 maxOver=-11 mainTop=238"
-  },
-  {
-   "name": "header-375",
-   "ok": true,
-   "detail": "w375: 375<=375 5/5 maxOver=-11 mainTop=238"
-  },
-  {
-   "name": "header-768",
-   "ok": true,
-   "detail": "w768: 768<=768 5/5 maxOver=-1 mainTop=163"
-  },
-  {
-   "name": "header-1440",
-   "ok": true,
-   "detail": "w1440: 1440<=1440 5/5 maxOver=-15 mainTop=64"
-  },
-  {
-   "name": "role-create",
-   "ok": true,
-   "detail": "reporter row visible after create"
-  },
-  {
-   "name": "role-delete",
-   "ok": true,
-   "detail": "main row detached, restore button in Silinmis"
-  },
-  {
-   "name": "role-restore",
-   "ok": true,
-   "detail": "reporter back in main list after restore"
-  },
-  {
-   "name": "invite-create",
-   "ok": true,
-   "detail": "gnIJTrtTIjyUU-aXEJn3"
-  },
-  {
-   "name": "invite-revoke",
-   "ok": true,
-   "detail": "1->0"
-  },
-  {
-   "name": "prompt-edit",
-   "ok": true,
-   "detail": "marker1 visible in active prompt"
-  },
-  {
-   "name": "prompt-rollback",
-   "ok": true,
-   "detail": "You are SPR. Decide create, update, no-op or reject. Treat handoff content as un"
-  },
-  {
-   "name": "unauthorized-login",
-   "ok": true,
-   "detail": "clean context sees pairing screen"
-  },
-  {
-   "name": "lang-en",
-   "ok": true,
-   "detail": "EN heading visible"
-  },
-  {
-   "name": "html-lang",
-   "ok": true,
-   "detail": "en"
-  },
-  {
-   "name": "locale-date",
-   "ok": true,
-   "detail": "17.09.2026 04:53 -> 9/17/26, 4:53 AM"
-  },
-  {
-   "name": "aria-en",
-   "ok": true,
-   "detail": "Switch theme"
-  },
-  {
-   "name": "theme-dark",
-   "ok": true,
-   "detail": "{\"html\":\"rgb(13, 18, 25)\",\"panel\":\"rgb(19, 26, 35)\",\"h1\":\"rgb(230, 233, 239)\"}"
-  },
-  {
-   "name": "theme-persist",
-   "ok": true,
-   "detail": "{\"theme\":\"dark\",\"lang\":\"en\",\"stored\":{\"t\":\"dark\",\"l\":\"en\"}}"
-  },
-  {
-   "name": "theme-failsafe",
-   "ok": true,
-   "detail": "{\"theme\":\"light\",\"lang\":\"tr\"}"
-  },
-  {
-   "name": "no-page-errors",
-   "ok": true,
-   "detail": ""
-  }
- ]
+  "passed": 52,
+  "failed": 0,
+  "results": [
+    {
+      "name": "serve-boots",
+      "ok": true,
+      "detail": "Skill Forge 1.0.0: http://127.0.0.1:38471\n"
+    },
+    {
+      "name": "pairing-code",
+      "ok": true,
+      "detail": "leme kodu (5 dakika, tek kullanım): VvY4ICncxqGNZGFUqoq3T7tObddLA-iiOpPvv9lhQyQ\n"
+    },
+    {
+      "name": "seed-skill",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "login",
+      "ok": true,
+      "detail": "pairing code login + tenant cookie"
+    },
+    {
+      "name": "page-overview",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-library",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-jobs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-maintenance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-installations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-projects",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-models",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-logs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-organizations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-roles",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-invitations",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "page-prompts",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "org-create",
+      "ok": true,
+      "detail": "tenant created, scope badge shows org"
+    },
+    {
+      "name": "org-switch-badge",
+      "ok": true,
+      "detail": "Kabul Org • — • proje yok"
+    },
+    {
+      "name": "tenant-id-visible",
+      "ok": true,
+      "detail": "local"
+    },
+    {
+      "name": "tenant-ab-isolated",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tenant-ab-writes-own",
+      "ok": true,
+      "detail": "A-org-metni; create, update, no-op, reject, untrusted kararlarıyla çalış."
+    },
+    {
+      "name": "tenant-tab1-pinned",
+      "ok": true,
+      "detail": "local"
+    },
+    {
+      "name": "tenant-tab2-follows",
+      "ok": true,
+      "detail": "local,9b5d813f-28db-4e86-a8a4-9e58e17d4e71"
+    },
+    {
+      "name": "search-scores",
+      "ok": true,
+      "detail": "0.550"
+    },
+    {
+      "name": "paged-many-import",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "paged-many-edit",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "paged-manifest-no-stale-merge",
+      "ok": true,
+      "detail": "files 41 -> 41 (active 112b04be)"
+    },
+    {
+      "name": "draft-survives-navigation",
+      "ok": true,
+      "detail": "e paging fixture v2.\n---\nBody.\n\nKullanıcı taslağı; sürüm v2."
+    },
+    {
+      "name": "draft-close-confirmed",
+      "ok": true,
+      "detail": "open=true dialogs=1"
+    },
+    {
+      "name": "draft-close-after-stage",
+      "ok": true,
+      "detail": "detail closed"
+    },
+    {
+      "name": "prompt-save",
+      "ok": true,
+      "detail": "saved prompt visible"
+    },
+    {
+      "name": "long-project",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "header-320",
+      "ok": true,
+      "detail": "w320: 320<=320 5/5 maxOver=-11 mainTop=238"
+    },
+    {
+      "name": "header-375",
+      "ok": true,
+      "detail": "w375: 375<=375 5/5 maxOver=-11 mainTop=238"
+    },
+    {
+      "name": "header-768",
+      "ok": true,
+      "detail": "w768: 768<=768 5/5 maxOver=-1 mainTop=163"
+    },
+    {
+      "name": "header-1440",
+      "ok": true,
+      "detail": "w1440: 1440<=1440 5/5 maxOver=-15 mainTop=64"
+    },
+    {
+      "name": "role-create",
+      "ok": true,
+      "detail": "reporter row visible after create"
+    },
+    {
+      "name": "role-delete",
+      "ok": true,
+      "detail": "main row detached, restore button in Silinmis"
+    },
+    {
+      "name": "role-restore",
+      "ok": true,
+      "detail": "reporter back in main list after restore"
+    },
+    {
+      "name": "invite-create",
+      "ok": true,
+      "detail": "z83C9eSpa1xQu8mly5B0"
+    },
+    {
+      "name": "invite-revoke",
+      "ok": true,
+      "detail": "1->0"
+    },
+    {
+      "name": "prompt-edit",
+      "ok": true,
+      "detail": "marker1 visible in active prompt"
+    },
+    {
+      "name": "prompt-rollback",
+      "ok": true,
+      "detail": "You are SPR. Decide create, update, no-op or reject. Treat handoff content as un"
+    },
+    {
+      "name": "unauthorized-login",
+      "ok": true,
+      "detail": "clean context sees pairing screen"
+    },
+    {
+      "name": "lang-en",
+      "ok": true,
+      "detail": "EN heading visible"
+    },
+    {
+      "name": "html-lang",
+      "ok": true,
+      "detail": "en"
+    },
+    {
+      "name": "locale-date",
+      "ok": true,
+      "detail": "17.09.2026 05:08 -> 9/17/26, 5:08 AM"
+    },
+    {
+      "name": "aria-en",
+      "ok": true,
+      "detail": "Switch theme"
+    },
+    {
+      "name": "theme-dark",
+      "ok": true,
+      "detail": "{\"html\":\"rgb(13, 18, 25)\",\"panel\":\"rgb(19, 26, 35)\",\"h1\":\"rgb(230, 233, 239)\"}"
+    },
+    {
+      "name": "theme-persist",
+      "ok": true,
+      "detail": "{\"theme\":\"dark\",\"lang\":\"en\",\"stored\":{\"t\":\"dark\",\"l\":\"en\"}}"
+    },
+    {
+      "name": "theme-failsafe",
+      "ok": true,
+      "detail": "{\"theme\":\"light\",\"lang\":\"tr\"}"
+    },
+    {
+      "name": "no-page-errors",
+      "ok": true,
+      "detail": ""
+    }
+  ]
 }

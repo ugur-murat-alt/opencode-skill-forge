@@ -1,0 +1,92 @@
+{
+ "campaign": "2026-09-10 GitHub issue düzeltme kampanyası (#2–#21)",
+ "order": "#21'in önerdiği sıra izlendi: #4 → P1 (#2/#3/#11) → P2 sözleşmeler → depolama → listeleme → UI → mimari pilot",
+ "issues": {
+  "4": {
+   "commit": "2059f4d",
+   "evidence": "test/repo-portability.test.ts; kırmızı: mevcut ':' dosyası tek ihlal"
+  },
+  "2": {
+   "commit": "35e5385+5fdb0a2",
+   "evidence": "test/publish-scope-race.test.ts (SQLite 4/4; PostgreSQL CI)"
+  },
+  "3": {
+   "commit": "8f8ebce+125ea7a",
+   "evidence": "test/tenant-header.test.ts + kabul tenant-context (5 kontrol)"
+  },
+  "11": {
+   "commit": "f9867b2",
+   "evidence": "test/worker-liveness.test.ts (PostgreSQL CI) + docs/adr/pg-boss-liveness.md"
+  },
+  "5": {
+   "commit": "b159c00+8af7b96",
+   "evidence": "test/membership-recovery.test.ts"
+  },
+  "6": {
+   "commit": "a164bdb",
+   "evidence": "test/search-pagination.test.ts (150 paket + 120 terim)"
+  },
+  "7": {
+   "commit": "e3c0ca6",
+   "evidence": "test/env-orphan-publish.test.ts"
+  },
+  "8": {
+   "commit": "786af73",
+   "evidence": "test/budget-reconciliation.test.ts"
+  },
+  "9": {
+   "commit": "4bc9ba8",
+   "evidence": "test/policy-wiring.test.ts"
+  },
+  "10": {
+   "commit": "9ab4e8e",
+   "evidence": "test/query-decode.test.ts + src/http/query-decode.ts"
+  },
+  "12": {
+   "commit": "722e5dd",
+   "evidence": "test/reader-liveness.test.ts (kırmızı→yeşil stash kanıtı)"
+  },
+  "13": {
+   "commit": "82d7a73",
+   "evidence": "test/publish-leftovers.test.ts"
+  },
+  "14": {
+   "commit": "0f159c8",
+   "evidence": "test/env-scope-visibility.test.ts + visibleScopes"
+  },
+  "15": {
+   "commit": "026cee0",
+   "evidence": "test/list-continuation.test.ts"
+  },
+  "16": {
+   "commit": "b0d0a70",
+   "evidence": "acceptance header-320/375/768/1440 geometri kontrolleri"
+  },
+  "17": {
+   "commit": "2be7057",
+   "evidence": "acceptance draft-survives-navigation/close-confirmed/close-after-stage/prompt-save"
+  },
+  "18": {
+   "commit": "44236d7",
+   "evidence": ".github/workflows/verify.yml web-acceptance işi"
+  },
+  "19": {
+   "commit": "40783c4",
+   "evidence": "test/architecture-boundaries.test.ts + test/common-capabilities.test.ts + docs/adr/module-boundaries.md"
+  },
+  "20": {
+   "commit": "846fba5",
+   "evidence": "acceptance paged-manifest-no-stale-merge (hatalı sürüm 41→45, düzeltilmiş 41→41)"
+  }
+ },
+ "gates": {
+  "typecheck": "pass",
+  "lint": "0 warning / 0 error",
+  "fmt": "izlenen dosyalarda temiz",
+  "bun_test": "399 test / 0 fail / 3 skip (yerel koşum; postgres-gated + Docker testleri CI'da)",
+  "web_acceptance": "52 passed / 0 failed",
+  "build_pack": "build:plugin pass; npm pack 40+ dosya (artifact listesi smoke'ta)"
+ },
+ "ci_notes": "concurrency nedeniyle ara pushlar birbirini iptal eder; nihai doğrulama tek son HEAD çalışmasından alınır (linux-contracts: postgres yarış+liveness; portable-artifact: Windows checkout+smoke 15dk timeout; web-acceptance: gerçek Chromium)",
+ "user_files": "docs/reviews/2026-09-09-project-audit kullanıcı dosyalarına dokunulmadı"
+}

@@ -1461,6 +1461,78 @@ Kural: her issue kendi kabul ölçütleriyle kapanır; kanıt `docs/evidence/iss
   sabit), tenant-id-visible/isolated/writes-own/tab1-pinned/tab2-follows.
   Kabul 40/40 (35 + 5). Not: prompt-flow artık taze v0 için Kabul Org'a açılır.
 
+#### #7 projesiz ortam paketi (kapanış: e3c0ca6)
+- Kırmızı: `project_required` publish'in en başında atıldığı için fallback dalı
+  ölüydü. Yeşil: mevcut skill için yetkili `authorizedSkill` ile saklanan ortam
+  kapsamı kullanılır; yeni ortam paketi hâlâ açık project_ref ister.
+- `test/env-orphan-publish.test.ts`: edit+rollback scope korur, taze paket reddi,
+  çapraz tenant skill_unavailable (404).
+
+#### #10 GET query tipleri (kapanış: 9ab4e8e)
+- `src/http/query-decode.ts`: limit/observation_days/after sayı; result_content/
+  inventory katı true/false ("false" true olmaz); bilinmeyen/tekrarlı/bozuk
+  değerler şema reddine bırakılır (400). `test/query-decode.test.ts`.
+
+#### #8 bütçe uzlaştırma (kapanış: 786af73)
+- `BudgetService.reconcileAccount`: hesap limiti ilk işin değerine donmaz;
+  reserved=0 iken güncel politikaya uzlaşır, rezervasyon açıkken değişmez.
+- Overview `account_budget` alanını ayrı raporlar. Kanıt: `test/budget-reconciliation.test.ts`.
+
+#### #9 operatör politikası kablolaması (kapanış: 4bc9ba8)
+- ForgeService policy'yi PackageStore'a da aktarır; effective settings sınırıyla
+  gerçek forge_search eşleşir. Kanıt: `test/policy-wiring.test.ts` (doğrudan +
+  HTTP invoke).
+
+#### #12 revision reader liveness (kapanış: 722e5dd)
+- `revision_readers`: süreç nesli sahibi + heartbeat'li expiry; silme kontrolü
+  süresi geçmiş pinleri yok sayar; reconcile sınırlı temizleme + sayaç raporu;
+  sahipsiz (yedek) pinler sweep edilmez. Kırmızı→Yeşil stash-restore ile
+  kanıtlandı (`test/reader-liveness.test.ts`).
+
+#### #13 yayın kalıntıları (kapanış: 82d7a73)
+- publish kendi staging alanını her hatada geri kazanır. reconcile sınırlı fs
+  sweep ile çökme staging alanlarını ve referanssız revision dizinlerini grace
+  penceresi sonrası geri kazanır; kazananın dizini silinmez. Kanıt:
+  `test/publish-leftovers.test.ts`.
+
+#### #14 ortam paketi görünürlüğü (kapanış: 0f159c8)
+- `visibleScopes` tek sözleşme: arama + dashboard + bakım/silme aynı ortam
+  kapsamını görür; mutasyon ayrı yönetici yetkisini korur. Kanıt:
+  `test/env-scope-visibility.test.ts`.
+
+#### #15 liste devam sayfaları (kapanış: 026cee0)
+- listProjectsPage + logs + installations + revisions keyset cursor (eşit zaman
+  ikinci benzersiz anahtarla); UI seçiciler sayfaları takip eder. Kanıt:
+  `test/list-continuation.test.ts` (105 proje / 175 olay / 55 revision).
+
+#### #17 taslak koruması (kapanış: 2be7057)
+- Taslaklar revision+path anahtarlı haritada; geçişler taslağı korur; metadata
+  işlemi detayı kapatmaz; kapatma yalnız gerçek kayıpta onay ister; editörler
+  istek sırasında kilitli; Library seçilen skill'i listeyle senkron tutar.
+  Kabul adımları: draft-survives-navigation/close-confirmed/close-after-stage/
+  prompt-save (diyalog akışıyla gerçek tarayıcı).
+
+#### #20 bayat manifest sayfası (kapanış: 846fba5)
+- moreFiles birleştirmesi istek token'ı + bekleyen cursor eşitliğine bağlandı;
+  düğme busy'de kilitli. Kabul: kontrollü gecikmeli R1→R2 yarışı (eski sürümde
+  41→45 eziyordu; şimdi 41→41).
+
+#### #16 responsive başlık (kapanış: b0d0a70)
+- header sabit 64/60px yükseklikleri kaldırıldı; kontroller dar ekranda satırlara
+  sarar. Kabul: 320/375/768/1440 + 41 karakter proje adıyla yatay taşma yok,
+  kontroller başlıkta, içerik örtüşmesi yok.
+
+#### #18 CI kabul kapısı (kapanış: 44236d7)
+- `web-acceptance` işi gerçek Chromium ile kabul betiğini koşar, kanıt
+  artifact'ini yükler; `CHROME_PATH` ile Chrome yolu çözülür.
+
+#### #19 modüler monolit pilotu (kapanış: 40783c4)
+- `toolSchemas` → `src/domain/tool-contracts.ts`; `application/forge` taşıma
+  katmanını içe aktarmaz. `test/architecture-boundaries.test.ts` kuralı
+  otomatik denetler. `web/src/screens.ts` ekran kaydı (needsProject tek
+  tanımdan). `test/common-capabilities.test.ts` skill-dışı yetenek fixture'ı.
+  ADR: `docs/adr/module-boundaries.md`.
+
 ### P25 web EN/TR + dark/light — kayıt (2026-09-09, 3 tur incelemede 0 bulguyla kapandı)
 
 4 tur bağımsız inceleme (plan 3 mercek + final 2 tur + kapanış) yürütüldü; bulunan 1 blocker
