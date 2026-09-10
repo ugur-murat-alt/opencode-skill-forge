@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import { zipSync } from "fflate";
@@ -30,6 +31,96 @@ const safe = async (name, fn) => {
   } catch (e) {
     check(name, false, String(e?.message ?? e).slice(0, 200));
   }
+};
+// Issue #22/#29 helpers: exact tenant option lookup and badge polling keep the
+// checks unambiguous once several organizations exist.
+const waitScope = async (page, text) => {
+  await page.waitForFunction(
+    (value) =>
+      document
+        .querySelector('[data-testid="scope-badge"]')
+        ?.textContent?.includes(value) ?? false,
+    text,
+    { timeout: 8000 },
+  );
+};
+const tenantOptionValue = (page, label) =>
+  page.evaluate((text) => {
+    const select = document.querySelector('[data-testid="tenant-switch"]');
+    const option = [...(select?.options ?? [])].find(
+      (o) => o.textContent?.trim() === text,
+    );
+    return option?.value ?? "";
+  }, label);
+const waitTenantOption = async (page, label) => {
+  try {
+    await page.waitForFunction(
+      (text) => {
+        const select = document.querySelector('[data-testid="tenant-switch"]');
+        return [...(select?.options ?? [])].some(
+          (o) => o.textContent?.trim() === text,
+        );
+      },
+      label,
+      { timeout: 10000 },
+    );
+  } catch {
+    const options = await page
+      .evaluate(() =>
+        [
+          ...(document.querySelector('[data-testid="tenant-switch"]')
+            ?.options ?? []),
+        ].map((o) => `${o.textContent?.trim()}=${o.value}`),
+      )
+      .catch(() => []);
+    throw new Error(
+      `tenant option missing: ${label}; have [${options.join(", ")}]`,
+    );
+  }
+  return tenantOptionValue(page, label);
+};
+const chooseTenant = async (page, label) => {
+  const value = await waitTenantOption(page, label);
+  await page.locator('[data-testid="tenant-switch"]').selectOption({ label });
+  await waitScope(page, label);
+  return value;
+};
+// Issue #29: project selection may live beyond the first keyset page; load
+// pages on demand (bounded) until the option is selectable.
+const selectProject = async (page, id, label) => {
+  for (let i = 0; i < 12; i++) {
+    const present = await page.evaluate((value) => {
+      const select = document.querySelector(".project-switcher select");
+      return [...(select?.options ?? [])].some((o) => o.value === value);
+    }, id);
+    if (present) break;
+    const more = page.locator('[data-testid="projects-load-more"]');
+    try {
+      await more.waitFor({ state: "visible", timeout: 2500 });
+    } catch {
+      break;
+    }
+    await more.click();
+    await page.waitForTimeout(300);
+  }
+  const presentFinal = await page.evaluate((value) => {
+    const select = document.querySelector(".project-switcher select");
+    return [...(select?.options ?? [])].some((o) => o.value === value);
+  }, id);
+  if (!presentFinal) {
+    const debug = await page.evaluate(() => ({
+      options: document.querySelector(".project-switcher select")?.options
+        .length,
+      more: Boolean(
+        document.querySelector('[data-testid="projects-load-more"]'),
+      ),
+    }));
+    throw new Error(
+      `project option missing: ${id} options=${debug.options} more=${debug.more}`,
+    );
+  }
+  await page.locator(".project-switcher select").selectOption(id);
+  if (label) await waitScope(page, label);
 };
 
 const tmp = await mkdtemp(join(tmpdir(), "forge-web-acc-"));
@@ -886,6 +977,564 @@ try {
       );
     });
     await anon.close();
+
+    // Issue #22 senaryo 1: geçiş beklerken eski ekran formu hiçbir mutasyon
+    // göndermez; hedef tenant'a eski bağlamdan tek yazım gitmez.
+    await safe("tenant-switch-atomic", async () => {
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await chooseTenant(page, "Kişisel çalışma alanı");
+      await page.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
+      const editor = page.locator("form textarea");
+      await editor.waitFor({ timeout: 8000 });
+      const marker = `switch-atomic-${Date.now()}`;
+      await editor.fill(
+        `Atomic marker ${marker}; create, update, no-op, reject.`,
+      );
+      const writes = [];
+      const onRequest = (request) => {
+        if (
+          ["POST", "PUT", "PATCH", "DELETE"].includes(request.method()) &&
+          request.url().includes("/api/") &&
+          !request.url().includes("/api/tenants/switch")
+        )
+          writes.push(
+            `${request.method()} ${request.url()} [${request.headers()["x-forge-tenant"] ?? ""}]`,
+          );
+      };
+      page.on("request", onRequest);
+      let releaseSwitch;
+      const switchGate = new Promise((resolve) => (releaseSwitch = resolve));
+      let holding = false;
+      await page.route("**/api/tenants/switch", async (route) => {
+        if (!holding) {
+          holding = true;
+          await switchGate;
+        }
+        return route.continue();
+      });
+      try {
+        await page
+          .locator('[data-testid="tenant-switch"]')
+          .selectOption({ label: "Kabul Org" });
+        await page.waitForTimeout(300);
+        await page.getByRole("button", { name: "Kaydet" }).click();
+        await page.waitForTimeout(400);
+        const notice = await page
+          .locator("main p.error")
+          .first()
+          .innerText()
+          .catch(() => "");
+        check(
+          "switch-atomic-blocked-write",
+          writes.length === 0,
+          writes.slice(0, 2).join(" | "),
+        );
+        check(
+          "switch-atomic-pending-notice",
+          notice.length > 0,
+          notice.slice(0, 80),
+        );
+        releaseSwitch();
+        await waitScope(page, "Kabul Org");
+        await page.waitForTimeout(600);
+        const shown = await page
+          .locator("pre.prompt-content")
+          .innerText()
+          .catch(() => "");
+        check(
+          "switch-atomic-no-leak",
+          !shown.includes(marker) && writes.length === 0,
+          `${shown.slice(0, 60)} writes=${writes.length}`,
+        );
+      } finally {
+        page.off("request", onRequest);
+        await page.unroute("**/api/tenants/switch");
+      }
+    });
+
+    // Issue #22 senaryo 2: organizasyon tablosundaki Seç, üst seçiciyle aynı
+    // koordinasyonu kullanır; sonraki /api/me istekleri hedef header taşır.
+    await safe("tenant-table-switch", async () => {
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await chooseTenant(page, "Kişisel çalışma alanı");
+      const kabulValue = await waitTenantOption(page, "Kabul Org");
+      const meHeaders = [];
+      const onRequest = (request) => {
+        if (request.url().includes("/api/me"))
+          meHeaders.push(request.headers()["x-forge-tenant"] ?? "");
+      };
+      page.on("request", onRequest);
+      try {
+        const before = meHeaders.length;
+        const row = page
+          .locator("section.panel table tbody tr", { hasText: "Kabul Org" })
+          .first();
+        await row.getByRole("button", { name: "Seç" }).click();
+        await waitScope(page, "Kabul Org");
+        const selected = await page
+          .locator('[data-testid="tenant-switch"]')
+          .inputValue();
+        await page.waitForTimeout(400);
+        const after = meHeaders.slice(before);
+        check(
+          "table-switch-selector-sync",
+          selected === kabulValue,
+          `${selected} vs ${kabulValue}`,
+        );
+        check(
+          "table-switch-target-header",
+          after.length > 0 && after.every((value) => value === kabulValue),
+          after.join(","),
+        );
+      } finally {
+        page.off("request", onRequest);
+      }
+    });
+
+    // Issue #22: geçersiz tenant geçişi görünür bağlamı ve header'ı bozmaz.
+    await safe("tenant-switch-invalid", async () => {
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page.reload({ waitUntil: "networkidle" });
+      const personalValue = await chooseTenant(page, "Kişisel çalışma alanı");
+      const seen = [];
+      const onRequest = (request) => {
+        if (
+          request.url().includes("/api/") &&
+          !request.url().includes("/api/tenants/switch")
+        )
+          seen.push(request.headers()["x-forge-tenant"] ?? "");
+      };
+      page.on("request", onRequest);
+      let failOnce = true;
+      await page.route("**/api/tenants/switch", async (route) => {
+        if (failOnce) {
+          failOnce = false;
+          return route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: {
+                code: "tenant_unavailable",
+                message: "Organizasyon bulunamadı.",
+              },
+            }),
+          });
+        }
+        return route.continue();
+      });
+      try {
+        const before = seen.length;
+        await page
+          .locator('[data-testid="tenant-switch"]')
+          .selectOption({ label: "Kabul Org" });
+        await page.waitForTimeout(700);
+        const badge = await page
+          .locator('[data-testid="scope-badge"]')
+          .innerText();
+        const selected = await page
+          .locator('[data-testid="tenant-switch"]')
+          .inputValue();
+        check(
+          "switch-invalid-context-stable",
+          badge.includes("Kişisel") && selected === personalValue,
+          `${badge.slice(0, 60)} value=${selected}`,
+        );
+        const notice = await page
+          .locator("p.error")
+          .first()
+          .innerText()
+          .catch(() => "");
+        check(
+          "switch-invalid-error-visible",
+          notice.includes("bulunamadı"),
+          notice.slice(0, 80),
+        );
+        // In-app navigation issues fresh reads; all must keep the screen
+        // tenant instead of the rejected target.
+        await page.evaluate(() => {
+          location.hash = "#roles";
+        });
+        await page
+          .getByRole("heading", { name: "Roller", exact: false })
+          .first()
+          .waitFor({ timeout: 8000 });
+        await page.waitForTimeout(300);
+        const after = seen.slice(before);
+        check(
+          "switch-invalid-header-stable",
+          after.length > 0 && after.every((value) => value === personalValue),
+          [...new Set(after)].join(","),
+        );
+      } finally {
+        page.off("request", onRequest);
+        await page.unroute("**/api/tenants/switch");
+      }
+    });
+
+    // Issue #29: kurulum listesi talep üzerine ilerler; ilk ekran tek istekle
+    // gelir, hata kısmi listeyi korur, retry kalanı tamamlar ve kapsam
+    // değişimi listeyi yeni projeye bağlar.
+    await safe("pagination-installations", async () => {
+      const seeded = [];
+      for (let i = 0; i < 105; i++) {
+        const id = createHash("sha256")
+          .update(`acceptance-install-${i}`)
+          .digest("hex");
+        const response = await fetch(`${base}/api/installations`, {
+          method: "POST",
+          headers: { ...ownerHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            id,
+            project_ref: project.id,
+            client: "codex",
+            version: `1.0.${i}`,
+            directory: `/acceptance/install-${i}`,
+            event: "mcp_connected",
+          }),
+        });
+        seeded.push(response.ok);
+      }
+      check(
+        "install-seed-105",
+        seeded.every(Boolean),
+        `${seeded.filter(Boolean).length}/105`,
+      );
+      const installRequests = [];
+      const onRequest = (request) => {
+        if (request.url().includes("/api/installations"))
+          installRequests.push(request.url());
+      };
+      page.on("request", onRequest);
+      await page.route(/\/api\/installations/, async (route) => {
+        if (route.request().url().includes("after=")) {
+          return route.fulfill({
+            status: 500,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "internal", message: "acceptance failure" },
+            }),
+          });
+        }
+        return route.continue();
+      });
+      try {
+        await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+        // Hash-only navigation does not reload; force a fresh account/project
+        // snapshot after the API-side seeding.
+        await page.reload({ waitUntil: "networkidle" });
+        await chooseTenant(page, "Kişisel çalışma alanı");
+        await page.goto(`${base}/#installations`, {
+          waitUntil: "networkidle",
+        });
+        await page.locator("table").first().waitFor({ timeout: 8000 });
+        await selectProject(page, project.id, "Acceptance");
+        await page
+          .waitForFunction(
+            () => document.querySelectorAll("table tbody tr").length === 100,
+            null,
+            { timeout: 8000 },
+          )
+          .catch(() => {});
+        const firstRows = await page.locator("table tbody tr").count();
+        const loadMore = page.locator(
+          '[data-testid="installations-load-more"]',
+        );
+        const baseline = installRequests.length;
+        const afterAtFirstPaint = installRequests.filter((url) =>
+          url.includes("after="),
+        ).length;
+        check(
+          "installations-first-page-only",
+          firstRows === 100 &&
+            (await loadMore.count()) === 1 &&
+            afterAtFirstPaint === 0,
+          `rows=${firstRows} requests=${baseline} after=${afterAtFirstPaint}`,
+        );
+        await loadMore.click();
+        await page
+          .locator('[data-testid="installations-page-error"]')
+          .waitFor({ timeout: 8000 });
+        const afterFailRows = await page.locator("table tbody tr").count();
+        await page.screenshot({
+          path: join(shots, "p29-installations-partial.png"),
+        });
+        check(
+          "installations-partial-error",
+          afterFailRows === 100 && (await loadMore.count()) === 1,
+          `rows=${afterFailRows}`,
+        );
+        await page.unroute(/\/api\/installations/);
+        await loadMore.click();
+        await page
+          .waitForFunction(
+            () => document.querySelectorAll("table tbody tr").length === 105,
+            null,
+            { timeout: 8000 },
+          )
+          .catch(() => {});
+        const dirs = await page
+          .locator("table tbody tr td.mono")
+          .allInnerTexts();
+        const totalDelta = installRequests.length - baseline;
+        const afterDelta = installRequests.filter((url) =>
+          url.includes("after="),
+        ).length;
+        check(
+          "installations-retry-complete",
+          dirs.length === 105 && new Set(dirs).size === 105,
+          `rows=${dirs.length} unique=${new Set(dirs).size}`,
+        );
+        check(
+          "installations-no-overfetch",
+          totalDelta === 2 && afterDelta === 2,
+          `new=${totalDelta} after=${afterDelta}`,
+        );
+        check(
+          "installations-continue-hidden",
+          (await loadMore.count()) === 0,
+          "continue button hidden at the end",
+        );
+        const other = await page.evaluate((current) => {
+          const select = document.querySelector(".project-switcher select");
+          const option = [...(select?.options ?? [])].find(
+            (o) => o.value !== current,
+          );
+          return option?.value ?? "";
+        }, project.id);
+        check("installations-scope-candidate", Boolean(other), String(other));
+        const scoped = page.waitForResponse(
+          (response) =>
+            response.url().includes("/api/installations") &&
+            response.url().includes(`project_ref=${other}`),
+          { timeout: 8000 },
+        );
+        await page.locator(".project-switcher select").selectOption(other);
+        await scoped;
+        await page.waitForTimeout(400);
+        const scopeRows = await page.locator("table tbody tr").count();
+        check(
+          "installations-scope-reset",
+          scopeRows === 0,
+          `rows=${scopeRows} for ${other.slice(0, 8)}`,
+        );
+      } finally {
+        page.off("request", onRequest);
+        await page.unroute(/\/api\/installations/).catch(() => {});
+      }
+    });
+
+    // Issue #29: 101. yetkili proje seçimi /api/me yenilemesinde korunur;
+    // gerçekten silinen projeden güvenli biçimde çıkılır.
+    await safe("projects-101-selection", async () => {
+      const countProjects = async () => {
+        let total = 0;
+        let cursor = null;
+        for (let i = 0; i < 20; i++) {
+          const page = await (
+            await fetch(
+              `${base}/api/projects${cursor ? `?after=${encodeURIComponent(cursor)}` : ""}`,
+              { headers: ownerHeaders },
+            )
+          ).json();
+          total += page.items.length;
+          cursor = page.next;
+          if (!cursor) break;
+        }
+        return total;
+      };
+      let total = await countProjects();
+      for (let i = total; i < 105; i++) {
+        await fetch(`${base}/api/projects`, {
+          method: "POST",
+          headers: { ...ownerHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ name: `selection-${i}` }),
+        });
+      }
+      total = await countProjects();
+      check("projects-105-seeded", total >= 105, total);
+      const first = await (
+        await fetch(`${base}/api/projects`, { headers: ownerHeaders })
+      ).json();
+      const firstIds = new Set(first.items.map((row) => row.id));
+      let cursor = first.next;
+      let target = null;
+      while (cursor && !target) {
+        const page = await (
+          await fetch(
+            `${base}/api/projects?after=${encodeURIComponent(cursor)}`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        target = page.items.find((row) => !firstIds.has(row.id)) ?? null;
+        cursor = page.next;
+      }
+      check("projects-target-beyond-page", Boolean(target), target?.name ?? "");
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page.reload({ waitUntil: "networkidle" });
+      await chooseTenant(page, "Kişisel çalışma alanı");
+      await selectProject(page, target.id, target.name);
+      await page.evaluate(() => {
+        location.hash = "#projects";
+      });
+      await page.getByLabel("Proje adı").waitFor({ timeout: 8000 });
+      await page.getByLabel("Proje adı").fill(`keep-${Date.now()}`);
+      await page.getByRole("button", { name: "Proje oluştur" }).click();
+      await page.waitForTimeout(1200);
+      const kept = await page
+        .locator('[data-testid="scope-badge"]')
+        .innerText();
+      check(
+        "project-101-preserved",
+        kept.includes(target.name),
+        kept.slice(0, 90),
+      );
+      // Gerçek silme: satırı SQLite'tan kaldır, sonraki hesap yenilemesi
+      // geçersiz seçimden güvenle çıkmalı.
+      const Database = (await import("better-sqlite3")).default;
+      const db = new Database(join(tmp, "local.sqlite"));
+      try {
+        db.prepare("DELETE FROM projects WHERE id = ?").run(target.id);
+      } finally {
+        db.close();
+      }
+      await page.getByLabel("Proje adı").fill(`removed-${Date.now()}`);
+      await page.getByRole("button", { name: "Proje oluştur" }).click();
+      await page.waitForTimeout(1500);
+      const afterRemoval = await page
+        .locator('[data-testid="scope-badge"]')
+        .innerText();
+      check(
+        "project-removed-safe-exit",
+        !afterRemoval.includes(target.name) && afterRemoval.length > 0,
+        afterRemoval.slice(0, 90),
+      );
+    });
+
+    // Issue #22 senaryo 3: A→B→C hızlı geçişinde geciken eski /api/me yanıtı
+    // son seçimi geri alamaz; commit sonrası istekler yeni header taşır.
+    await safe("tenant-rapid-switch", async () => {
+      const createdThird = await fetch(`${base}/api/organizations`, {
+        method: "POST",
+        headers: { ...ownerHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Kabul Org 2" }),
+      });
+      check("rapid-third-tenant", createdThird.ok, createdThird.status);
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      await page.reload({ waitUntil: "networkidle" });
+      await chooseTenant(page, "Kişisel çalışma alanı");
+      const personalValue = await waitTenantOption(
+        page,
+        "Kişisel çalışma alanı",
+      );
+      const kabulValue = await waitTenantOption(page, "Kabul Org");
+      const secondValue = await waitTenantOption(page, "Kabul Org 2");
+      const requests = [];
+      let phase = "before";
+      const onRequest = (request) => {
+        if (!request.url().includes("/api/")) return;
+        requests.push({
+          phase,
+          url: request.url(),
+          method: request.method(),
+          tenant: request.headers()["x-forge-tenant"] ?? "",
+        });
+      };
+      page.on("request", onRequest);
+      let releaseMe;
+      const meGate = new Promise((resolve) => (releaseMe = resolve));
+      let meHeld = false;
+      await page.route("**/api/me", async (route) => {
+        if (
+          route.request().headers()["x-forge-tenant"] === personalValue &&
+          !meHeld
+        ) {
+          meHeld = true;
+          await meGate;
+        }
+        return route.continue();
+      });
+      let releaseSwitch;
+      const switchGate = new Promise((resolve) => (releaseSwitch = resolve));
+      let switchHeld = false;
+      await page.route("**/api/tenants/switch", async (route) => {
+        let target = "";
+        try {
+          target = JSON.parse(route.request().postData() ?? "{}").tenant_id;
+        } catch {}
+        if (target === kabulValue && !switchHeld) {
+          switchHeld = true;
+          await switchGate;
+        }
+        return route.continue();
+      });
+      try {
+        // Start a slow /api/me refresh for the visible personal context.
+        await page.evaluate(() => {
+          location.hash = "#projects";
+        });
+        await page.getByLabel("Proje adı").waitFor({ timeout: 8000 });
+        await page.getByLabel("Proje adı").fill(`rapid-${Date.now()}`);
+        await page.getByRole("button", { name: "Proje oluştur" }).click();
+        // A's account read is held; switch to B (delayed) then C quickly.
+        await page
+          .locator('[data-testid="tenant-switch"]')
+          .selectOption({ label: "Kabul Org" });
+        await page.waitForTimeout(50);
+        await page
+          .locator('[data-testid="tenant-switch"]')
+          .selectOption({ label: "Kabul Org 2" });
+        await page.waitForTimeout(250);
+        releaseSwitch();
+        phase = "after";
+        await waitScope(page, "Kabul Org 2");
+        releaseMe();
+        await page.waitForTimeout(2000);
+        const badge = await page
+          .locator('[data-testid="scope-badge"]')
+          .innerText();
+        const selected = await page
+          .locator('[data-testid="tenant-switch"]')
+          .inputValue();
+        check(
+          "rapid-final-context",
+          badge.includes("Kabul Org 2") && selected === secondValue,
+          `${badge.slice(0, 70)} value=${selected}`,
+        );
+        const after = requests.filter((request) => request.phase === "after");
+        const strays = after.filter(
+          (request) =>
+            request.tenant &&
+            request.tenant !== secondValue &&
+            !request.url.includes("/api/tenants/switch"),
+        );
+        check(
+          "rapid-stale-me-discarded",
+          strays.length === 0,
+          strays
+            .slice(0, 3)
+            .map(
+              (request) =>
+                `${request.method} ${request.url} [${request.tenant}]`,
+            )
+            .join(" | "),
+        );
+        const projectAfter = after.filter((request) =>
+          request.url.includes("/api/projects"),
+        );
+        check(
+          "rapid-scope-refetch-target",
+          projectAfter.length > 0 &&
+            projectAfter.every((request) => request.tenant === secondValue),
+          projectAfter.map((request) => request.tenant).join(","),
+        );
+      } finally {
+        page.off("request", onRequest);
+        releaseMe?.();
+        releaseSwitch?.();
+        await page.unroute("**/api/me");
+        await page.unroute("**/api/tenants/switch");
+      }
+    });
 
     check(
       "no-page-errors",
