@@ -97,15 +97,29 @@ test.skipIf(process.platform !== "linux")(
           `Yeni revision dizini görünmedi: ${diagnostics.join("")}`,
         );
       expect(arrived).toBeDefined();
+      // Issue #28: sıra mkdir → claim → rename olduğundan hash dizini claim'den
+      // önce görünebilir. Ebeveyn yalnız rename edilmiş içerik dizini VE claim
+      // satırı birlikte görünene kadar bekler; kill bu durumda deterministiktir.
+      const renamedPath = join(revisionsDir, arrived!, name);
+      let claimSeen = false;
+      for (let attempt = 0; attempt < 500 && !claimSeen; attempt++) {
+        claimSeen =
+          (await exists(renamedPath)) &&
+          Boolean(
+            await storage.db
+              .selectFrom("package_claims")
+              .select("kind")
+              .where("tenant_id", "=", actor.tenantId)
+              .where("kind", "=", "revision")
+              .executeTakeFirst(),
+          );
+        if (!claimSeen) await sleep(10);
+      }
+      if (!claimSeen)
+        throw new Error(
+          `Rename/claim durumu görünmedi: ${diagnostics.join("")}`,
+        );
       // Dizin rename edildi, DB commit'i askıda; claim sahibi süreç henüz canlı sanılır.
-      expect(
-        await storage.db
-          .selectFrom("package_claims")
-          .select("kind")
-          .where("tenant_id", "=", actor.tenantId)
-          .where("kind", "=", "revision")
-          .executeTakeFirst(),
-      ).toBeDefined();
       const exited = once(child, "exit");
       child.kill("SIGKILL");
       expect((await exited)[1]).toBe("SIGKILL");
