@@ -1636,3 +1636,47 @@ Her pakette TDD kapısı: önce başarısız sözleşme testi (kırmızı) → u
 ### P24 — Uçtan uca V2 denetimi
 - [x] G-hedeflerine org/duvar satırları; K-senaryoları (duvar ihlali denemesi, davet yarışı, eşik davranışı, devir/silme akışı).
 - [x] Açık P01–P16 maddeleri V2 notuyla korunur; tamamlanmayan kabul başarı yazılmaz.
+
+### Issue takip kampanyası (2026-09-10 akşamı, GitHub #22–#32) — koordinatör kaydı
+
+Yöntem: her issue için kırmızı→yeşil + gerçek koşum kanıtı; ajanlar izole Git worktree'lerinde
+çalışır, dosya sahipliği çakışmasız; `SKILL_FORGE_MCP_PLAN.md` ve
+`docs/evidence/issues-progress.json` tek yazarlı (koordinatör). Nihai HEAD üzerinde tüm CI
+işleri yeşil olmadan issue kapatılmaz.
+
+#### 1. dalga — kritik dörtlü (main'e alındı)
+- Worktree `agent-storage`, branch `issue/27-28-file-lifecycle`: **#27 + #28**.
+  - `f424e89` — reader lease'i okuma yaşam döngüsüne bağlar (kind/DB saati/heartbeat
+    doğrulaması, sonuç kabul kapısı); reconcile pin'leri sahipli+expiry'li; expiry seçimi
+    ile DELETE arasında atomik yeniden kontrol; publish/reclaim claim protokolü
+    (`package_claims`), fd-çapalı symlink-güvenli silme, sınırlı imleçli tarama
+    (`package_scan_state`); GET integrity salt rapor + POST reclaim (admin ACL + audit).
+  - `fe68688` — rename-then-crash testi flake düzeltmesi (mkdir → claim → rename sırası).
+  - `9f705a4` — `PackageStore.dispose()`: kapanış öncesi uçuştaki heartbeat'ler beklenir
+    (PG havuz kapanışıyla yarışan 30 sn takılma kökü); PG testleri dispose eder.
+- Worktree `agent-client`, branch `issue/22-29-tenant-pagination`: **#22 + #29**.
+  - `b964178` — installations `after` doğrulaması + logs/revisions iki anahtarlı ORDER BY.
+  - `61769d9` — atomik tenant geçiş koordinatörü (geçiş sırasında mutasyon durdurma,
+    `/api/me` nesil kontrolü, tablo satırı Seç aynı işlem); talep üzerine sayfalama;
+    101. proje koruması.
+  - `ccf93f6` — gerçek tarayıcı kabulü: 24 yeni kontrol.
+- Doğrulama (main `9f705a4`): typecheck/lint/prettier temiz; `bun test` 432 test —
+  11 kırmızı yalnız Docker sandbox (`sandbox_unavailable`); temiz taban `846d71f`'de
+  12 kırmızı (11 sandbox + 1 servis flake), yani yeni kırılma yok; web kabulü **76/76**;
+  PG kombo testleri 15/15 ardışık yeşil.
+
+#### 2. dalga — devam ediyor (dosya sahipliği ayrık worktree'ler)
+- `agent-queue` / `issue/23-queue-liveness`: **#23** (outbox teslim zamanlaması, normal
+  backlog'ta yinelenen redelivery'nin kesilmesi, gerçek pg-boss exhaustion + recovery).
+- `agent-search` / `issue/24-search-quality`: **#24** (top-k aday seçimi, batch sınırında
+  kapsam birleştirme, düz dizi kanıtlı tekrar/atlama testleri, ölçüm raporu).
+- `agent-budget` / `issue/25-26-budget-policy`: **#25 + #26** (iş limiti ile hesap/dönem
+  limiti ayrımı, sahte lifetime kota kaldırma; üretim handler envanterinin aynı policy
+  bağlamını kullanması + sahte model stream'li gerçek iç tool testi).
+- `agent-web` / `issue/30-31-evidence-drafts`: **#30 + #31** (tek geçerli `--report` JSON
+  + artifact kökü + CI hattı; taslak yaşam döngüsü: tüm adaylar için dirty, geçiş
+  koordinasyonu, dialog sayısı doğrulayan gerçek tarayıcı testleri).
+
+#### 3. dalga (planlandı)
+- `#32` skill-dışı typed iş türü pilotu (mevcut kuyruk/fencing korunarak) + mimari test
+  negatif fixture'ları + ADR doğruluğu; sonrasında entegrasyon, kanıt rotasyonu ve CI.
