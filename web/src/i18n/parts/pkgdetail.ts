@@ -1,4 +1,6 @@
 export const pkgdetailTr = {
+  dirty: "Kaydedilmemiş değişiklik var",
+  confirmClose: "Kaydedilmemiş taslaklar silinecek. Kapatılsın mı?",
   newPathPh: "references/example.md",
   versionLabel: "Sürüm",
   verified: "Doğrulandı",
@@ -58,6 +60,8 @@ export const pkgdetailTr = {
   compareMissing: "Bu sürümde dosya yok.",
 };
 export const pkgdetailEn = {
+  dirty: "Unsaved changes present",
+  confirmClose: "Unsaved drafts will be discarded. Close anyway?",
   newPathPh: "references/example.md",
   versionLabel: "Revision",
   verified: "Verified",

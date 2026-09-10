@@ -399,7 +399,7 @@ try {
       await page.getByRole("button", { name: "paged-many" }).click();
       const versionSelect = page
         .locator("select")
-        .filter({ has: page.locator('option', { hasText: '·' }) })
+        .filter({ has: page.locator("option", { hasText: "·" }) })
         .first();
       await versionSelect.waitFor({ timeout: 8000 });
       // Etkin revision R2; R1'e geç (ikinci seçenek).
@@ -441,9 +441,112 @@ try {
         `files ${before} -> ${after} (active ${activeRevision.slice(0, 8)})`,
       );
       await page.unroute("**/api/skills/*/manifest*");
+      await page.getByRole("button", { name: "Kapat", exact: true }).click();
+    });
+
+    // Taslak koruması (issue #17): kirli taslak geçişlerde/kapatmada korunur.
+    await safe("draft-guard", async () => {
+      await page.goto(`${base}/#library`, { waitUntil: "networkidle" });
+      await page.locator("table").waitFor({ timeout: 8000 });
+      await page.getByRole("button", { name: "paged-many" }).click();
       await page
-        .getByRole("button", { name: "Kapat", exact: true })
+        .locator(".file-list button")
+        .filter({ hasText: "SKILL.md" })
+        .first()
         .click();
+      await page.getByRole("button", { name: "Dosyayı oku" }).click();
+      const editor = page.locator("textarea.code-editor").first();
+      try {
+        await editor.waitFor({ timeout: 8000 });
+      } catch (e) {
+        console.log(
+          "DRAFT-GUARD DETAIL:",
+          (
+            await page
+              .locator("section.panel")
+              .last()
+              .innerText()
+              .catch(() => "no-panel")
+          ).slice(0, 800),
+          "REVISIONS:",
+          await page.locator("select").count(),
+        );
+        await page.screenshot({
+          path: "/tmp/opencode/draft-guard.png",
+          fullPage: true,
+        });
+        throw e;
+      }
+      const original = await editor.inputValue();
+      await editor.fill(`${original}\nKullanıcı taslağı; sürüm v2.`);
+      const draftText = `${original}\nKullanıcı taslağı; sürüm v2.`;
+      // Metadata işlemi (sabitleme) aday metni yok etmez ve ekranı kapatmaz.
+      let acceptNext = false;
+      const dialogs = [];
+      const onDialog = (dialog) => {
+        dialogs.push(dialog.type());
+        if (acceptNext) dialog.accept();
+        else dialog.dismiss();
+      };
+      page.on("dialog", onDialog);
+      try {
+        await page.getByRole("button", { name: "Sürümü sabitle" }).click();
+        await page
+          .getByRole("button", { name: "Sabitlemeyi kaldır" })
+          .waitFor({ timeout: 8000 });
+        await page.getByRole("button", { name: "Sabitlemeyi kaldır" }).click();
+        await page
+          .getByRole("button", { name: "Sürümü sabitle" })
+          .waitFor({ timeout: 8000 });
+        // Dosya geçişi: doc-00'a git, geri dön; taslak duruyor.
+        await page
+          .locator(".file-list button")
+          .filter({ hasText: "references/doc-00" })
+          .first()
+          .click();
+        await page
+          .locator(".file-list button")
+          .filter({ hasText: "SKILL.md" })
+          .first()
+          .click();
+        await page.getByRole("button", { name: "Dosyayı oku" }).click();
+        await editor.waitFor({ timeout: 8000 });
+        const kept = await editor.inputValue();
+        check("draft-survives-navigation", kept === draftText, kept.slice(-60));
+        // Kapatma girişimi kirli taslakta uyarır; reddedilirse açık kalır.
+        await page.getByRole("button", { name: "Kapat", exact: true }).click();
+        await page.waitForTimeout(400);
+        const stillOpen = await editor.isVisible();
+        check(
+          "draft-close-confirmed",
+          stillOpen && dialogs.length === 1,
+          `open=${stillOpen} dialogs=${dialogs.length}`,
+        );
+        // Stage edildikten sonra kapatma uyarısı ister ve kapanır.
+        await page
+          .getByRole("button", { name: "Değişikliği adaya ekle" })
+          .click();
+        acceptNext = true;
+        await page.getByRole("button", { name: "Kapat", exact: true }).click();
+        await editor.waitFor({ state: "detached", timeout: 8000 });
+        check("draft-close-after-stage", true, "detail closed");
+      } finally {
+        page.off("dialog", onDialog);
+      }
+      // Prompt editörü: kaydetme sırasında metin alanı kilitli, yanıt
+      // sonrasında sunucu içeriği görünür.
+      await page.goto(`${base}/#prompts`, { waitUntil: "networkidle" });
+      const prompt = page.locator("form textarea");
+      await prompt.waitFor({ timeout: 8000 });
+      await prompt.fill(
+        "Draft guard prompt; create, update, no-op, reject, untrusted kararlarıyla çalış.",
+      );
+      await page.getByRole("button", { name: "Kaydet" }).click();
+      await page
+        .locator("pre.prompt-content")
+        .getByText("Draft guard prompt")
+        .waitFor({ timeout: 8000 });
+      check("prompt-editor-save", true, "saved prompt visible");
     });
 
     // Rol akışı: oluştur → sil (silinmişe düşer) → geri yükle.

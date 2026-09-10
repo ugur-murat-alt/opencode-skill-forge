@@ -1,5 +1,5 @@
 import { PackageDetail } from "./PackageDetail";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Upload, BookOpen } from "lucide-react";
 import { api, errorCode } from "./api";
 import { useLang } from "./i18n/lang";
@@ -30,6 +30,16 @@ export function Library({ project }: { project: string }) {
   const resource = useResource<{ items: Skill[]; next_cursor: string | null }>(
     `/api/skills?project_ref=${encodeURIComponent(project)}&query=${encodeURIComponent(query)}${scope ? `&scope=${scope}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
+  // Issue #17: keep the open detail's metadata in sync with the refreshed
+  // list (pin/configure operations no longer close the detail).
+  useEffect(() => {
+    if (!selected) return;
+    const fresh = resource.data?.items.find(
+      (item) => item.skill_id === selected.skill_id,
+    );
+    if (fresh && fresh !== selected) setSelected(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resource.data]);
   async function importFile(file?: File) {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {

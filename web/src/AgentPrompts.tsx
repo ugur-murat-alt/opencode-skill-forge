@@ -82,6 +82,7 @@ export function AgentPrompts() {
             <textarea
               rows={10}
               value={text}
+              disabled={busy}
               onChange={(e) => setText(e.target.value)}
               required
             />

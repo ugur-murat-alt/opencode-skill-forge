@@ -52,7 +52,9 @@ export function PackageDetail({
   const [revision, setRevision] = useState(skill.revision),
     [path, setPath] = useState("SKILL.md"),
     [loaded, setLoaded] = useState<Loaded | null>(null),
-    [draft, setDraft] = useState(""),
+    // Issue #17: drafts live per revision+path so file/revision switches
+    // never silently drop unsent user text.
+    [drafts, setDrafts] = useState<Record<string, string>>({}),
     [changes, setChanges] = useState<Change[]>([]),
     [rebase, setRebase] = useState(false),
     [newPath, setNewPath] = useState(""),
@@ -80,6 +82,13 @@ export function PackageDetail({
       generation.current++;
     };
   }, [revision, path]);
+  const draftKey = `${revision}:${path}`;
+  const stagedContent = changes.find((c) => c.path === path)?.content;
+  const draft = drafts[draftKey] ?? stagedContent ?? loaded?.content ?? "";
+  const dirty =
+    drafts[draftKey] !== undefined &&
+    drafts[draftKey] !== stagedContent &&
+    drafts[draftKey] !== loaded?.content;
   async function load(cursor?: string) {
     const token = ++generation.current;
     setBusy(true);
@@ -100,7 +109,6 @@ export function PackageDetail({
         ? { ...value, content: (loaded?.content ?? "") + value.content }
         : value;
       setLoaded(next);
-      setDraft(changes.find((c) => c.path === path)?.content ?? next.content);
     } catch (e) {
       if (token === generation.current) setError(errorCode(e));
     } finally {
@@ -176,7 +184,8 @@ export function PackageDetail({
         }),
       });
       await refresh();
-      close();
+      // Issue #17: metadata operations must not destroy the content
+      // candidate; the detail stays open with its drafts.
     } catch (e) {
       setError(errorCode(e));
     } finally {
@@ -234,7 +243,15 @@ export function PackageDetail({
     <section className="panel">
       <div className="section-heading">
         <h2>{skill.name}</h2>
-        <button disabled={busy} onClick={close}>
+        <button
+          disabled={busy}
+          onClick={() => {
+            // Issue #17: closing is the only flow that discards drafts, so
+            // it warns only when unsent text would actually be lost.
+            if (dirty && !window.confirm(t("pkgdetail.confirmClose"))) return;
+            close();
+          }}
+        >
           {t("common.close")}
         </button>
       </div>
@@ -323,7 +340,13 @@ export function PackageDetail({
                   rows={12}
                   value={draft}
                   disabled={busy}
-                  onChange={(e) => setDraft(e.target.value)}
+                  title={dirty ? t("pkgdetail.dirty") : undefined}
+                  onChange={(e) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [draftKey]: e.target.value,
+                    }))
+                  }
                 />
               </label>
               <div className="toolbar">
