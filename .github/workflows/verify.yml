@@ -84,15 +84,46 @@ jobs:
           sudo apt-get install -y -q google-chrome-stable
       - run: bun run build:plugin
       - name: Real browser acceptance gate
-        run: node scripts/web-acceptance.mjs --port 38471 --shots /tmp/acc-shots
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/web-acceptance
+          node scripts/web-acceptance.mjs --port 38471 \
+            --report artifacts/web-acceptance/report.json \
+            --shots artifacts/web-acceptance/shots \
+            2> artifacts/web-acceptance/stderr.log \
+            | tee artifacts/web-acceptance/stdout.log
+      - name: Verify acceptance artifact identity and log parity
+        if: always()
+        run: |
+          node scripts/web-acceptance.mjs --verify \
+            --report artifacts/web-acceptance/report.json \
+            --stdout artifacts/web-acceptance/stdout.log
+      - name: Failure path gate (intentional UI fault must stay red)
+        if: always()
+        run: |
+          set +e
+          mkdir -p artifacts/web-acceptance/failure
+          node scripts/web-acceptance.mjs --port 38472 \
+            --report artifacts/web-acceptance/failure/report.json \
+            --shots artifacts/web-acceptance/failure/shots \
+            --inject-failure login --fail-fast \
+            2> artifacts/web-acceptance/failure/stderr.log \
+            | tee artifacts/web-acceptance/failure/stdout.log
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::intentional UI fault did not fail the acceptance gate"
+            exit 1
+          fi
+          node scripts/web-acceptance.mjs --verify --expect-failure \
+            --report artifacts/web-acceptance/failure/report.json \
+            --stdout artifacts/web-acceptance/failure/stdout.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: web-acceptance-evidence
-          path: |
-            docs/evidence/p29-web-acceptance.json
-            /tmp/acc-shots
-          if-no-files-found: warn
+          path: artifacts/web-acceptance
+          if-no-files-found: error
   portable-artifact:
     strategy:
       fail-fast: false
