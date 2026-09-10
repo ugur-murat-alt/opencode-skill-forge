@@ -441,9 +441,18 @@ async function main() {
     check("serve-boots", ready, stderr.slice(-200));
     if (!ready) throw new Error("serve did not boot");
 
-    const ownerToken = (
-      await readFile(join(tmp, "owner-token"), "utf8")
-    ).trim();
+    // Issue #30 follow-up: /health/live yanıtı owner-token dosyasından önce
+    // gelebilir (CI'da gözlendi); token yazılana kadar sınırlı bekle.
+    let ownerToken = "";
+    for (let i = 0; i < 150 && !ownerToken; i++) {
+      try {
+        ownerToken = (await readFile(join(tmp, "owner-token"), "utf8")).trim();
+      } catch {
+        await sleep(100);
+      }
+    }
+    if (!ownerToken)
+      throw new Error(`owner-token yazılmadı: ${stderr.slice(-200)}`);
     const ownerHeaders = {
       host: `127.0.0.1:${PORT}`,
       authorization: `Bearer ${ownerToken}`,
