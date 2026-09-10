@@ -1543,7 +1543,9 @@ Uygulama: `web/src/i18n` sözlükleri (234 sunucu kodu + 3 istemci/fallback), 19
 16 token + dark palet, FOUC + senkron effect, header düğmeleri, kabul 35/35.
 Canlı bulunan hatalar: useMemo-içi useCallback (#300), FOUC/effect zemin senkronu,
 zayıf theme assertion, light faint AA. Kanıt: `p29-web-i18n-theme.json`,
-`p29-web-acceptance.json`, `design/p29-*-en-dark.png`.
+`design/p29-*-en-dark.png`; `p29-web-acceptance.json` 2026-09-10'da #30 ile kaldırıldı
+(izlenen sabit rapor yeni çalıştırmayı maskeleyebiliyordu); canlı kabul kanıtı artık
+CI `web-acceptance-evidence` artifact'ıdır (`artifacts/web-acceptance/report.json`).
 
 Hedef: gömülü Türkçe metin ve gömülü renk sıfırlanır; varsayılan TR+light korunur.
 Kararlar (inceleme uzlaşısı): (D1) sunucu mesajlarına dokunulmaz; web `ApiError.code`
@@ -1668,6 +1670,8 @@ işleri yeşil olmadan issue kapatılmaz.
 #### 2. dalga — devam ediyor (dosya sahipliği ayrık worktree'ler)
 - `agent-queue` / `issue/23-queue-liveness`: **#23** (outbox teslim zamanlaması, normal
   backlog'ta yinelenen redelivery'nin kesilmesi, gerçek pg-boss exhaustion + recovery).
+  → **main `4a07a70`**; taze PG veritabanında 13/13 (literal 60 sn backlog, 20-sweep
+  penceresi, exhaustion+recovery, operasyon matrisi); #11 liveness/fencing korunur.
 - `agent-search` / `issue/24-search-quality`: **#24** (top-k aday seçimi, batch sınırında
   kapsam birleştirme, düz dizi kanıtlı tekrar/atlama testleri, ölçüm raporu).
   → **main `f153a4a`**; hedefli 17 SQLite + 1 PG test yeşil; `forge_search` artık
@@ -1680,6 +1684,9 @@ işleri yeşil olmadan issue kapatılmaz.
 - `agent-web` / `issue/30-31-evidence-drafts`: **#30 + #31** (tek geçerli `--report` JSON
   + artifact kökü + CI hattı; taslak yaşam döngüsü: tüm adaylar için dirty, geçiş
   koordinasyonu, dialog sayısı doğrulayan gerçek tarayıcı testleri).
+  → **main `08fc7ac`**; kabul 101/101 + artifact `--verify`; kasıtlı hata kapısı kırmızı
+  ve failure raporu/görüntüsü artifact'ta; `docs/evidence/p29-web-acceptance.json`
+  kaldırıldı (eski raporun yeni başarıyı maskelemesi engellendi).
 
 #### 3. dalga (planlandı)
 - `#32` skill-dışı typed iş türü pilotu (mevcut kuyruk/fencing korunarak) + mimari test
