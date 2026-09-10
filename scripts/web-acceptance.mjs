@@ -110,7 +110,8 @@ try {
   check("seed-skill", imported.ok, imported.status);
 
   const browser = await chromium.launch({
-    executablePath: "/usr/bin/google-chrome",
+    // CI installs its own Chrome; override the fixed local path there.
+    executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
     headless: !HEADED,
   });
