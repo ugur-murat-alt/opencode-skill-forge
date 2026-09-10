@@ -549,6 +549,127 @@ try {
       check("prompt-editor-save", true, "saved prompt visible");
     });
 
+    // Dar ekran başlık geometrisi (issue #16): yatay taşma yok, kontroller
+    // başlık alanında kalır ve içerikle örtüşmez.
+    await safe("responsive-header", async () => {
+      page.on("response", (r) => {
+        if (r.url().includes("/api/tenants/switch"))
+          console.log(
+            "SWITCH POST:",
+            r.status(),
+            r.request().headers()["x-forge-tenant"],
+          );
+        if (r.url().includes("/api/me")) console.log("ME RESP:", r.status());
+      });
+      const longName = `Kabul ${"u".repeat(40)} Organizasyon`;
+      const created = await fetch(`${base}/api/projects`, {
+        method: "POST",
+        headers: { ...ownerHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ name: longName }),
+      });
+      check("long-project", created.ok, created.status);
+      await page.goto(`${base}/#organizations`, { waitUntil: "networkidle" });
+      // Çerez tenant-context'te Kabul Org'a kaymış olabilir; önce güvenilir
+      // bir uygulama yenilemesi, sonra gerçek tenant geçişi.
+      await page.reload({ waitUntil: "networkidle" });
+      await page
+        .locator('[data-testid="tenant-switch"]')
+        .selectOption({ label: "Kişisel çalışma alanı" });
+      await page
+        .locator('[data-testid="scope-badge"]')
+        .getByText("Kişisel")
+        .waitFor({ timeout: 8000 });
+      try {
+        await page
+          .locator(".project-switcher select option", {
+            hasText: longName.slice(0, 20),
+          })
+          .first()
+          .waitFor({ state: "attached", timeout: 8000 });
+      } catch (e) {
+        const options = await page
+          .locator(".project-switcher select option")
+          .allInnerTexts();
+        const state = await page.evaluate(async () => ({
+          me: await (
+            await fetch("/api/me", { credentials: "same-origin" })
+          ).json(),
+          projects: await (
+            await fetch("/api/projects", { credentials: "same-origin" })
+          ).json(),
+          cookie: document.cookie,
+        }));
+        console.log(
+          "RESPONSIVE OPTIONS:",
+          JSON.stringify(options),
+          "TENANT:",
+          state.me.identity?.tenantId,
+          "ROLE:",
+          state.me.role,
+          "PAGE:",
+          JSON.stringify(state.projects ?? {}).slice(0, 200),
+          "COOKIE:",
+          state.cookie.slice(0, 120),
+          "SWITCH:",
+          await page.evaluate(() => {
+            const select = document.querySelector(
+              '[data-testid="tenant-switch"]',
+            );
+            return select
+              ? `${select.value} options=${select.options.length}`
+              : "none";
+          }),
+        );
+        throw e;
+      }
+      await page
+        .locator(".project-switcher select")
+        .selectOption({ label: longName });
+      const geometry = [];
+      for (const width of [320, 375, 768, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForTimeout(250);
+        const probe = await page.evaluate(() => {
+          const header = document.querySelector(".shell header");
+          const controls = document.querySelectorAll(
+            ".header-controls .scope-bar, .header-controls .project-switcher, .header-controls button",
+          );
+          const h = header.getBoundingClientRect();
+          let inside = 0;
+          const rectangles = [];
+          controls.forEach((control) => {
+            const r = control.getBoundingClientRect();
+            if (!r.width && !r.height) return;
+            inside += r.top >= h.top - 1 && r.bottom <= h.bottom + 1 ? 1 : 0;
+            rectangles.push(r.bottom - h.bottom);
+          });
+          const main = document.querySelector("main");
+          const m = main ? main.getBoundingClientRect() : null;
+          return {
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth: window.innerWidth,
+            headerBottom: Math.round(h.bottom),
+            mainTop: Math.round(m ? m.top : -1),
+            controls: controls.length,
+            inside,
+            maxOverflow: rectangles.length ? Math.max(...rectangles) : 0,
+          };
+        });
+        geometry.push(
+          `w${width}: ${probe.scrollWidth}<=${probe.innerWidth} ${probe.inside}/${probe.controls} maxOver=${probe.maxOverflow.toFixed(0)} mainTop=${probe.mainTop}`,
+        );
+        check(
+          `header-${width}`,
+          probe.scrollWidth <= probe.innerWidth &&
+            probe.inside === probe.controls &&
+            probe.maxOverflow <= 0 &&
+            probe.mainTop >= Math.round(probe.headerBottom) - 1,
+          geometry[geometry.length - 1],
+        );
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    });
+
     // Rol akışı: oluştur → sil (silinmişe düşer) → geri yükle.
     await safe("role-flow", async () => {
       await page.goto(`${base}/#roles`, { waitUntil: "networkidle" });

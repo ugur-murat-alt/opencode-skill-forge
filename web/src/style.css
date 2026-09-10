@@ -192,13 +192,13 @@ nav a {
   flex: 1;
 }
 header {
-  height: 64px;
+  min-height: 64px;
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 24px;
-  padding: 0 24px;
+  gap: 16px;
+  padding: 8px 24px;
 }
 .content {
   padding: 28px 32px;
@@ -350,7 +350,11 @@ header {
 .header-controls {
   display: flex;
   align-items: center;
-  gap: 14px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  gap: 10px;
+  min-width: 0;
+  justify-content: flex-end;
 }
 .project-switcher {
   margin: 0;
@@ -865,13 +869,15 @@ details pre {
     display: block;
   }
   .shell header {
-    height: 60px;
     border-top: 1px solid var(--border);
-    padding: 0 16px;
+    padding: 10px 16px;
+    row-gap: 8px;
+    align-items: center;
   }
   .header-controls {
     flex: 1;
-    justify-content: flex-end;
+    justify-content: space-between;
+    gap: 8px;
   }
   .content {
     padding: 26px 20px;
