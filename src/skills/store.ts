@@ -1,6 +1,6 @@
 import { DirectoryReaders } from "./directory-readers.js";
 import { randomUUID, createHash } from "node:crypto";
-import { mkdir, open, rename, lstat } from "node:fs/promises";
+import { mkdir, open, rename, lstat, readdir, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
@@ -21,6 +21,8 @@ export type SkillScope = "workspace" | "personal" | "project" | "environment";
  * by the bounded reconcile sweep instead of blocking deletion forever. */
 const READER_LIVENESS_MS = 60_000;
 const READER_HEARTBEAT_MS = 20_000;
+/** Grace window before the reconcile sweep reclaims crashed-publish leftovers. */
+const RECLAIM_GRACE_MS = 10 * 60_000;
 
 /** Environment- and workspace-scoped skills require admin to change. */
 export function scopeWritePermission(scopeKey: string): "admin" | "write" {
@@ -498,276 +500,288 @@ export class PackageStore {
         randomUUID(),
       ),
     );
-    const candidate = join(stagingRoot, input.name);
-    await mkdir(candidate, { recursive: true, mode: 0o700 });
-    for (const [path, bytes] of Object.entries(input.files)) {
-      const target = join(candidate, path);
-      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-      const fd = await open(target, "wx", 0o600);
-      try {
-        await fd.writeFile(bytes);
-        await fd.sync();
-      } finally {
-        await fd.close();
+    // Issue #13: the caller owns its staging area; every failure after
+    // creation (validation, sandbox, candidate change, DB/CAS) reclaims it.
+    // After a successful rename the staging root is already empty, so the
+    // finally never touches the immutable destination.
+    try {
+      const candidate = join(stagingRoot, input.name);
+      await mkdir(candidate, { recursive: true, mode: 0o700 });
+      for (const [path, bytes] of Object.entries(input.files)) {
+        const target = join(candidate, path);
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        const fd = await open(target, "wx", 0o600);
+        try {
+          await fd.writeFile(bytes);
+          await fd.sync();
+        } finally {
+          await fd.close();
+        }
       }
-    }
-    let tests: ScriptValidation | null = null;
-    if (manifest.execution) {
-      if (!this.validateScripts)
-        throw new ForgeError(
-          "sandbox_unavailable",
-          "Script doğrulama sandbox'ı hazır değil.",
-          503,
-        );
-      tests = await this.validateScripts(candidate, manifest);
-      if (!tests.passed || tests.hash !== manifest.hash)
-        throw new ForgeError(
-          "candidate_tests_failed",
-          "Script davranış testleri geçmedi.",
-          422,
-        );
-    }
-    // Re-read after tests: a script/test must not mutate the candidate it certifies.
-    if (
-      JSON.stringify(await packageInventory(candidate)) !==
-      JSON.stringify(manifest.files.map((file) => file.path).sort())
-    )
-      throw new ForgeError(
-        "candidate_changed",
-        "Test sırasında aday dosya envanteri değişti.",
-        409,
-      );
-    for (const file of manifest.files)
+      let tests: ScriptValidation | null = null;
+      if (manifest.execution) {
+        if (!this.validateScripts)
+          throw new ForgeError(
+            "sandbox_unavailable",
+            "Script doğrulama sandbox'ı hazır değil.",
+            503,
+          );
+        tests = await this.validateScripts(candidate, manifest);
+        if (!tests.passed || tests.hash !== manifest.hash)
+          throw new ForgeError(
+            "candidate_tests_failed",
+            "Script davranış testleri geçmedi.",
+            422,
+          );
+      }
+      // Re-read after tests: a script/test must not mutate the candidate it certifies.
       if (
-        createHash("sha256")
-          .update(await secureRead(candidate, file.path))
-          .digest("hex") !== file.hash
+        JSON.stringify(await packageInventory(candidate)) !==
+        JSON.stringify(manifest.files.map((file) => file.path).sort())
       )
         throw new ForgeError(
           "candidate_changed",
-          "Test sırasında aday paketi değişti.",
+          "Test sırasında aday dosya envanteri değişti.",
           409,
         );
-    const packageRelative = join(
-      "tenants",
-      createHash("sha256").update(identity.tenantId).digest("hex"),
-      "packages",
-      createHash("sha256").update(resolvedScope).digest("hex").slice(0, 20),
-      id,
-      "revisions",
-      manifest.hash,
-      input.name,
-    );
-    const destination = this.canonicalPath(packageRelative);
-    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-    try {
-      await rename(candidate, destination);
-    } catch (error) {
-      if (
-        !["EEXIST", "ENOTEMPTY"].includes(
-          (error as NodeJS.ErrnoException).code ?? "",
-        )
-      )
-        throw error;
       for (const file of manifest.files)
         if (
           createHash("sha256")
-            .update(await secureRead(destination, file.path))
+            .update(await secureRead(candidate, file.path))
             .digest("hex") !== file.hash
         )
           throw new ForgeError(
-            "revision_corrupt",
-            "Mevcut immutable dizin değişmiş.",
+            "candidate_changed",
+            "Test sırasında aday paketi değişti.",
             409,
           );
-    }
-    if (process.platform !== "win32") {
-      const fd = await open(dirname(destination), "r");
+      const packageRelative = join(
+        "tenants",
+        createHash("sha256").update(identity.tenantId).digest("hex"),
+        "packages",
+        createHash("sha256").update(resolvedScope).digest("hex").slice(0, 20),
+        id,
+        "revisions",
+        manifest.hash,
+        input.name,
+      );
+      const destination = this.canonicalPath(packageRelative);
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
       try {
-        await fd.sync();
-      } finally {
-        await fd.close();
-      }
-    }
-    try {
-      return await this.storage.db.transaction().execute(async (tx) => {
-        // Lock authorization membership through the short publication transaction.
-        await tx
-          .updateTable("memberships")
-          .set({ role: sql`role` })
-          .where("tenant_id", "=", identity.tenantId)
-          .where("user_id", "=", identity.userId)
-          .execute();
-        await new IdentityService(tx).authorize(
-          identity,
-          scopeWritePermission(input.scope),
-          input.projectId,
-        );
-        if (input.run)
-          await new JobQueue(this.storage).assertLease(tx, input.run);
-        // Issue #2: verify the current source scope inside the publication
-        // transaction. A concurrent setScope() changes scope_key/project_id
-        // without touching active_revision, so the CAS below alone cannot
-        // detect it; the stale-authorized publish must stop here too.
-        if (existing) {
-          const current = await tx
-            .selectFrom("skills")
-            .select(["scope_key", "project_id"])
-            .where("tenant_id", "=", identity.tenantId)
-            .where("id", "=", id)
-            .executeTakeFirst();
+        await rename(candidate, destination);
+      } catch (error) {
+        if (
+          !["EEXIST", "ENOTEMPTY"].includes(
+            (error as NodeJS.ErrnoException).code ?? "",
+          )
+        )
+          throw error;
+        for (const file of manifest.files)
           if (
-            current?.scope_key !== resolvedScope ||
-            current.project_id !==
-              (input.scope === "project" ? input.projectId! : null)
+            createHash("sha256")
+              .update(await secureRead(destination, file.path))
+              .digest("hex") !== file.hash
           )
             throw new ForgeError(
-              "revision_conflict",
-              "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.",
+              "revision_corrupt",
+              "Mevcut immutable dizin değişmiş.",
               409,
             );
+      }
+      if (process.platform !== "win32") {
+        const fd = await open(dirname(destination), "r");
+        try {
+          await fd.sync();
+        } finally {
+          await fd.close();
         }
-        const now = Date.now();
-        if (!existing)
+      }
+      try {
+        return await this.storage.db.transaction().execute(async (tx) => {
+          // Lock authorization membership through the short publication transaction.
           await tx
-            .insertInto("skills")
+            .updateTable("memberships")
+            .set({ role: sql`role` })
+            .where("tenant_id", "=", identity.tenantId)
+            .where("user_id", "=", identity.userId)
+            .execute();
+          await new IdentityService(tx).authorize(
+            identity,
+            scopeWritePermission(input.scope),
+            input.projectId,
+          );
+          if (input.run)
+            await new JobQueue(this.storage).assertLease(tx, input.run);
+          // Issue #2: verify the current source scope inside the publication
+          // transaction. A concurrent setScope() changes scope_key/project_id
+          // without touching active_revision, so the CAS below alone cannot
+          // detect it; the stale-authorized publish must stop here too.
+          if (existing) {
+            const current = await tx
+              .selectFrom("skills")
+              .select(["scope_key", "project_id"])
+              .where("tenant_id", "=", identity.tenantId)
+              .where("id", "=", id)
+              .executeTakeFirst();
+            if (
+              current?.scope_key !== resolvedScope ||
+              current.project_id !==
+                (input.scope === "project" ? input.projectId! : null)
+            )
+              throw new ForgeError(
+                "revision_conflict",
+                "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.",
+                409,
+              );
+          }
+          const now = Date.now();
+          if (!existing)
+            await tx
+              .insertInto("skills")
+              .values({
+                tenant_id: identity.tenantId,
+                id,
+                scope_key: resolvedScope,
+                project_id: input.scope === "project" ? input.projectId! : null,
+                owner_id: identity.userId,
+                name: input.name,
+                description: manifest.description,
+                search_text: searchText(
+                  `${input.name} ${manifest.description}`,
+                ),
+                active_revision: null,
+                managed: 1,
+                pinned: 0,
+                protected: 0,
+                archived: 0,
+                created_at: now,
+                updated_at: now,
+              })
+              .execute();
+          await tx
+            .insertInto("skill_revisions")
             .values({
               tenant_id: identity.tenantId,
-              id,
-              scope_key: resolvedScope,
-              project_id: input.scope === "project" ? input.projectId! : null,
-              owner_id: identity.userId,
-              name: input.name,
-              description: manifest.description,
-              search_text: searchText(`${input.name} ${manifest.description}`),
-              active_revision: null,
-              managed: 1,
-              pinned: 0,
-              protected: 0,
-              archived: 0,
-              created_at: now,
-              updated_at: now,
-            })
-            .execute();
-        await tx
-          .insertInto("skill_revisions")
-          .values({
-            tenant_id: identity.tenantId,
-            skill_id: id,
-            revision: manifest.hash,
-            manifest_json: JSON.stringify(manifest),
-            package_path: packageRelative,
-            created_by: identity.userId,
-            run_id: input.run?.id ?? null,
-            validation_json: JSON.stringify({
-              hash: manifest.hash,
-              passed: true,
-              scripts: tests,
-            }),
-            created_at: now,
-          })
-          .onConflict((oc) =>
-            oc.columns(["tenant_id", "skill_id", "revision"]).doNothing(),
-          )
-          .execute();
-        let update = tx
-          .updateTable("skills")
-          .set({
-            active_revision: manifest.hash,
-            description: manifest.description,
-            search_text: searchText(`${input.name} ${manifest.description}`),
-            updated_at: sql<number>`case when updated_at >= ${now} then updated_at + 1 else ${now} end`,
-          })
-          .where("tenant_id", "=", identity.tenantId)
-          .where("id", "=", id)
-          .where("managed", "=", 1)
-          .where("protected", "=", 0)
-          .where("pinned", "=", 0);
-        update = update
-          .where("scope_key", "=", resolvedScope)
-          .where(
-            "project_id",
-            input.scope === "project" ? "=" : "is",
-            input.scope === "project" ? input.projectId! : null,
-          );
-        update =
-          input.baseRevision === null
-            ? update.where("active_revision", "is", null)
-            : update.where("active_revision", "=", input.baseRevision);
-        if (Number((await update.executeTakeFirst()).numUpdatedRows) !== 1)
-          throw new ForgeError(
-            "revision_conflict",
-            "Paket eşzamanlı değişti veya korumaya alındı.",
-            409,
-          );
-        await tx
-          .insertInto("audit_events")
-          .values({
-            tenant_id: identity.tenantId,
-            id: randomUUID(),
-            user_id: identity.userId,
-            project_id: input.projectId ?? null,
-            kind: "skill.published",
-            detail: JSON.stringify({
               skill_id: id,
               revision: manifest.hash,
-              base_revision: input.baseRevision,
-            }),
-            created_at: now,
-          })
-          .execute();
-        if (input.importReceipt) {
-          if (existing || !input.projectId)
-            throw new ForgeError(
-              "migration_target_exists",
-              "Aktarım yalnız yeni paket oluşturabilir.",
-              409,
-            );
-          const receipt = input.importReceipt;
-          await tx
+              manifest_json: JSON.stringify(manifest),
+              package_path: packageRelative,
+              created_by: identity.userId,
+              run_id: input.run?.id ?? null,
+              validation_json: JSON.stringify({
+                hash: manifest.hash,
+                passed: true,
+                scripts: tests,
+              }),
+              created_at: now,
+            })
+            .onConflict((oc) =>
+              oc.columns(["tenant_id", "skill_id", "revision"]).doNothing(),
+            )
+            .execute();
+          let update = tx
             .updateTable("skills")
             .set({
-              managed: receipt.flags.managed ? 1 : 0,
-              protected: receipt.flags.protected ? 1 : 0,
-              pinned: receipt.flags.pinned ? 1 : 0,
+              active_revision: manifest.hash,
+              description: manifest.description,
+              search_text: searchText(`${input.name} ${manifest.description}`),
+              updated_at: sql<number>`case when updated_at >= ${now} then updated_at + 1 else ${now} end`,
             })
             .where("tenant_id", "=", identity.tenantId)
             .where("id", "=", id)
-            .execute();
+            .where("managed", "=", 1)
+            .where("protected", "=", 0)
+            .where("pinned", "=", 0);
+          update = update
+            .where("scope_key", "=", resolvedScope)
+            .where(
+              "project_id",
+              input.scope === "project" ? "=" : "is",
+              input.scope === "project" ? input.projectId! : null,
+            );
+          update =
+            input.baseRevision === null
+              ? update.where("active_revision", "is", null)
+              : update.where("active_revision", "=", input.baseRevision);
+          if (Number((await update.executeTakeFirst()).numUpdatedRows) !== 1)
+            throw new ForgeError(
+              "revision_conflict",
+              "Paket eşzamanlı değişti veya korumaya alındı.",
+              409,
+            );
           await tx
-            .insertInto("migration_receipts")
+            .insertInto("audit_events")
             .values({
               tenant_id: identity.tenantId,
-              id: receipt.id,
+              id: randomUUID(),
               user_id: identity.userId,
-              project_id: input.projectId,
-              source_id: receipt.sourceId,
-              source_checksum: receipt.sourceChecksum,
-              skill_id: id,
-              revision: manifest.hash,
-              skill_generation: now + 1,
-              flags_json: JSON.stringify(receipt.flags),
-              state: "applied",
+              project_id: input.projectId ?? null,
+              kind: "skill.published",
+              detail: JSON.stringify({
+                skill_id: id,
+                revision: manifest.hash,
+                base_revision: input.baseRevision,
+              }),
               created_at: now,
-              updated_at: now,
             })
             .execute();
-        }
-        return {
-          skill_id: id,
-          revision: manifest.hash,
-          decision: existing ? ("update" as const) : ("create" as const),
-        };
-      });
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      if (code === "23505" || code?.startsWith("SQLITE_CONSTRAINT"))
-        throw new ForgeError(
-          "revision_conflict",
-          "Paket adı/sürümü eşzamanlı yayınlandı.",
-          409,
-        );
-      throw error;
+          if (input.importReceipt) {
+            if (existing || !input.projectId)
+              throw new ForgeError(
+                "migration_target_exists",
+                "Aktarım yalnız yeni paket oluşturabilir.",
+                409,
+              );
+            const receipt = input.importReceipt;
+            await tx
+              .updateTable("skills")
+              .set({
+                managed: receipt.flags.managed ? 1 : 0,
+                protected: receipt.flags.protected ? 1 : 0,
+                pinned: receipt.flags.pinned ? 1 : 0,
+              })
+              .where("tenant_id", "=", identity.tenantId)
+              .where("id", "=", id)
+              .execute();
+            await tx
+              .insertInto("migration_receipts")
+              .values({
+                tenant_id: identity.tenantId,
+                id: receipt.id,
+                user_id: identity.userId,
+                project_id: input.projectId,
+                source_id: receipt.sourceId,
+                source_checksum: receipt.sourceChecksum,
+                skill_id: id,
+                revision: manifest.hash,
+                skill_generation: now + 1,
+                flags_json: JSON.stringify(receipt.flags),
+                state: "applied",
+                created_at: now,
+                updated_at: now,
+              })
+              .execute();
+          }
+          return {
+            skill_id: id,
+            revision: manifest.hash,
+            decision: existing ? ("update" as const) : ("create" as const),
+          };
+        });
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "23505" || code?.startsWith("SQLITE_CONSTRAINT"))
+          throw new ForgeError(
+            "revision_conflict",
+            "Paket adı/sürümü eşzamanlı yayınlandı.",
+            409,
+          );
+        throw error;
+      }
+    } finally {
+      await rm(stagingRoot, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
     }
   }
   /** Explicit scope move with CAS, re-authorization and audit. Pins survive. */
@@ -1121,6 +1135,72 @@ export class PackageStore {
         `Okuyucu uzlaştırması: ${expired.length} sahipsiz okuma kilidi temizlendi\n`,
       );
     }
+    // Issue #13: bounded filesystem reclaim. Staging areas owned by crashed
+    // publishers and revision directories renamed before their DB record
+    // landed are removed after a grace window so an in-flight publish (or a
+    // CAS winner reusing the same revision path) is never destroyed.
+    const tenantDir = join(
+      "tenants",
+      createHash("sha256").update(identity.tenantId).digest("hex"),
+    );
+    const graceCutoff = now - RECLAIM_GRACE_MS;
+    let reclaimedStaging = 0;
+    let reclaimedRevisions = 0;
+    const staleDir = async (path: string) => {
+      const st = await lstat(path).catch(() => null);
+      if (!st || !st.isDirectory() || st.isSymbolicLink()) return false;
+      return st.mtimeMs <= graceCutoff;
+    };
+    const stagingRoot = this.canonicalPath(join(tenantDir, "staging"));
+    for (const entry of (await readdir(stagingRoot).catch(() => [])).slice(
+      0,
+      100,
+    )) {
+      if (reclaimedStaging + reclaimedRevisions >= 100) break;
+      const full = join(stagingRoot, entry);
+      if (!(await staleDir(full))) continue;
+      await rm(full, { recursive: true, force: true }).catch(() => undefined);
+      reclaimedStaging++;
+    }
+    const packagesRoot = this.canonicalPath(join(tenantDir, "packages"));
+    for (const scope of (await readdir(packagesRoot).catch(() => [])).slice(
+      0,
+      50,
+    )) {
+      if (reclaimedStaging + reclaimedRevisions >= 100) break;
+      const scopeDir = join(packagesRoot, scope);
+      if ((await lstat(scopeDir).catch(() => null))?.isSymbolicLink()) continue;
+      for (const skill of (await readdir(scopeDir).catch(() => [])).slice(
+        0,
+        50,
+      )) {
+        if (reclaimedStaging + reclaimedRevisions >= 100) break;
+        const revisionsDir = join(scopeDir, skill, "revisions");
+        for (const revision of (
+          await readdir(revisionsDir).catch(() => [])
+        ).slice(0, 50)) {
+          if (reclaimedStaging + reclaimedRevisions >= 100) break;
+          const full = join(revisionsDir, revision);
+          if (!(await staleDir(full))) continue;
+          const referenced = await this.storage.db
+            .selectFrom("skill_revisions")
+            .select("skill_id")
+            .where("tenant_id", "=", identity.tenantId)
+            .where("skill_id", "=", skill)
+            .where("revision", "=", revision)
+            .executeTakeFirst();
+          if (referenced) continue;
+          await rm(full, { recursive: true, force: true }).catch(
+            () => undefined,
+          );
+          reclaimedRevisions++;
+        }
+      }
+    }
+    if (reclaimedStaging + reclaimedRevisions)
+      process.stderr.write(
+        `Depo uzlaştırması: ${reclaimedStaging} staging alanı, ${reclaimedRevisions} referanssız revision dizini geri kazanıldı\n`,
+      );
     const { rows, pins } = await this.storage.db
       .transaction()
       .execute(async (tx) => {
@@ -1218,6 +1298,8 @@ export class PackageStore {
       checked: Math.min(rows.length, 25),
       issues,
       cleared_readers: expired.length,
+      reclaimed_staging: reclaimedStaging,
+      reclaimed_revisions: reclaimedRevisions,
       next:
         rows.length > 25
           ? { skill_id: rows[24]!.skill_id, revision: rows[24]!.revision }
