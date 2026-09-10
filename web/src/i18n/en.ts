@@ -77,6 +77,12 @@ export const en: typeof tr = {
     mainNav: "Main navigation",
     brand: "Skill Forge",
   },
+  membership: {
+    title: "Organization membership required",
+    detail: "No active organization membership for this account.",
+    recovering: "Recovering session…",
+    retry: "Retry",
+  },
   login: {
     title: "Log in to the workspace",
     detail: "Enter the one-time pairing code from your local service.",

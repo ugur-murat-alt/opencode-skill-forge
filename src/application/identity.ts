@@ -204,6 +204,38 @@ export class IdentityService {
       .execute();
     return token;
   }
+  /** First ACTIVE tenant membership for login selection (issue #5). */
+  async firstActiveTenant(userId: string) {
+    return this.db
+      .selectFrom("memberships")
+      .select("tenant_id")
+      .where("user_id", "=", userId)
+      .where("disabled", "=", 0)
+      .orderBy("tenant_id")
+      .executeTakeFirst();
+  }
+  /** Session identity without a tenant context, for the recovery flow. */
+  async sessionIdentity(token: string): Promise<Identity> {
+    const session = await this.db
+      .selectFrom("auth_sessions")
+      .select("user_id")
+      .where(
+        "token_hash",
+        "=",
+        createHash("sha256").update(token).digest("hex"),
+      )
+      .where("kind", "=", "session")
+      .where("revoked", "=", 0)
+      .where("expires_at", ">", Date.now())
+      .executeTakeFirst();
+    if (!session)
+      throw new ForgeError(
+        "unauthorized",
+        "Oturum geçersiz veya süresi doldu.",
+        401,
+      );
+    return { userId: session.user_id, tenantId: "" };
+  }
   async authenticate(
     token: string,
     tenantId: string,

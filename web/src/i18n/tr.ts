@@ -75,6 +75,12 @@ export const tr = {
     mainNav: "Ana gezinme",
     brand: "Skill Forge",
   },
+  membership: {
+    title: "Organizasyon üyeliği gerekli",
+    detail: "Bu hesap için aktif organizasyon üyeliği bulunamadı.",
+    recovering: "Oturum kurtarılıyor…",
+    retry: "Yeniden dene",
+  },
   login: {
     title: "Çalışma alanına giriş",
     detail: "Yerel servisten aldığınız tek kullanımlık eşleme kodunu girin.",

@@ -19,7 +19,14 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import { api, ApiError, errorCode, setActiveTenant, type Account } from "./api";
+import {
+  api,
+  ApiError,
+  errorCode,
+  setActiveTenant,
+  setCsrfToken,
+  type Account,
+} from "./api";
 import { LangProvider, useLang, type Theme } from "./i18n/lang";
 import type { KeyPath } from "./i18n/lang";
 import { OrgScope } from "./OrgScope";
@@ -85,10 +92,59 @@ function LangToggle() {
     </button>
   );
 }
+/** Issue #5 recovery: session-only membership list, auto-switch to an active
+ * tenant, or a clear membership screen when nothing is active. */
+function Membership({
+  onRetry,
+  onRecovered,
+}: {
+  onRetry: () => void;
+  onRecovered: () => void;
+}) {
+  const { t } = useLang();
+  const [state, setState] = useState<"pending" | "none">("pending");
+  useEffect(() => {
+    void api<{
+      items: { tenant_id: string; disabled: number }[];
+      csrf: string | null;
+    }>("/api/my-memberships")
+      .then(async (value) => {
+        if (value.csrf) setCsrfToken(value.csrf);
+        const active = value.items.find((item) => !item.disabled);
+        if (!active) {
+          setState("none");
+          return;
+        }
+        setActiveTenant(active.tenant_id);
+        await api("/api/tenants/switch", {
+          method: "POST",
+          body: JSON.stringify({ tenant_id: active.tenant_id }),
+        });
+        onRecovered();
+      })
+      .catch(() => setState("none"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <main className="login" role="status">
+      <div className="brand">{t("shell.brand")}</div>
+      <h1>{t("membership.title")}</h1>
+      {state === "pending" ? (
+        <p>{t("membership.recovering")}</p>
+      ) : (
+        <>
+          <p>{t("membership.detail")}</p>
+          <button onClick={onRetry}>{t("membership.retry")}</button>
+        </>
+      )}
+    </main>
+  );
+}
 function App() {
   const { t, err } = useLang();
   const [account, setAccount] = useState<Account | null | undefined>(undefined),
     [error, setError] = useState(""),
+    [membership, setMembership] = useState(false),
     [project, setProject] = useState(""),
     [page, setPage] = useState(location.hash.slice(1) || "overview"),
     [scopeTick, setScopeTick] = useState(0),
@@ -110,6 +166,11 @@ function App() {
       setError("");
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) setAccount(null);
+      else if (
+        error instanceof ApiError &&
+        errorCode(error) === "tenant_unavailable"
+      )
+        setMembership(true);
       else setError(errorCode(error));
     }
   }
@@ -122,6 +183,19 @@ function App() {
     window.addEventListener("hashchange", change);
     return () => window.removeEventListener("hashchange", change);
   }, []);
+  if (membership)
+    return (
+      <Membership
+        onRetry={() => {
+          setMembership(false);
+          void load();
+        }}
+        onRecovered={() => {
+          setMembership(false);
+          void load();
+        }}
+      />
+    );
   if (error)
     return (
       <main className="login">

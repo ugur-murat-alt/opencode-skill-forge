@@ -209,7 +209,16 @@ export async function createHttpServer(config: LocalConfig) {
           : (request.cookies.forge_tenant ?? "local");
       const sessionToken = request.cookies.forge_session;
       if (sessionToken) {
-        identity = await identityService.authenticate(sessionToken, tenant);
+        let sessionOnly = false;
+        try {
+          identity = await identityService.authenticate(sessionToken, tenant);
+        } catch (error) {
+          // Issue #5: a valid session whose selected tenant lost access must
+          // keep a recovery path instead of a blanket 403.
+          if (!(error instanceof ForgeError) || error.status !== 403) throw error;
+          sessionOnly = true;
+          identity = await identityService.sessionIdentity(sessionToken);
+        }
         if (
           !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
           !tokenMatches(
@@ -220,6 +229,17 @@ export async function createHttpServer(config: LocalConfig) {
           throw new ForgeError(
             "csrf_required",
             "İşlem doğrulama anahtarı eksik.",
+            403,
+          );
+        if (
+          sessionOnly &&
+          !["/api/my-memberships", "/api/tenants/switch", "/api/logout"].includes(
+            path,
+          )
+        )
+          throw new ForgeError(
+            "tenant_unavailable",
+            "Seçili organizasyona erişiminiz yok; aktif üyeliğinizi seçin.",
             403,
           );
       } else if (oidc && request.headers.authorization?.startsWith("Bearer ")) {
@@ -372,26 +392,17 @@ export async function createHttpServer(config: LocalConfig) {
       new URL(request.url, config.url),
       JSON.parse(value.value),
     );
-    const membership = await storage.db
-      .selectFrom("memberships")
-      .select("tenant_id")
-      .where("user_id", "=", userId)
-      .orderBy("tenant_id")
-      .executeTakeFirst();
-    if (!membership)
-      throw new ForgeError(
-        "membership_required",
-        "Çalışma alanı üyeliği gerekiyor.",
-        403,
-      );
+    const membership = await identityService.firstActiveTenant(userId);
+    // Known subject without an active membership still gets a session: the
+    // web UI shows the recovery/membership screen instead of a JSON error.
     const token = await identityService.issueSession(
       userId,
       "session",
       12 * 60 * 60 * 1000,
     );
-    reply
-      .setCookie("forge_session", token, cookieOptions)
-      .setCookie("forge_tenant", membership.tenant_id, cookieOptions);
+    reply.setCookie("forge_session", token, cookieOptions);
+    if (membership)
+      reply.setCookie("forge_tenant", membership.tenant_id, cookieOptions);
     return reply.redirect("/");
   });
   app.get("/auth/github/start", async (request, reply) => {
@@ -433,26 +444,16 @@ export async function createHttpServer(config: LocalConfig) {
       query.state ?? "",
       JSON.parse(value.value),
     );
-    const membership = await storage.db
-      .selectFrom("memberships")
-      .select("tenant_id")
-      .where("user_id", "=", userId)
-      .orderBy("tenant_id")
-      .executeTakeFirst();
-    if (!membership)
-      throw new ForgeError(
-        "membership_required",
-        "Çalışma alanı üyeliği gerekiyor.",
-        403,
-      );
+    const membership = await identityService.firstActiveTenant(userId);
+    // Same recovery contract as the OIDC callback above.
     const token = await identityService.issueSession(
       userId,
       "session",
       12 * 60 * 60 * 1000,
     );
-    reply
-      .setCookie("forge_session", token, cookieOptions)
-      .setCookie("forge_tenant", membership.tenant_id, cookieOptions);
+    reply.setCookie("forge_session", token, cookieOptions);
+    if (membership)
+      reply.setCookie("forge_tenant", membership.tenant_id, cookieOptions);
     return reply.redirect("/");
   });
   app.get("/.well-known/oauth-protected-resource", async () => {
@@ -586,6 +587,13 @@ export async function createHttpServer(config: LocalConfig) {
   app.get("/api/tenants", async (request) =>
     organizations.listTenants(requestIdentity(request).userId),
   );
+  // Issue #5: session-only membership recovery list (own data, no tenant ACL).
+  app.get("/api/my-memberships", async (request) => ({
+    items: await organizations.listTenants(requestIdentity(request).userId),
+    csrf: request.cookies.forge_session
+      ? createHash("sha256").update(request.cookies.forge_session).digest("hex")
+      : null,
+  }));
   app.post("/api/tenants/switch", async (request, reply) => {
     const body = z.object({ tenant_id: z.string().min(1) }).parse(request.body);
     const identity = requestIdentity(request);

@@ -6,6 +6,10 @@ let activeTenant = "";
 export function setActiveTenant(tenantId: string) {
   activeTenant = tenantId;
 }
+/** Adopt a CSRF token delivered by a session-only recovery endpoint. */
+export function setCsrfToken(value: string) {
+  csrf = value;
+}
 /** Shared header policy: CSRF plus the explicit screen tenant for API calls. */
 export function apiHeaders(
   path: string,
