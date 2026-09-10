@@ -20,6 +20,8 @@ export class ForgeWorker {
       postgresUrl?: string;
       leaseMs?: number;
       pollMs?: number;
+      /** Bounded liveness window before a stale queued run is re-delivered. */
+      livenessMs?: number;
     } = {},
   ) {}
   async start() {
@@ -72,6 +74,106 @@ export class ForgeWorker {
       this.loops.push(this.outboxLoop());
     } else this.loops.push(this.localLoop("skill_evolve"));
   }
+  /**
+   * One outbox liveness pass (issue #11). The application `runs` row is the
+   * source of truth: every nonterminal run whose delivery claim died (pg-boss
+   * retry exhaustion, worker crash) must be re-delivered within a bounded
+   * window instead of stalling in `queued` forever.
+   */
+  async sweepOutbox() {
+    if (!this.boss) return;
+    const now = await this.queue.storage.now();
+    const livenessMs = this.options.livenessMs ?? 60_000;
+    const stranded = this.queue.storage.db
+      .selectFrom("runs")
+      .select("id")
+      .where((eb) =>
+        eb.or([
+          eb.and([eb("state", "=", "running"), eb("lease_until", "<", now)]),
+          eb.and([
+            eb("state", "=", "retry_wait"),
+            eb("available_at", "<=", now),
+          ]),
+          // Stale `queued` liveness: the outbox says delivered but no pg-boss
+          // job can claim it anymore (retry budget exhausted while the claim
+          // path was failing). Re-deliver after the bounded window.
+          eb.and([
+            eb("state", "=", "queued"),
+            eb("available_at", "<=", now - livenessMs),
+          ]),
+        ]),
+      );
+    const orphans = await this.queue.storage.db
+      .selectFrom("runs as r")
+      .innerJoin("outbox as o", (join) =>
+        join
+          .onRef("o.tenant_id", "=", "r.tenant_id")
+          .onRef("o.run_id", "=", "r.id"),
+      )
+      .select("r.id")
+      .where("r.state", "=", "queued")
+      .where("o.delivered", "=", 1)
+      .where("r.available_at", "<=", now - livenessMs)
+      .limit(100)
+      .execute();
+    if (orphans.length)
+      process.stderr.write(
+        `Kuyruk uzlaştırması: ${orphans.length} queued iş teslim penceresi aştı; yeniden teslim ediliyor\n`,
+      );
+    await this.queue.storage.db
+      .updateTable("outbox")
+      .set({ delivered: 0 })
+      .where("run_id", "in", stranded)
+      .execute();
+    const pending = await this.queue.storage.db
+      .selectFrom("outbox as o")
+      .innerJoin("runs as r", (join) =>
+        join
+          .onRef("r.tenant_id", "=", "o.tenant_id")
+          .onRef("r.id", "=", "o.run_id"),
+      )
+      .select([
+        "r.tenant_id",
+        "r.id",
+        "r.user_id",
+        "r.kind",
+        "r.available_at",
+        "r.state",
+      ])
+      .where("o.delivered", "=", 0)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("tenant_lifecycle as l")
+              .select("l.tenant_id")
+              .whereRef("l.tenant_id", "=", "r.tenant_id")
+              .where("l.frozen", "=", 1),
+          ),
+        ),
+      )
+      .limit(100)
+      .execute();
+    for (const run of pending) {
+      if (!terminalStates.includes(run.state))
+        await this.boss!.send(
+          run.kind,
+          { tenantId: run.tenant_id, runId: run.id },
+          {
+            singletonKey: run.id,
+            singletonSeconds: 1,
+            startAfter: new Date(run.available_at),
+            group: { id: `${run.tenant_id}:${run.user_id}` },
+          },
+        );
+      await this.queue.storage.db
+        .updateTable("outbox")
+        .set({ delivered: 1 })
+        .where("tenant_id", "=", run.tenant_id)
+        .where("run_id", "=", run.id)
+        .execute();
+    }
+  }
   private async pause() {
     await new Promise((resolve) =>
       setTimeout(resolve, this.options.pollMs ?? 100),
@@ -96,75 +198,7 @@ export class ForgeWorker {
   private async outboxLoop() {
     while (!this.stopping) {
       try {
-        const now = await this.queue.storage.now();
-        const stranded = this.queue.storage.db
-          .selectFrom("runs")
-          .select("id")
-          .where((eb) =>
-            eb.or([
-              eb.and([
-                eb("state", "=", "running"),
-                eb("lease_until", "<", now),
-              ]),
-              eb.and([
-                eb("state", "=", "retry_wait"),
-                eb("available_at", "<=", now),
-              ]),
-            ]),
-          );
-        await this.queue.storage.db
-          .updateTable("outbox")
-          .set({ delivered: 0 })
-          .where("run_id", "in", stranded)
-          .execute();
-        const pending = await this.queue.storage.db
-          .selectFrom("outbox as o")
-          .innerJoin("runs as r", (join) =>
-            join
-              .onRef("r.tenant_id", "=", "o.tenant_id")
-              .onRef("r.id", "=", "o.run_id"),
-          )
-          .select([
-            "r.tenant_id",
-            "r.id",
-            "r.user_id",
-            "r.kind",
-            "r.available_at",
-            "r.state",
-          ])
-          .where("o.delivered", "=", 0)
-          .where((eb) =>
-            eb.not(
-              eb.exists(
-                eb
-                  .selectFrom("tenant_lifecycle as l")
-                  .select("l.tenant_id")
-                  .whereRef("l.tenant_id", "=", "r.tenant_id")
-                  .where("l.frozen", "=", 1),
-              ),
-            ),
-          )
-          .limit(100)
-          .execute();
-        for (const run of pending) {
-          if (!terminalStates.includes(run.state))
-            await this.boss!.send(
-              run.kind,
-              { tenantId: run.tenant_id, runId: run.id },
-              {
-                singletonKey: run.id,
-                singletonSeconds: 1,
-                startAfter: new Date(run.available_at),
-                group: { id: `${run.tenant_id}:${run.user_id}` },
-              },
-            );
-          await this.queue.storage.db
-            .updateTable("outbox")
-            .set({ delivered: 1 })
-            .where("tenant_id", "=", run.tenant_id)
-            .where("run_id", "=", run.id)
-            .execute();
-        }
+        await this.sweepOutbox();
       } catch {
         process.stderr.write("Outbox teslimi yeniden denenecek\n");
       }
