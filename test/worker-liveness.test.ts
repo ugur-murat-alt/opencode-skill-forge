@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Client } from "pg";
 import { openDatabase } from "../src/storage/database.js";
 import { IdentityService } from "../src/application/identity.js";
 import { JobQueue } from "../src/jobs/queue.js";
@@ -18,9 +19,21 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
   "P1 #11 queued liveness: claim failures exhaust retries, sweep re-delivers",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "forge-liveness-"));
+    // Issue #32 follow-up: paylaşımlı PG veritabanında önceki test
+    // dosyalarının bıraktığı queued run'lar bu işçi tarafından da teslim
+    // edilir; fault injection ve yürütme sayacı yalnız bu testin işini
+    // görmelidir. Bu yüzden test kendi veritabanını açar.
+    const admin = new Client({
+      connectionString: process.env.FORGE_TEST_POSTGRES_URL,
+    });
+    await admin.connect();
+    const dbName = `forge_liveness_${crypto.randomUUID().replaceAll("-", "")}`;
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    const postgresUrl = new URL(process.env.FORGE_TEST_POSTGRES_URL!);
+    postgresUrl.pathname = `/${dbName}`;
     const storage = await openDatabase({
       dataDir: root,
-      postgresUrl: process.env.FORGE_TEST_POSTGRES_URL,
+      postgresUrl: postgresUrl.toString(),
     });
     const identity = new IdentityService(storage.db);
     const owner = await identity.bootstrapLocal();
@@ -52,7 +65,7 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
           };
         },
         {
-          postgresUrl: process.env.FORGE_TEST_POSTGRES_URL,
+          postgresUrl: postgresUrl.toString(),
           pollMs: 50,
           livenessMs: 3000,
         },
@@ -96,6 +109,10 @@ test.skipIf(!process.env.FORGE_TEST_POSTGRES_URL)(
       process.stderr.write = stderrWrite;
       await worker?.stop();
       await storage.close();
+      await admin
+        .query(`DROP DATABASE "${dbName}" WITH (FORCE)`)
+        .catch(() => {});
+      await admin.end().catch(() => {});
       await rm(root, { recursive: true, force: true });
     }
   },
