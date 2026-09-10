@@ -77,7 +77,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Install Chromium
         run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          wget -q -O /tmp/google-chrome.pub https://dl.google.com/linux/linux_signing_key.pub
+          sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/google-chrome.gpg /tmp/google-chrome.pub
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update -q
           sudo apt-get install -y -q google-chrome-stable
