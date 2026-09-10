@@ -5,6 +5,28 @@ import type { DB } from "../storage/schema.js";
 import { IdentityService, type Identity } from "./identity.js";
 import { ForgeError } from "../domain/errors.js";
 
+/** Issue #14: the single visibility contract for project-scoped consumers.
+ * Lists/stats and mutation flows share this scope definition; mutation paths
+ * keep their own stricter (admin) authorization on top of visibility. */
+export async function visibleScopes(
+  db: Kysely<DB>,
+  identity: Identity,
+  projectId: string,
+) {
+  return [
+    "workspace",
+    `personal:${identity.userId}`,
+    `project:${projectId}`,
+    `environment:${
+      (
+        await new EnvironmentService(db).resolveProject(
+          identity.tenantId,
+          projectId,
+        )
+      ).environment_id
+    }`,
+  ];
+}
 /** Insert the default environment for a tenant if none exists. Idempotent. */
 export async function ensureDefaultEnvironment(
   db: Kysely<DB>,

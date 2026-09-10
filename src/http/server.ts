@@ -6,7 +6,10 @@ import { MemberService } from "../application/members.js";
 import { OrganizationService } from "../application/organization.js";
 import { RoleService } from "../application/roles.js";
 import { AgentPromptService } from "../application/agent-prompts.js";
-import { EnvironmentService } from "../application/environments.js";
+import {
+  EnvironmentService,
+  visibleScopes,
+} from "../application/environments.js";
 import { BindingService } from "../application/bindings.js";
 import { TelemetryService } from "../application/telemetry.js";
 import { MaintenanceService } from "../application/maintenance.js";
@@ -828,11 +831,7 @@ export async function createHttpServer(config: LocalConfig) {
         .object({ project_ref: z.string() })
         .parse(request.query);
     await identityService.authorize(actor, "read", project_ref);
-    const scope = [
-      "workspace",
-      `personal:${actor.userId}`,
-      `project:${project_ref}`,
-    ];
+    const scope = await visibleScopes(storage.db, actor, project_ref);
     const [active, packages, profiles, usage, jobs, account, events] =
       await Promise.all([
         storage.db

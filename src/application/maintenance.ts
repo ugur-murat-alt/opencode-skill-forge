@@ -7,6 +7,7 @@ import type { DatabaseHandle } from "../storage/database.js";
 import type { DB } from "../storage/schema.js";
 import { IdentityService, type Identity } from "./identity.js";
 import { ForgeError, errorEnvelope } from "../domain/errors.js";
+import { visibleScopes } from "./environments.js";
 
 const itemSchema = z
   .object({
@@ -40,11 +41,7 @@ export class MaintenanceService {
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
       .where("id", "=", id)
-      .where("scope_key", "in", [
-        "workspace",
-        `personal:${actor.userId}`,
-        `project:${project}`,
-      ])
+      .where("scope_key", "in", await visibleScopes(db, actor, project))
       .executeTakeFirst();
     if (!row)
       throw new ForgeError(
@@ -110,11 +107,11 @@ export class MaintenanceService {
       .selectFrom("skills")
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
-      .where("scope_key", "in", [
-        "workspace",
-        `personal:${actor.userId}`,
-        `project:${project}`,
-      ]);
+      .where(
+        "scope_key",
+        "in",
+        await visibleScopes(this.storage.db, actor, project),
+      );
     if (options.after) query = query.where("id", ">", options.after);
     if (options.state && options.state !== "all")
       query = query.where(

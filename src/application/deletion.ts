@@ -6,6 +6,7 @@ import type { DB } from "../storage/schema.js";
 import { IdentityService, type Identity } from "./identity.js";
 import { ForgeError, errorEnvelope } from "../domain/errors.js";
 import { removeRevision } from "../skills/remove.js";
+import { visibleScopes } from "./environments.js";
 interface Input {
   project_ref: string;
   operation_id: string;
@@ -29,11 +30,7 @@ export class DeletionService {
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
       .where("id", "=", item.skill_id)
-      .where("scope_key", "in", [
-        "workspace",
-        `personal:${actor.userId}`,
-        `project:${project}`,
-      ])
+      .where("scope_key", "in", await visibleScopes(db, actor, project))
       .executeTakeFirst();
     if (!row)
       throw new ForgeError("skill_unavailable", "Paket bulunamadı.", 404);
@@ -185,11 +182,11 @@ export class DeletionService {
       .selectFrom("package_deletions as d")
       .select(["d.skill_id", "d.scope_key", "d.created_at"])
       .where("d.tenant_id", "=", actor.tenantId)
-      .where("d.scope_key", "in", [
-        "workspace",
-        `personal:${actor.userId}`,
-        `project:${project}`,
-      ])
+      .where(
+        "d.scope_key",
+        "in",
+        await visibleScopes(this.storage.db, actor, project),
+      )
       .where("d.skill_id", ">", after)
       .where(({ exists, selectFrom }) =>
         exists(
@@ -219,11 +216,11 @@ export class DeletionService {
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
       .where("skill_id", "=", skillId)
-      .where("scope_key", "in", [
-        "workspace",
-        `personal:${actor.userId}`,
-        `project:${project}`,
-      ])
+      .where(
+        "scope_key",
+        "in",
+        await visibleScopes(this.storage.db, actor, project),
+      )
       .executeTakeFirst();
     if (!row)
       throw new ForgeError("skill_unavailable", "Silme kaydı bulunamadı.", 404);
