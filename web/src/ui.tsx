@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { Inbox, RefreshCw } from "lucide-react";
 import { api, errorCode } from "./api";
 import { useLang, type Locale } from "./i18n/lang";
-export function useResource<T>(path: string | null) {
+export function useResource<T>(
+  path: string | null,
+  options?: { follow?: boolean; maxPages?: number },
+) {
+  const follow = options?.follow ?? false;
+  const maxPages = options?.maxPages ?? 50;
   const [data, setData] = useState<T | null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
@@ -13,14 +18,39 @@ export function useResource<T>(path: string | null) {
     setLoading(true);
     setError("");
     try {
-      const value = await api<T>(path);
+      let value = await api<T & { next?: string | null; items?: unknown[] }>(
+        path,
+      );
+      if (follow) {
+        // Issue #15: follow bounded keyset pages so management/history lists
+        // reach the whole authorized set instead of stopping at the first
+        // page. Follow failures keep the partial page instead of masking it.
+        let pages = 0;
+        while ((value as { next?: string | null }).next && pages < maxPages) {
+          const cursor = encodeURIComponent(
+            String((value as { next?: string | null }).next),
+          );
+          const page = await api<
+            T & { next?: string | null; items?: unknown[] }
+          >(`${path}${path.includes("?") ? "&" : "?"}after=${cursor}`);
+          value = {
+            ...value,
+            items: [
+              ...((value as { items?: unknown[] }).items ?? []),
+              ...((page as { items?: unknown[] }).items ?? []),
+            ],
+            next: (page as { next?: string | null }).next ?? null,
+          } as T & { next?: string | null };
+          pages++;
+        }
+      }
       if (request === generation.current) setData(value);
     } catch (error) {
       if (request === generation.current) setError(errorCode(error));
     } finally {
       if (request === generation.current) setLoading(false);
     }
-  }, [path]);
+  }, [path, follow, maxPages]);
   useEffect(() => {
     setData(null);
     void refresh();

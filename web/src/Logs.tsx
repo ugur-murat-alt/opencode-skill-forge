@@ -14,8 +14,10 @@ export function Logs({ project }: { project: string }) {
         created_at: number;
         detail: unknown;
       }[];
+      next?: string | null;
     }>(
       `/api/logs?project_ref=${encodeURIComponent(project)}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`,
+      { follow: true },
     );
   const { t, lang } = useLang();
   function download() {

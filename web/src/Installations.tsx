@@ -15,7 +15,10 @@ export function Installations({ project }: { project: string }) {
       last_seen: number | null;
       capabilities: { handoff: string };
     }[];
-  }>(`/api/installations?project_ref=${encodeURIComponent(project)}`);
+    next?: string | null;
+  }>(`/api/installations?project_ref=${encodeURIComponent(project)}`, {
+    follow: true,
+  });
   const [client, setClient] = useState("codex"),
     [directory, setDirectory] = useState(""),
     [copied, setCopied] = useState(false),

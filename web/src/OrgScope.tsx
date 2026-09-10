@@ -38,13 +38,44 @@ export function OrgScope({
   const { t } = useLang();
   const tenants = useResource<Tenant[]>("/api/tenants");
   const envs = useResource<Environment[]>("/api/environments");
+  // Issue #15: the /api/me project list is a bounded summary; the selector
+  // follows the /api/projects keyset pages so every authorized project is
+  // selectable.
+  const [allProjects, setAllProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setAllProjects(null);
+    void (async () => {
+      try {
+        let page = await api<{
+          items: Project[];
+          next: string | null;
+        }>("/api/projects");
+        let merged = [...page.items];
+        for (let i = 0; i < 50 && page.next; i++) {
+          page = await api<{ items: Project[]; next: string | null }>(
+            `/api/projects?after=${encodeURIComponent(page.next)}`,
+          );
+          merged = merged.concat(page.items);
+        }
+        if (!cancelled) setAllProjects(merged);
+      } catch {
+        if (!cancelled) setAllProjects(projects);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, tick]);
+  const selectorProjects = allProjects ?? projects;
   useEffect(() => {
     void tenants.refresh();
     void envs.refresh();
   }, [tenantId, tick]);
   const current = tenants.data?.find((tn) => tn.tenant_id === tenantId);
-  const projectRow = projects.find((p) => p.id === project);
+  const projectRow = (allProjects ?? projects).find((p) => p.id === project);
   const envName =
     envs.data?.find((e) => e.id === projectRow?.environment_id)?.name ??
     (projectRow ? t("scope.defaultEnv") : "—");
@@ -88,10 +119,10 @@ export function OrgScope({
       <label className="project-switcher">
         <span className="sr-only">{t("scope.activeProject")}</span>
         <select value={project} onChange={(e) => onProject(e.target.value)}>
-          {!projects.length && (
+          {!selectorProjects.length && (
             <option value="">{t("scope.selectProject")}</option>
           )}
-          {projects.map((item) => (
+          {selectorProjects.map((item) => (
             <option value={item.id} key={item.id}>
               {item.name}
             </option>

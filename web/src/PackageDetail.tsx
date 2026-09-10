@@ -68,7 +68,8 @@ export function PackageDetail({
         created_at: number;
         validation_passed: boolean;
       }[];
-    }>(`/api/skills/${skill.skill_id}/revisions`),
+      next?: string | null;
+    }>(`/api/skills/${skill.skill_id}/revisions`, { follow: true }),
     manifest = useResource<Manifest>(
       `/api/skills/${skill.skill_id}/manifest?revision=${revision}`,
     );

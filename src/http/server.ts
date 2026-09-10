@@ -497,9 +497,25 @@ export async function createHttpServer(config: LocalConfig) {
   app.put("/api/providers", async (request) =>
     providers.update(requestIdentity(request), request.body),
   );
-  app.get("/api/projects", async (request) => ({
-    items: await identityService.listProjects(requestIdentity(request)),
-  }));
+  app.get("/api/projects", async (request) => {
+    const query = z
+      .object({ after: z.string().max(200).optional() })
+      .parse(request.query);
+    const page = await identityService.listProjectsPage(
+      requestIdentity(request),
+      query.after,
+    );
+    if (query.after !== undefined && !page.items.length && page.next === null) {
+      // Continuation cursors must resolve; a stale key is a client error.
+      const probe = await identityService.listProjectsPage(
+        requestIdentity(request),
+        undefined,
+      );
+      if (!probe.items.some((row) => row.id === query.after))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+    }
+    return page;
+  });
   app.post("/api/projects", async (request) => {
     const body = z
       .object({
@@ -917,6 +933,7 @@ export async function createHttpServer(config: LocalConfig) {
         .object({
           project_ref: z.string(),
           kind: z.string().max(100).optional(),
+          after: z.string().max(200).optional(),
         })
         .parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
@@ -932,28 +949,52 @@ export async function createHttpServer(config: LocalConfig) {
         ]),
       );
     if (query.kind) selected = selected.where("kind", "=", query.kind);
+    // Issue #15: bounded pages with a (created_at,id) keyset so equal
+    // timestamps never skip or repeat rows.
+    let next = null;
+    if (query.after) {
+      const sep = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep));
+      const id = query.after.slice(sep + 1);
+      if (sep <= 0 || !id || !Number.isSafeInteger(at))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where((eb) =>
+        eb.or([
+          eb("created_at", "<", at),
+          eb.and([eb("created_at", "=", at), eb("id", "<", id)]),
+        ]),
+      );
+    }
+    const rows = await selected.orderBy("created_at", "desc").limit(101).execute();
+    const page = rows.length > 100 ? rows.slice(0, 100) : rows;
+    if (rows.length > 100) {
+      const anchor = page[99]!;
+      next = `${anchor.created_at}:${anchor.id}`;
+    }
     return {
-      items: (
-        await selected.orderBy("created_at", "desc").limit(100).execute()
-      ).map((row) => ({
+      items: page.map((row) => ({
         ...row,
         detail: redactMetadata(JSON.parse(row.detail)),
       })),
+      next,
     };
   });
   app.get("/api/installations", async (request) => {
     const actor = requestIdentity(request),
       query = z.object({ project_ref: z.string() }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
-    const items = await storage.db
+    const rows = await storage.db
       .selectFrom("client_installations")
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
       .where("user_id", "=", actor.userId)
       .where("project_id", "=", query.project_ref)
-      .limit(100)
+      .orderBy("id")
+      .limit(101)
       .execute();
+    const items = rows.length > 100 ? rows.slice(0, 100) : rows;
     return {
+      next: rows.length > 100 ? rows[99]!.id : null,
       items: items.map((row) => ({
         ...row,
         capabilities: JSON.parse(row.capabilities_json),
@@ -1053,7 +1094,10 @@ export async function createHttpServer(config: LocalConfig) {
     const actor = requestIdentity(request),
       id = (request.params as { id: string }).id;
     await forge.packages.authorizedSkill(actor, id);
-    const items = await storage.db
+    const query = z
+      .object({ after: z.string().max(200).optional() })
+      .parse(request.query);
+    let selected = storage.db
       .selectFrom("skill_revisions")
       .select([
         "revision",
@@ -1064,11 +1108,27 @@ export async function createHttpServer(config: LocalConfig) {
         "validation_json",
       ])
       .where("tenant_id", "=", actor.tenantId)
-      .where("skill_id", "=", id)
-      .orderBy("created_at", "desc")
-      .limit(50)
-      .execute();
+      .where("skill_id", "=", id);
+    if (query.after) {
+      const sep = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep));
+      const rev = query.after.slice(sep + 1);
+      if (sep <= 0 || !rev || !Number.isSafeInteger(at))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where((eb) =>
+        eb.or([
+          eb("created_at", "<", at),
+          eb.and([eb("created_at", "=", at), eb("revision", "<", rev)]),
+        ]),
+      );
+    }
+    const rows = await selected.orderBy("created_at", "desc").limit(51).execute();
+    const items = rows.length > 50 ? rows.slice(0, 50) : rows;
     return {
+      next:
+        rows.length > 50
+          ? `${rows[49]!.created_at}:${rows[49]!.revision}`
+          : null,
       items: items.map((row) => ({
         ...row,
         file_count: JSON.parse(row.manifest_json).files.length,

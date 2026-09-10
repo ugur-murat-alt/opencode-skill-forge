@@ -184,6 +184,30 @@ export class IdentityService {
       );
     return query.orderBy("id").limit(100).execute();
   }
+  /** Issue #15: bounded project page with a stable id keyset cursor. */
+  async listProjectsPage(identity: Identity, after?: string) {
+    const role = await this.authorize(identity, "read");
+    let query = this.db
+      .selectFrom("projects")
+      .selectAll()
+      .where("tenant_id", "=", identity.tenantId);
+    if (role !== "founder" && role !== "admin")
+      query = query.where(
+        "id",
+        "in",
+        this.db
+          .selectFrom("project_members")
+          .select("project_id")
+          .where("tenant_id", "=", identity.tenantId)
+          .where("user_id", "=", identity.userId),
+      );
+    if (after !== undefined) query = query.where("id", ">", after);
+    const rows = await query.orderBy("id").limit(101).execute();
+    return {
+      items: rows.length > 100 ? rows.slice(0, 100) : rows,
+      next: rows.length > 100 ? rows[99]!.id : null,
+    };
+  }
   async issueSession(
     userId: string,
     kind: "session" | "pairing" | "device",
