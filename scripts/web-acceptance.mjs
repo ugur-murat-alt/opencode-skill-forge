@@ -2182,7 +2182,19 @@ async function main() {
         }
         await page.getByLabel("Proje adı").fill(`removed-${Date.now()}`);
         await page.getByRole("button", { name: "Proje oluştur" }).click();
-        await page.waitForTimeout(1500);
+        // Silinen proje kapsam rozetinden çıkana kadar bekle; sabit gecikme
+        // hesap yenilemesi yavaş kaldığında yanlış kırmızı üretiyordu.
+        await page
+          .waitForFunction(
+            (name) =>
+              !(
+                document.querySelector('[data-testid="scope-badge"]')
+                  ?.textContent ?? ""
+              ).includes(name),
+            target.name,
+            { timeout: 8000 },
+          )
+          .catch(() => {});
         const afterRemoval = await page
           .locator('[data-testid="scope-badge"]')
           .innerText();
