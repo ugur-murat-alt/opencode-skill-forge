@@ -168,6 +168,8 @@ export interface DB {
     skill_id: string;
     revision: string;
     created_at: number;
+    owner: string | null;
+    expires_at: number | null;
   };
   run_revision_pins: {
     tenant_id: string;

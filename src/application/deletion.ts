@@ -74,17 +74,22 @@ export class DeletionService {
       skill_overrides: "proje override kaydı",
     };
     const references: string[] = [];
-    for (const table of tables)
-      if (
-        await db
-          .selectFrom(table)
-          .select("skill_id")
-          .where("tenant_id", "=", actor.tenantId)
-          .where("skill_id", "=", row.id)
-          .limit(1)
-          .executeTakeFirst()
-      )
-        references.push(labels[table]);
+    for (const table of tables) {
+      // Issue #12: an expired reader pin belongs to a dead process; it must
+      // not block deletion. Ownerless rows (backup pins) stay authoritative.
+      const now = Date.now();
+      let guard = db
+        .selectFrom(table)
+        .select("skill_id")
+        .where("tenant_id", "=", actor.tenantId)
+        .where("skill_id", "=", row.id)
+        .limit(1);
+      if (table === "revision_readers")
+        guard = guard.where((eb) =>
+          eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+        );
+      if (await guard.executeTakeFirst()) references.push(labels[table]);
+    }
     const unknownExecutions = await db
       .selectFrom("executions as e")
       .leftJoin("execution_revision_pins as p", (j) =>

@@ -16,6 +16,12 @@ import { validatePackage, type PackageManifest } from "./validate.js";
 import { secureRead, packageInventory } from "./paths.js";
 export type SkillScope = "workspace" | "personal" | "project" | "environment";
 
+/** Reader pin liveness (issue #12): pins owned by a live process are
+ * refreshed by a heartbeat; an expired pin is provably orphaned and cleared
+ * by the bounded reconcile sweep instead of blocking deletion forever. */
+const READER_LIVENESS_MS = 60_000;
+const READER_HEARTBEAT_MS = 20_000;
+
 /** Environment- and workspace-scoped skills require admin to change. */
 export function scopeWritePermission(scopeKey: string): "admin" | "write" {
   return scopeKey === "workspace" ||
@@ -55,6 +61,8 @@ export class PackageStore {
     ) => Promise<ScriptValidation>,
     readonly policy: Settings = {},
   ) {}
+  /** Process generation for revision reader liveness (issue #12). */
+  readonly generation = randomUUID();
   private async scope(
     identity: Identity,
     scope: SkillScope,
@@ -149,6 +157,16 @@ export class PackageStore {
       );
     return result;
   }
+  private heartbeat?: ReturnType<typeof setInterval>;
+  private touchReaders() {
+    if (this.readers.size === 0) return;
+    void this.storage.db
+      .updateTable("revision_readers")
+      .set({ expires_at: Date.now() + READER_LIVENESS_MS })
+      .where("owner", "=", this.generation)
+      .execute()
+      .catch(() => undefined);
+  }
   /** Holds a durable revision reference only for the callback's actual read lifetime. */
   async withRevision<T>(
     identity: Identity,
@@ -217,6 +235,8 @@ export class PackageStore {
             skill_id: skillId,
             revision,
             created_at: Date.now(),
+            owner: this.generation,
+            expires_at: Date.now() + READER_LIVENESS_MS,
           })
           .execute();
         return { skill, row };
@@ -225,6 +245,13 @@ export class PackageStore {
       this.readers.set(key, entry);
     }
     entry.count++;
+    if (!this.heartbeat) {
+      this.heartbeat = setInterval(
+        () => this.touchReaders(),
+        READER_HEARTBEAT_MS,
+      );
+      this.heartbeat.unref?.();
+    }
     try {
       const snapshot = await entry.ready;
       // TOCTOU close: re-resolve current access; the queued snapshot may
@@ -258,6 +285,10 @@ export class PackageStore {
       entry.count--;
       if (entry.count === 0) {
         this.readers.delete(key);
+        if (this.readers.size === 0) {
+          clearInterval(this.heartbeat);
+          this.heartbeat = undefined;
+        }
         await entry.ready.then(
           async () => {
             await this.storage.db
@@ -1062,6 +1093,34 @@ export class PackageStore {
     after?: { skill_id: string; revision: string },
   ) {
     await new IdentityService(this.storage.db).authorize(identity, "admin");
+    // Issue #12: bounded sweep of expired reader pins. A pin with an
+    // expired liveness window belongs to a dead process (the heartbeat
+    // would have refreshed a live one); clear it so a crash or a one-shot
+    // failed cleanup cannot block permanent deletion forever. Ownerless
+    // rows (backup pins) are never swept here.
+    const now = await this.storage.now();
+    const expired = await this.storage.db
+      .selectFrom("revision_readers")
+      .select("id")
+      .where("tenant_id", "=", identity.tenantId)
+      .where("expires_at", "is not", null)
+      .where("expires_at", "<", now)
+      .limit(1000)
+      .execute();
+    if (expired.length) {
+      await this.storage.db
+        .deleteFrom("revision_readers")
+        .where("tenant_id", "=", identity.tenantId)
+        .where(
+          "id",
+          "in",
+          expired.map((row) => row.id),
+        )
+        .execute();
+      process.stderr.write(
+        `Okuyucu uzlaştırması: ${expired.length} sahipsiz okuma kilidi temizlendi\n`,
+      );
+    }
     const { rows, pins } = await this.storage.db
       .transaction()
       .execute(async (tx) => {
@@ -1158,6 +1217,7 @@ export class PackageStore {
     return {
       checked: Math.min(rows.length, 25),
       issues,
+      cleared_readers: expired.length,
       next:
         rows.length > 25
           ? { skill_id: rows[24]!.skill_id, revision: rows[24]!.revision }

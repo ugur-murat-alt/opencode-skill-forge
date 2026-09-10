@@ -1383,6 +1383,8 @@ function validatePackage(name, files) {
 }
 
 // src/skills/store.ts
+var READER_LIVENESS_MS = 60000;
+var READER_HEARTBEAT_MS = 20000;
 function scopeWritePermission(scopeKey) {
   return scopeKey === "workspace" || scopeKey === "environment" || scopeKey.startsWith("environment:") ? "admin" : "write";
 }
@@ -1403,6 +1405,7 @@ class PackageStore {
     this.validateScripts = validateScripts;
     this.policy = policy;
   }
+  generation = randomUUID6();
   async scope(identity, scope, projectId) {
     if ((scope === "project" || scope === "environment") && !projectId)
       throw new ForgeError("project_required", "Proje/ortam kapsamı açık project_ref gerektirir.");
@@ -1437,6 +1440,14 @@ class PackageStore {
       throw new ForgeError("unsafe_package_path", "Paket yolu veri deposu dışında.");
     return result;
   }
+  heartbeat;
+  touchReaders() {
+    if (this.readers.size === 0)
+      return;
+    this.storage.db.updateTable("revision_readers").set({ expires_at: Date.now() + READER_LIVENESS_MS }).where("owner", "=", this.generation).execute().catch(() => {
+      return;
+    });
+  }
   async withRevision(identity, skillId, revision, read, audit = false) {
     const key = JSON.stringify([
       identity.tenantId,
@@ -1463,7 +1474,9 @@ class PackageStore {
           id,
           skill_id: skillId,
           revision,
-          created_at: Date.now()
+          created_at: Date.now(),
+          owner: this.generation,
+          expires_at: Date.now() + READER_LIVENESS_MS
         }).execute();
         return { skill, row };
       });
@@ -1471,6 +1484,10 @@ class PackageStore {
       this.readers.set(key, entry);
     }
     entry.count++;
+    if (!this.heartbeat) {
+      this.heartbeat = setInterval(() => this.touchReaders(), READER_HEARTBEAT_MS);
+      this.heartbeat.unref?.();
+    }
     try {
       const snapshot = await entry.ready;
       const current = await this.storage.db.selectFrom("skills").select(["scope_key", "owner_id", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).executeTakeFirst();
@@ -1483,6 +1500,10 @@ class PackageStore {
       entry.count--;
       if (entry.count === 0) {
         this.readers.delete(key);
+        if (this.readers.size === 0) {
+          clearInterval(this.heartbeat);
+          this.heartbeat = undefined;
+        }
         await entry.ready.then(async () => {
           await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "=", entry.id).execute();
         }, () => {
@@ -1545,12 +1566,14 @@ class PackageStore {
     });
   }
   async publish(identity, input) {
-    const scope = await this.scope(identity, input.scope, input.projectId);
-    let resolvedScope = scope;
-    if (input.scope === "environment" && !input.projectId && input.skillId) {
-      const current = await this.storage.db.selectFrom("skills").select("scope_key").where("tenant_id", "=", identity.tenantId).where("id", "=", input.skillId).executeTakeFirst();
-      if (current?.scope_key.startsWith("environment:"))
-        resolvedScope = current.scope_key;
+    let resolvedScope;
+    if (input.scope === "environment" && input.skillId && !input.projectId) {
+      const current = await this.authorizedSkill(identity, input.skillId, true);
+      if (!current.scope_key.startsWith("environment:"))
+        throw new ForgeError("project_required", "Proje/ortam kapsamı açık project_ref gerektirir.");
+      resolvedScope = current.scope_key;
+    } else {
+      resolvedScope = await this.scope(identity, input.scope, input.projectId);
     }
     const auth = new IdentityService(this.storage.db);
     await auth.authorize(identity, scopeWritePermission(input.scope), input.projectId);
@@ -1785,7 +1808,34 @@ class PackageStore {
     let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", identity.tenantId).where("scope_key", "in", scopes).where("archived", "=", 0).where("active_revision", "is not", null);
     for (const term of terms2)
       query = query.where(sql5`search_text like ${`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`} escape ${"\\"}`);
-    const rows = await query.orderBy("id").limit(100).execute();
+    const BATCH = 100;
+    let candidateAnchor = null;
+    let rankAnchor = null;
+    const invalidCursor = () => new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
+    if (input.after) {
+      if (input.after.startsWith("scan:")) {
+        candidateAnchor = input.after.slice("scan:".length);
+        if (!candidateAnchor)
+          throw invalidCursor();
+      } else {
+        const parts = input.after.split(":");
+        const score = Number(parts[0]);
+        const id = parts[1];
+        if (parts.length < 2 || parts.length > 3 || !id || !Number.isFinite(score) || score < 0 || score > 1)
+          throw invalidCursor();
+        rankAnchor = { score, id };
+        if (parts.length === 3) {
+          if (!parts[2])
+            throw invalidCursor();
+          candidateAnchor = parts[2] === "-" ? null : parts[2];
+        }
+      }
+    }
+    if (candidateAnchor)
+      query = query.where("id", ">", candidateAnchor);
+    const scannedRows = await query.orderBy("id").limit(BATCH + 1).execute();
+    const moreCandidates = scannedRows.length > BATCH;
+    const rows = moreCandidates ? scannedRows.slice(0, BATCH) : scannedRows;
     const since = Date.now() - 30 * 86400000;
     const usageRows = rows.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", (eb) => eb.fn.countAll().as("n")]).where("tenant_id", "=", identity.tenantId).where("skill_id", "in", rows.map((r) => r.id)).where("kind", "in", ["loaded", "entrypoint_executed"]).where("created_at", ">", since).groupBy("skill_id").execute() : [];
     const usage = new Map(usageRows.map((r) => [r.skill_id, Number(r.n)]));
@@ -1809,22 +1859,24 @@ class PackageStore {
         merged.push({ ...item, other_scopes: [], other_ids: [] });
     }
     let start = 0;
-    if (input.after) {
-      const sep = input.after.indexOf(":");
-      const score = Number(input.after.slice(0, sep));
-      const id = input.after.slice(sep + 1);
-      if (sep <= 0 || !id || !Number.isFinite(score) || score < 0 || score > 1)
-        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.");
-      const anchor = merged.findIndex((m) => m.score.toFixed(3) === score.toFixed(3) && m.row.id === id);
+    if (rankAnchor) {
+      const sep = rankAnchor.id;
+      const anchor = merged.findIndex((m) => m.score.toFixed(3) === rankAnchor.score.toFixed(3) && m.row.id === sep);
       if (anchor >= 0)
         start = anchor + 1;
       else
-        start = merged.findIndex((m) => m.score < score || m.score.toFixed(3) === score.toFixed(3) && m.row.id > id);
+        start = merged.findIndex((m) => m.score < rankAnchor.score || m.score.toFixed(3) === rankAnchor.score.toFixed(3) && m.row.id > sep);
       if (start < 0)
         start = merged.length;
     }
     const page = merged.slice(start, start + limit);
     const last = page[page.length - 1];
+    const lastCandidate = rows[rows.length - 1];
+    let next = null;
+    if (start + limit < merged.length && last) {
+      next = `${last.score.toFixed(3)}:${last.row.id}:${candidateAnchor ?? "-"}`;
+    } else if (moreCandidates && lastCandidate)
+      next = `scan:${lastCandidate.id}`;
     return {
       items: page.map((item) => ({
         skill_id: item.row.id,
@@ -1842,11 +1894,19 @@ class PackageStore {
         other_scopes: item.other_scopes,
         other_skill_ids: item.other_ids
       })),
-      next: start + limit < merged.length && last ? `${last.score.toFixed(3)}:${last.row.id}` : null
+      next,
+      scanned: rows.length
     };
   }
   async reconcile(identity, after) {
     await new IdentityService(this.storage.db).authorize(identity, "admin");
+    const now = await this.storage.now();
+    const expired = await this.storage.db.selectFrom("revision_readers").select("id").where("tenant_id", "=", identity.tenantId).where("expires_at", "is not", null).where("expires_at", "<", now).limit(1000).execute();
+    if (expired.length) {
+      await this.storage.db.deleteFrom("revision_readers").where("tenant_id", "=", identity.tenantId).where("id", "in", expired.map((row) => row.id)).execute();
+      process.stderr.write(`Okuyucu uzlaştırması: ${expired.length} sahipsiz okuma kilidi temizlendi
+`);
+    }
     const { rows, pins } = await this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("tenants").set({ name: sql5`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "admin");
@@ -1906,6 +1966,7 @@ class PackageStore {
     return {
       checked: Math.min(rows.length, 25),
       issues,
+      cleared_readers: expired.length,
       next: rows.length > 25 ? { skill_id: rows[24].skill_id, revision: rows[24].revision } : null,
       action: "verified_preserved"
     };
@@ -2020,9 +2081,17 @@ class DeletionService {
       skill_overrides: "proje override kaydı"
     };
     const references = [];
-    for (const table of tables)
-      if (await db.selectFrom(table).select("skill_id").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).limit(1).executeTakeFirst())
+    for (const table of tables) {
+      const now = Date.now();
+      let guard = db.selectFrom(table).select("skill_id").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).limit(1);
+      if (table === "revision_readers")
+        guard = guard.where((eb) => eb.or([
+          eb("expires_at", "is", null),
+          eb("expires_at", ">", now)
+        ]));
+      if (await guard.executeTakeFirst())
         references.push(labels[table]);
+    }
     const unknownExecutions = await db.selectFrom("executions as e").leftJoin("execution_revision_pins as p", (j) => j.onRef("p.tenant_id", "=", "e.tenant_id").onRef("p.execution_id", "=", "e.id")).select("e.id").where("e.tenant_id", "=", actor.tenantId).where("e.state", "=", "running").where("p.execution_id", "is", null).limit(1).executeTakeFirst();
     const unknownRuns = await db.selectFrom("runs as r").leftJoin("run_revision_pins as p", (j) => j.onRef("p.tenant_id", "=", "r.tenant_id").onRef("p.run_id", "=", "r.id")).select("r.id").where("r.tenant_id", "=", actor.tenantId).where("r.state", "=", "running").where("p.run_id", "is", null).limit(1).executeTakeFirst();
     if (unknownExecutions || unknownRuns)
@@ -2181,6 +2250,32 @@ class DeletionService {
       }
     return { operation_id: input.operation_id, items };
   }
+}
+
+// src/http/query-decode.ts
+function decodeQueryToolInput(query) {
+  const out = {};
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === undefined)
+      continue;
+    if (typeof value !== "string") {
+      out[key] = value;
+      continue;
+    }
+    if (key === "result_content" || key === "inventory") {
+      if (value === "true")
+        out[key] = true;
+      else if (value === "false")
+        out[key] = false;
+      else
+        out[key] = value;
+    } else if (key === "limit" || key === "observation_days" || key === "after") {
+      const n = Number(value);
+      out[key] = value.trim() !== "" && Number.isFinite(n) ? n : value;
+    } else
+      out[key] = value;
+  }
+  return out;
 }
 
 // src/http/throttle.ts
@@ -4912,7 +5007,7 @@ class ForgeService {
     this.dataDir = dataDir;
     this.policy = policy;
     this.queue = new JobQueue(storage, policy);
-    this.packages = new PackageStore(storage, dataDir);
+    this.packages = new PackageStore(storage, dataDir, undefined, policy);
     this.cursors = new CursorCodec(signingKey);
   }
   async artifact(identity, executionId, reference) {
@@ -5507,6 +5602,17 @@ class BudgetService {
   constructor(storage) {
     this.storage = storage;
   }
+  async reconcileAccount(identity, limitMicros) {
+    if (!Number.isSafeInteger(limitMicros) || limitMicros < 0)
+      throw new ForgeError("invalid_budget", "Bütçe limiti geçersiz.");
+    await this.storage.db.insertInto("budget_accounts").values({
+      tenant_id: identity.tenantId,
+      user_id: identity.userId,
+      limit_micros: limitMicros,
+      reserved_micros: 0,
+      spent_micros: 0
+    }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doUpdateSet({ limit_micros: limitMicros }).where("reserved_micros", "=", 0)).execute();
+  }
   async reserve(identity, runId, reservationId, micros) {
     if (!Number.isSafeInteger(micros) || micros < 0)
       throw new ForgeError("invalid_budget", "Bütçe rezervasyonu geçersiz.");
@@ -6041,13 +6147,7 @@ function productionHandler(storage, dataDir, vault, local) {
     try {
       const tools = staging.tools();
       const budget = new BudgetService(storage);
-      await storage.db.insertInto("budget_accounts").values({
-        tenant_id: identity.tenantId,
-        user_id: identity.userId,
-        limit_micros: snapshot.values.maxCostMicros,
-        reserved_micros: 0,
-        spent_micros: 0
-      }).onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing()).execute();
+      await budget.reconcileAccount(identity, snapshot.values.maxCostMicros);
       let call = 0;
       const stream = async (model, context, options) => {
         await storage.db.transaction().execute((tx) => new JobQueue(storage).assertLease(tx, run));
@@ -6520,6 +6620,14 @@ var readerMigration = {
   }
 };
 
+// src/storage/reader-liveness-migration.ts
+var readerLivenessMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("revision_readers").addColumn("owner", "text").execute();
+    await db.schema.alterTable("revision_readers").addColumn("expires_at", "bigint").execute();
+  }
+};
+
 // src/storage/run-pin-migration.ts
 var runPinMigration = {
   up: async (db) => {
@@ -6801,6 +6909,7 @@ async function openDatabase(options) {
     "020_prompt_drain": promptDrainMigration,
     "019_package_deletion": deletionMigration,
     "018_revision_readers": readerMigration,
+    "029_reader_liveness": readerLivenessMigration,
     "017_run_pins": runPinMigration,
     "016_execution_pins": executionPinMigration,
     "015_flag_import": flagImportMigration,
@@ -7142,7 +7251,11 @@ async function createHttpServer(config) {
         }
         if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash15("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
-        if (sessionOnly && !["/api/my-memberships", "/api/tenants/switch", "/api/logout"].includes(path))
+        if (sessionOnly && ![
+          "/api/my-memberships",
+          "/api/tenants/switch",
+          "/api/logout"
+        ].includes(path))
           throw new ForgeError("tenant_unavailable", "Seçili organizasyona erişiminiz yok; aktif üyeliğinizi seçin.", 403);
       } else if (oidc2 && request.headers.authorization?.startsWith("Bearer ")) {
         identity = {
@@ -7495,18 +7608,24 @@ async function createHttpServer(config) {
       `personal:${actor.userId}`,
       `project:${project_ref}`
     ];
-    const [active, packages, profiles, usage, jobs, events] = await Promise.all([
+    const [active, packages, profiles, usage, jobs, account, events] = await Promise.all([
       storage.db.selectFrom("runs").select((eb) => eb.fn.countAll().as("n")).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", project_ref).where("state", "not in", terminalStates).executeTakeFirstOrThrow(),
       storage.db.selectFrom("skills").select((eb) => eb.fn.countAll().as("n")).where("tenant_id", "=", actor.tenantId).where("scope_key", "in", scope).where("archived", "=", 0).executeTakeFirstOrThrow(),
       providers.list(actor),
       storage.db.selectFrom("budget_reservations as b").innerJoin("runs as r", (j) => j.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select(["b.actual_micros", "b.state"]).where("b.tenant_id", "=", actor.tenantId).where("b.user_id", "=", actor.userId).where("r.project_id", "=", project_ref).limit(1e4).execute(),
       forge.invoke("forge_report", actor, { project_ref, limit: 5 }),
+      storage.db.selectFrom("budget_accounts").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).executeTakeFirst(),
       storage.db.selectFrom("audit_events").select(["id", "kind", "created_at", "detail"]).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where((eb) => eb.or([
         eb("project_id", "=", project_ref),
         eb("project_id", "is", null)
       ])).orderBy("created_at", "desc").limit(5).execute()
     ]);
     return {
+      account_budget: account ? {
+        limit_micros: account.limit_micros,
+        reserved_micros: account.reserved_micros,
+        spent_micros: account.spent_micros
+      } : null,
       active_jobs: Number(active.n),
       skill_packages: Number(packages.n),
       model_status: profiles.some((p) => p.profile) ? "configured" : "unconfigured",
@@ -7589,7 +7708,7 @@ async function createHttpServer(config) {
       throw new ForgeError("installation_unavailable", "Kurulum başka kapsama ait.", 403);
     return { id: body.id, status: "recorded" };
   });
-  app.get("/api/skills", async (request) => forge.invoke("forge_search", requestIdentity(request), request.query));
+  app.get("/api/skills", async (request) => forge.invoke("forge_search", requestIdentity(request), decodeQueryToolInput(request.query)));
   app.get("/api/skills/:id/revisions", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
@@ -7667,7 +7786,7 @@ async function createHttpServer(config) {
     const skill = await forge.packages.authorizedSkill(requestIdentity(request), request.params.id, true);
     return packageManager(requestIdentity(request), skill.project_id ?? undefined).rollback(requestIdentity(request), request.params.id, body.target_revision, body.base_revision);
   });
-  app.get("/api/runs", async (request) => forge.invoke("forge_report", requestIdentity(request), request.query));
+  app.get("/api/runs", async (request) => forge.invoke("forge_report", requestIdentity(request), decodeQueryToolInput(request.query)));
   app.get("/api/runs/:id/attempts", async (request) => {
     const query = z14.object({ after: z14.coerce.number().int().nonnegative().default(0) }).parse(request.query);
     return forge.queue.attempts(requestIdentity(request), request.params.id, query.after);
