@@ -1,6 +1,16 @@
 import { DirectoryReaders } from "./directory-readers.js";
 import { randomUUID, createHash } from "node:crypto";
-import { mkdir, open, rename, lstat, readdir, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  mkdir,
+  open,
+  rename,
+  lstat,
+  readdir,
+  rmdir,
+  rm,
+  unlink,
+} from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseHandle } from "../storage/database.js";
@@ -13,16 +23,112 @@ import { scoreSkill, scopePriority } from "./scoring.js";
 import { JobQueue } from "../jobs/queue.js";
 import { ForgeError } from "../domain/errors.js";
 import { validatePackage, type PackageManifest } from "./validate.js";
-import { secureRead, packageInventory } from "./paths.js";
+import { secureRead, packageInventory, validatePackagePath } from "./paths.js";
 export type SkillScope = "workspace" | "personal" | "project" | "environment";
 
-/** Reader pin liveness (issue #12): pins owned by a live process are
- * refreshed by a heartbeat; an expired pin is provably orphaned and cleared
- * by the bounded reconcile sweep instead of blocking deletion forever. */
-const READER_LIVENESS_MS = 60_000;
-const READER_HEARTBEAT_MS = 20_000;
-/** Grace window before the reconcile sweep reclaims crashed-publish leftovers. */
-const RECLAIM_GRACE_MS = 10 * 60_000;
+/** Issue #27/#28: okuyucu kirasi, publish/reclaim sahipliği ve geri kazanım
+ * aralığı için test edilebilir süreler. Üretim varsayılanları değişmez. */
+export interface PackageStoreLiveness {
+  /** Reader/claim lease süresi (varsayılan 60 sn). */
+  leaseMs?: number;
+  /** Lease yenileme aralığı (varsayılan lease/3). */
+  heartbeatMs?: number;
+  /** Claim'siz eski kalıntılar için mtime bekleme penceresi (varsayılan 10 dk). */
+  reclaimGraceMs?: number;
+  /** Tur başına incelenen en fazla dizin girdisi (varsayılan 200). */
+  reclaimBudget?: number;
+  /** Publisher'ın aktif reclaim claim'ini bekleme süresi (varsayılan 2 sn). */
+  claimWaitMs?: number;
+}
+const LEASE_DEFAULT_MS = 60_000;
+const RECLAIM_GRACE_DEFAULT_MS = 10 * 60_000;
+const RECLAIM_BUDGET_DEFAULT = 200;
+const CLAIM_WAIT_DEFAULT_MS = 2_000;
+const CLAIM_POLL_MS = 25;
+const RECLAIM_ERROR_LIMIT = 20;
+const RECLAIM_ENTRY_LIMIT = 10_000;
+const STAGING_NAME =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REVISION_NAME = /^[a-f0-9]{64}$/;
+const SKILL_DIR_NAME = /^[0-9a-zA-Z-]{1,100}$/;
+
+/** Issue #28: referanssız dizinleri symlink takip etmeden, fd çapalı ve
+ * sınırlı biçimde kaldırır. Kaldırma ilkeleri removeRevision ile aynıdır. */
+async function removeTreeAnchored(
+  root: string,
+  relativePath: string,
+  maxEntries = RECLAIM_ENTRY_LIMIT,
+): Promise<void> {
+  validatePackagePath(relativePath);
+  if (process.platform !== "linux")
+    throw new ForgeError(
+      "safe_delete_unavailable",
+      "Güvenli geri kazanım bu platformda hazır değil.",
+      503,
+    );
+  const resolvedRoot = resolve(root);
+  const segments = relativePath.split("/");
+  const handles: Awaited<ReturnType<typeof open>>[] = [];
+  try {
+    let current = "/";
+    for (const segment of [
+      "",
+      ...resolvedRoot.split("/").filter(Boolean),
+      ...segments.slice(0, -1),
+    ]) {
+      if (segment) current = join(current, segment);
+      const handle = await open(
+        current,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      handles.push(handle);
+      current = `/proc/self/fd/${handle.fd}`;
+    }
+    const name = segments.at(-1)!;
+    const target = join(current, name);
+    const info = await lstat(target);
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new ForgeError(
+        "unsafe_path",
+        "Geri kazanım hedefi gerçek dizin değil.",
+      );
+    let visited = 0;
+    async function erase(parent: string, entry: string): Promise<void> {
+      if (++visited > maxEntries)
+        throw new ForgeError(
+          "cleanup_limit",
+          "Geri kazanım girdi sınırı aşıldı.",
+        );
+      try {
+        const child = join(parent, entry);
+        const childInfo = await lstat(child);
+        if (!childInfo.isDirectory() || childInfo.isSymbolicLink()) {
+          await unlink(child);
+          return;
+        }
+        const handle = await open(
+          child,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        try {
+          const anchor = `/proc/self/fd/${handle.fd}`;
+          for (const nested of await readdir(anchor))
+            await erase(anchor, nested);
+        } finally {
+          await handle.close();
+        }
+        await rmdir(child);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    await erase(current, name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()));
+  }
+}
 
 /** Environment- and workspace-scoped skills require admin to change. */
 export function scopeWritePermission(scopeKey: string): "admin" | "write" {
@@ -44,16 +150,46 @@ export function searchText(value: string) {
     .replace(/[İı]/g, "i")
     .toLocaleLowerCase("en-US");
 }
+interface ReaderEntry {
+  id: string;
+  tenantId: string;
+  count: number;
+  ready: Promise<{ skill: Skill; row: SkillRevision }>;
+  /** Pin insert'i commit etti mi; commit öncesi yokluk lease kaybı sayılmaz. */
+  sealed: boolean;
+  leaseLost: boolean;
+}
+interface Claim {
+  tenantId: string;
+  kind: "revision" | "staging";
+  key: string;
+  lost: boolean;
+}
+interface ReclaimSkipped {
+  referenced: number;
+  claims: number;
+  symlinks: number;
+  grace: number;
+}
+interface ReclaimError {
+  path: string;
+  reason: string;
+}
+const emptySkipped = (): ReclaimSkipped => ({
+  referenced: 0,
+  claims: 0,
+  symlinks: 0,
+  grace: 0,
+});
 export class PackageStore {
   private directories = new DirectoryReaders();
-  private readers = new Map<
-    string,
-    {
-      id: string;
-      count: number;
-      ready: Promise<{ skill: Skill; row: SkillRevision }>;
-    }
-  >();
+  private readers = new Map<string, ReaderEntry>();
+  /** Issue #27: lease süresi ve yenileme DB saatinden hesaplanır. */
+  readonly leaseMs: number;
+  readonly heartbeatMs: number;
+  readonly reclaimGraceMs: number;
+  readonly reclaimBudget: number;
+  readonly claimWaitMs: number;
   constructor(
     readonly storage: DatabaseHandle,
     readonly dataDir: string,
@@ -62,7 +198,29 @@ export class PackageStore {
       manifest: PackageManifest,
     ) => Promise<ScriptValidation>,
     readonly policy: Settings = {},
-  ) {}
+    liveness: PackageStoreLiveness = {},
+  ) {
+    this.leaseMs = Math.max(50, liveness.leaseMs ?? LEASE_DEFAULT_MS);
+    this.heartbeatMs = Math.max(
+      10,
+      Math.min(
+        this.leaseMs - 10,
+        liveness.heartbeatMs ?? Math.floor(this.leaseMs / 3),
+      ),
+    );
+    this.reclaimGraceMs = Math.max(
+      0,
+      liveness.reclaimGraceMs ?? RECLAIM_GRACE_DEFAULT_MS,
+    );
+    this.reclaimBudget = Math.max(
+      1,
+      liveness.reclaimBudget ?? RECLAIM_BUDGET_DEFAULT,
+    );
+    this.claimWaitMs = Math.max(
+      0,
+      liveness.claimWaitMs ?? CLAIM_WAIT_DEFAULT_MS,
+    );
+  }
   /** Process generation for revision reader liveness (issue #12). */
   readonly generation = randomUUID();
   private async scope(
@@ -160,14 +318,104 @@ export class PackageStore {
     return result;
   }
   private heartbeat?: ReturnType<typeof setInterval>;
+  private touchInFlight?: Promise<void>;
+  /** Issue #27: yenileme hatası sessizce yutulmaz; etkilenen pin'ler
+   * sonuç kabulünden önce tek tek doğrulanır (bkz. assertReadLease). */
   private touchReaders() {
-    if (this.readers.size === 0) return;
-    void this.storage.db
+    if (this.readers.size === 0 || this.touchInFlight) return;
+    this.touchInFlight = this.touchReadersOnce()
+      .catch((error) => {
+        process.stderr.write(
+          `Okuyucu lease yenilemesi doğrulanacak: ${(error as Error).message}\n`,
+        );
+      })
+      .finally(() => {
+        this.touchInFlight = undefined;
+      });
+  }
+  private async touchReadersOnce() {
+    const now = await this.storage.now();
+    const refreshed = await this.storage.db
       .updateTable("revision_readers")
-      .set({ expires_at: Date.now() + READER_LIVENESS_MS })
+      .set({ expires_at: now + this.leaseMs })
       .where("owner", "=", this.generation)
-      .execute()
-      .catch(() => undefined);
+      .where("kind", "=", "read")
+      .returning("id")
+      .execute();
+    const live = new Set(refreshed.map((row) => row.id));
+    const missing = [...this.readers.values()].filter(
+      (reader) => !live.has(reader.id),
+    );
+    if (!missing.length) return;
+    // Yarış payı: insert henüz commit etmemiş olabilir; var olan satırları doğrula.
+    const present = await this.storage.db
+      .selectFrom("revision_readers")
+      .select("id")
+      .where("owner", "=", this.generation)
+      .where("tenant_id", "in", [
+        ...new Set(missing.map((reader) => reader.tenantId)),
+      ])
+      .where(
+        "id",
+        "in",
+        missing.map((reader) => reader.id),
+      )
+      .execute();
+    const ids = new Set(present.map((row) => row.id));
+    for (const reader of missing)
+      if (reader.sealed && !ids.has(reader.id)) reader.leaseLost = true;
+  }
+  private readerLeaseError() {
+    // Mevcut hata sözlüğü kodu yeniden kullanılır: kilit kaybı okuyucunun
+    // kapandığı anlamına gelir ve sonuç kabul edilmez.
+    return new ForgeError(
+      "reader_closed",
+      "Okuma kilidi kaybedildi; sonuç kabul edilmedi.",
+      409,
+    );
+  }
+  /** Issue #27: yeni I/O ve sonuç kabulü yalnız geçerli sahipli lease ile yapılır. */
+  private async assertReadLease(
+    entry: ReaderEntry,
+    tenantId: string,
+    skillId: string,
+    revision: string,
+  ) {
+    if (entry.leaseLost) throw this.readerLeaseError();
+    try {
+      const now = await this.storage.now();
+      const pin = await this.storage.db
+        .selectFrom("revision_readers")
+        .select(["owner", "expires_at"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", entry.id)
+        .executeTakeFirst();
+      if (
+        !pin ||
+        pin.owner !== this.generation ||
+        pin.expires_at === null ||
+        pin.expires_at <= now
+      ) {
+        entry.leaseLost = true;
+        throw this.readerLeaseError();
+      }
+      // Fiziksel silme koordinasyonu: tombstone (revision satırı) önce iner.
+      const survives = await this.storage.db
+        .selectFrom("skill_revisions")
+        .select("revision")
+        .where("tenant_id", "=", tenantId)
+        .where("skill_id", "=", skillId)
+        .where("revision", "=", revision)
+        .executeTakeFirst();
+      if (!survives) {
+        entry.leaseLost = true;
+        throw this.readerLeaseError();
+      }
+    } catch (error) {
+      if (error instanceof ForgeError) throw error;
+      entry.leaseLost = true;
+      throw this.readerLeaseError();
+    }
   }
   /** Holds a durable revision reference only for the callback's actual read lifetime. */
   async withRevision<T>(
@@ -187,71 +435,88 @@ export class PackageStore {
     let entry = this.readers.get(key);
     if (!entry) {
       const id = randomUUID();
-      const ready = this.storage.db.transaction().execute(async (tx) => {
-        await tx
-          .updateTable("tenants")
-          .set({ name: sql`name` })
-          .where("id", "=", identity.tenantId)
-          .execute();
-        const skill = await tx
-          .selectFrom("skills")
-          .selectAll()
-          .where("tenant_id", "=", identity.tenantId)
-          .where("id", "=", skillId)
-          .executeTakeFirst();
-        if (
-          !skill ||
-          (!audit &&
-            skill.scope_key.startsWith("personal:") &&
-            skill.owner_id !== identity.userId)
-        )
-          throw new ForgeError(
-            "skill_unavailable",
-            "Paket bulunamadı veya yetkiniz yok.",
-            404,
+      // Issue #27: expiry DB saatinden üretilir; uygulama saati kayması
+      // lease süresini erkene çekemez. Entry, ilk await'ten önce map'e
+      // yazılır ki eşzamanlı okumalar tek pin paylaşsın.
+      const ready = (async () => {
+        const insertedAt = await this.storage.now();
+        return this.storage.db.transaction().execute(async (tx) => {
+          await tx
+            .updateTable("tenants")
+            .set({ name: sql`name` })
+            .where("id", "=", identity.tenantId)
+            .execute();
+          const skill = await tx
+            .selectFrom("skills")
+            .selectAll()
+            .where("tenant_id", "=", identity.tenantId)
+            .where("id", "=", skillId)
+            .executeTakeFirst();
+          if (
+            !skill ||
+            (!audit &&
+              skill.scope_key.startsWith("personal:") &&
+              skill.owner_id !== identity.userId)
+          )
+            throw new ForgeError(
+              "skill_unavailable",
+              "Paket bulunamadı veya yetkiniz yok.",
+              404,
+            );
+          await this.assertEnvAccess(tx, identity, skill.scope_key);
+          await new IdentityService(tx).authorize(
+            identity,
+            audit ? "admin" : "read",
+            audit ? undefined : (skill.project_id ?? undefined),
           );
-        await this.assertEnvAccess(tx, identity, skill.scope_key);
-        await new IdentityService(tx).authorize(
-          identity,
-          audit ? "admin" : "read",
-          audit ? undefined : (skill.project_id ?? undefined),
-        );
-        const row = await tx
-          .selectFrom("skill_revisions")
-          .selectAll()
-          .where("tenant_id", "=", identity.tenantId)
-          .where("skill_id", "=", skillId)
-          .where("revision", "=", revision)
-          .executeTakeFirst();
-        if (!row)
-          throw new ForgeError(
-            "revision_unavailable",
-            "Paket sürümü bulunamadı.",
-            404,
-          );
-        await tx
-          .insertInto("revision_readers")
-          .values({
-            tenant_id: identity.tenantId,
-            id,
-            skill_id: skillId,
-            revision,
-            created_at: Date.now(),
-            owner: this.generation,
-            expires_at: Date.now() + READER_LIVENESS_MS,
-          })
-          .execute();
-        return { skill, row };
-      });
-      entry = { id, count: 0, ready };
+          const row = await tx
+            .selectFrom("skill_revisions")
+            .selectAll()
+            .where("tenant_id", "=", identity.tenantId)
+            .where("skill_id", "=", skillId)
+            .where("revision", "=", revision)
+            .executeTakeFirst();
+          if (!row)
+            throw new ForgeError(
+              "revision_unavailable",
+              "Paket sürümü bulunamadı.",
+              404,
+            );
+          await tx
+            .insertInto("revision_readers")
+            .values({
+              tenant_id: identity.tenantId,
+              id,
+              skill_id: skillId,
+              revision,
+              created_at: insertedAt,
+              owner: this.generation,
+              expires_at: insertedAt + this.leaseMs,
+              kind: "read",
+            })
+            .execute();
+          return { skill, row };
+        });
+      })();
+      entry = {
+        id,
+        tenantId: identity.tenantId,
+        count: 0,
+        ready,
+        sealed: false,
+        leaseLost: false,
+      };
+      void ready.then(
+        () => {
+          entry!.sealed = true;
+        },
+        () => undefined,
+      );
       this.readers.set(key, entry);
     }
     entry.count++;
     if (!this.heartbeat) {
-      this.heartbeat = setInterval(
-        () => this.touchReaders(),
-        READER_HEARTBEAT_MS,
-      );
+      this.heartbeat = setInterval(() => this.touchReaders(), this.heartbeatMs);
       this.heartbeat.unref?.();
     }
     try {
@@ -282,7 +547,11 @@ export class PackageStore {
         audit ? "admin" : "read",
         audit ? undefined : (current.project_id ?? undefined),
       );
-      return await read(snapshot.skill, snapshot.row);
+      await this.assertReadLease(entry, identity.tenantId, skillId, revision);
+      const result = await read(snapshot.skill, snapshot.row);
+      // I/O tamamlanmış olsa da sonuç, silme tombstone'u inmiş bir lease ile kabul edilmez.
+      await this.assertReadLease(entry, identity.tenantId, skillId, revision);
+      return result;
     } finally {
       entry.count--;
       if (entry.count === 0) {
@@ -504,6 +773,21 @@ export class PackageStore {
     // creation (validation, sandbox, candidate change, DB/CAS) reclaims it.
     // After a successful rename the staging root is already empty, so the
     // finally never touches the immutable destination.
+    // Issue #28: ownership is a DB claim with a heartbeat so a live long
+    // validation survives reclaim, while a dead/stalled one expires.
+    const stagingRelative = relative(resolve(this.dataDir), stagingRoot);
+    const stagingClaim = await this.tryAcquireClaim(
+      identity.tenantId,
+      "staging",
+      stagingRelative,
+    );
+    if (!stagingClaim)
+      throw new ForgeError(
+        "candidate_changed",
+        "Staging alanı sahipliği alınamadı; yeniden yayınlayın.",
+        409,
+      );
+    let revisionClaim: Claim | null = null;
     try {
       const candidate = join(stagingRoot, input.name);
       await mkdir(candidate, { recursive: true, mode: 0o700 });
@@ -555,6 +839,8 @@ export class PackageStore {
             "Test sırasında aday paketi değişti.",
             409,
           );
+      // Uzun doğrulama bitti: staging sahipliği hâlâ bizde mi?
+      await this.assertClaim(stagingClaim);
       const packageRelative = join(
         "tenants",
         createHash("sha256").update(identity.tenantId).digest("hex"),
@@ -567,6 +853,20 @@ export class PackageStore {
       );
       const destination = this.canonicalPath(packageRelative);
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      // Issue #28: reclaim aynı destination'ı bizi beklemeden silemez.
+      const revisionKey = `${id}/${manifest.hash}`;
+      revisionClaim = await this.acquireClaimWithWait(
+        identity.tenantId,
+        "revision",
+        revisionKey,
+        this.claimWaitMs,
+      );
+      if (!revisionClaim)
+        throw new ForgeError(
+          "revision_conflict",
+          "Aynı sürüm dizini başka bir yayın veya geri kazanım tarafından kullanılıyor.",
+          409,
+        );
       try {
         await rename(candidate, destination);
       } catch (error) {
@@ -588,6 +888,7 @@ export class PackageStore {
               409,
             );
       }
+      await this.assertClaim(revisionClaim);
       if (process.platform !== "win32") {
         const fd = await open(dirname(destination), "r");
         try {
@@ -596,6 +897,8 @@ export class PackageStore {
           await fd.close();
         }
       }
+      // Commit kapısı için DB saati; claim bu andan sonra tazelenmiş olmalı.
+      const claimNow = await this.storage.now();
       try {
         return await this.storage.db.transaction().execute(async (tx) => {
           // Lock authorization membership through the short publication transaction.
@@ -612,6 +915,25 @@ export class PackageStore {
           );
           if (input.run)
             await new JobQueue(this.storage).assertLease(tx, input.run);
+          // Issue #28: commit öncesi sahiplik kapısı. Claim süresi dolup
+          // reclaim dizini geri kazandıysa DB satırı yazılmaz.
+          const claimRow = await tx
+            .selectFrom("package_claims")
+            .select(["owner", "expires_at"])
+            .where("tenant_id", "=", identity.tenantId)
+            .where("kind", "=", "revision")
+            .where("claim_key", "=", revisionKey)
+            .executeTakeFirst();
+          if (
+            !claimRow ||
+            claimRow.owner !== this.generation ||
+            claimRow.expires_at <= claimNow
+          )
+            throw new ForgeError(
+              "revision_conflict",
+              "Sürüm dizini bu işlem sırasında geri kazanıldı; yeniden deneyin.",
+              409,
+            );
           // Issue #2: verify the current source scope inside the publication
           // transaction. A concurrent setScope() changes scope_key/project_id
           // without touching active_revision, so the CAS below alone cannot
@@ -779,6 +1101,8 @@ export class PackageStore {
         throw error;
       }
     } finally {
+      if (revisionClaim) await this.releaseClaim(revisionClaim);
+      await this.releaseClaim(stagingClaim);
       await rm(stagingRoot, { recursive: true, force: true }).catch(
         () => undefined,
       );
@@ -1102,105 +1426,136 @@ export class PackageStore {
       scanned: rows.length,
     };
   }
-  async reconcile(
-    identity: Identity,
-    after?: { skill_id: string; revision: string },
-  ) {
-    await new IdentityService(this.storage.db).authorize(identity, "admin");
-    // Issue #12: bounded sweep of expired reader pins. A pin with an
-    // expired liveness window belongs to a dead process (the heartbeat
-    // would have refreshed a live one); clear it so a crash or a one-shot
-    // failed cleanup cannot block permanent deletion forever. Ownerless
-    // rows (backup pins) are never swept here.
-    const now = await this.storage.now();
-    const expired = await this.storage.db
+  /** Issue #12/#27: süresi geçmiş sahipli okuma pin'lerini atomik expiry
+   * koşuluyla temizler. Seçim ile DELETE arasında yenilenen pin silinmez. */
+  private async sweepReaders(tenantId: string, now: number) {
+    const candidates = await this.storage.db
       .selectFrom("revision_readers")
       .select("id")
-      .where("tenant_id", "=", identity.tenantId)
+      .where("tenant_id", "=", tenantId)
       .where("expires_at", "is not", null)
       .where("expires_at", "<", now)
       .limit(1000)
       .execute();
-    if (expired.length) {
-      await this.storage.db
+    if (!candidates.length) return 0;
+    const deleted = await this.storage.db
+      .deleteFrom("revision_readers")
+      .where("tenant_id", "=", tenantId)
+      .where(
+        "id",
+        "in",
+        candidates.map((row) => row.id),
+      )
+      // Bariyer: aradaki heartbeat pin'i yenilediyse koşul tutmaz.
+      .where("expires_at", "<", now)
+      .returning("id")
+      .execute();
+    process.stderr.write(
+      `Okuyucu uzlaştırması: ${deleted.length} süresi geçmiş okuma kilidi temizlendi` +
+        (candidates.length > deleted.length
+          ? `; ${candidates.length - deleted.length} pin yenilendi\n`
+          : "\n"),
+    );
+    return deleted.length;
+  }
+  /** Issue #27/#28: açık yönetici mutasyonu. SQLite/PostgreSQL ortak yolu. */
+  async reclaim(
+    identity: Identity,
+    options: {
+      /** Bu DB zamanından eski sahipsiz (yedek) pin'leri açıkça kurtarır. */
+      recoverOwnerlessBefore?: number;
+      /** Denetim kaydı yalnız HTTP mutasyonu gibi açık çağrılarda yazılır. */
+      audit?: boolean;
+    } = {},
+  ) {
+    await new IdentityService(this.storage.db).authorize(identity, "admin");
+    const now = await this.storage.now();
+    const clearedReaders = await this.sweepReaders(identity.tenantId, now);
+    const scan = await this.reclaimScan(identity.tenantId, now);
+    let reclaimedOwnerless = 0;
+    if (options.recoverOwnerlessBefore !== undefined) {
+      const cutoff = options.recoverOwnerlessBefore;
+      if (!Number.isFinite(cutoff) || cutoff <= 0 || cutoff > now)
+        throw new ForgeError(
+          "invalid_input",
+          "Sahipsiz pin kurtarma kesimi DB saatinden ileri olamaz.",
+          400,
+        );
+      const recovered = await this.storage.db
         .deleteFrom("revision_readers")
         .where("tenant_id", "=", identity.tenantId)
-        .where(
-          "id",
-          "in",
-          expired.map((row) => row.id),
-        )
+        .where("owner", "is", null)
+        .where("created_at", "<", cutoff)
+        .returning("id")
         .execute();
-      process.stderr.write(
-        `Okuyucu uzlaştırması: ${expired.length} sahipsiz okuma kilidi temizlendi\n`,
-      );
+      reclaimedOwnerless = recovered.length;
     }
-    // Issue #13: bounded filesystem reclaim. Staging areas owned by crashed
-    // publishers and revision directories renamed before their DB record
-    // landed are removed after a grace window so an in-flight publish (or a
-    // CAS winner reusing the same revision path) is never destroyed.
-    const tenantDir = join(
-      "tenants",
-      createHash("sha256").update(identity.tenantId).digest("hex"),
-    );
-    const graceCutoff = now - RECLAIM_GRACE_MS;
-    let reclaimedStaging = 0;
-    let reclaimedRevisions = 0;
-    const staleDir = async (path: string) => {
-      const st = await lstat(path).catch(() => null);
-      if (!st || !st.isDirectory() || st.isSymbolicLink()) return false;
-      return st.mtimeMs <= graceCutoff;
+    const result = {
+      cleared_readers: clearedReaders,
+      reclaimed_staging: scan.reclaimed_staging,
+      reclaimed_revisions: scan.reclaimed_revisions,
+      reclaimed_ownerless: reclaimedOwnerless,
+      skipped: scan.skipped,
+      failed: scan.failed,
+      errors: scan.errors,
+      reclaim_complete: scan.reclaim_complete,
     };
-    const stagingRoot = this.canonicalPath(join(tenantDir, "staging"));
-    for (const entry of (await readdir(stagingRoot).catch(() => [])).slice(
-      0,
-      100,
-    )) {
-      if (reclaimedStaging + reclaimedRevisions >= 100) break;
-      const full = join(stagingRoot, entry);
-      if (!(await staleDir(full))) continue;
-      await rm(full, { recursive: true, force: true }).catch(() => undefined);
-      reclaimedStaging++;
-    }
-    const packagesRoot = this.canonicalPath(join(tenantDir, "packages"));
-    for (const scope of (await readdir(packagesRoot).catch(() => [])).slice(
-      0,
-      50,
-    )) {
-      if (reclaimedStaging + reclaimedRevisions >= 100) break;
-      const scopeDir = join(packagesRoot, scope);
-      if ((await lstat(scopeDir).catch(() => null))?.isSymbolicLink()) continue;
-      for (const skill of (await readdir(scopeDir).catch(() => [])).slice(
-        0,
-        50,
-      )) {
-        if (reclaimedStaging + reclaimedRevisions >= 100) break;
-        const revisionsDir = join(scopeDir, skill, "revisions");
-        for (const revision of (
-          await readdir(revisionsDir).catch(() => [])
-        ).slice(0, 50)) {
-          if (reclaimedStaging + reclaimedRevisions >= 100) break;
-          const full = join(revisionsDir, revision);
-          if (!(await staleDir(full))) continue;
-          const referenced = await this.storage.db
-            .selectFrom("skill_revisions")
-            .select("skill_id")
-            .where("tenant_id", "=", identity.tenantId)
-            .where("skill_id", "=", skill)
-            .where("revision", "=", revision)
-            .executeTakeFirst();
-          if (referenced) continue;
-          await rm(full, { recursive: true, force: true }).catch(
-            () => undefined,
-          );
-          reclaimedRevisions++;
-        }
-      }
-    }
-    if (reclaimedStaging + reclaimedRevisions)
+    if (options.audit)
+      await this.storage.db
+        .insertInto("audit_events")
+        .values({
+          tenant_id: identity.tenantId,
+          id: randomUUID(),
+          user_id: identity.userId,
+          project_id: null,
+          kind: "package.reclaim",
+          detail: JSON.stringify({
+            cleared_readers: result.cleared_readers,
+            reclaimed_staging: result.reclaimed_staging,
+            reclaimed_revisions: result.reclaimed_revisions,
+            reclaimed_ownerless: result.reclaimed_ownerless,
+            failed: result.failed,
+          }),
+          created_at: now,
+        })
+        .execute();
+    if (result.reclaimed_staging + result.reclaimed_revisions + result.failed)
       process.stderr.write(
-        `Depo uzlaştırması: ${reclaimedStaging} staging alanı, ${reclaimedRevisions} referanssız revision dizini geri kazanıldı\n`,
+        `Depo geri kazanımı: ${result.reclaimed_staging} staging, ${result.reclaimed_revisions} revision, ${result.failed} hata\n`,
       );
+    return result;
+  }
+  /** Issue #28: HTTP GET yalnız bu salt raporu çağırır; dosya silmez. */
+  async reconcile(
+    identity: Identity,
+    after?: { skill_id: string; revision: string },
+    options: { reclaim?: boolean; recoverOwnerlessBefore?: number } = {},
+  ) {
+    const mutation =
+      options.reclaim === false
+        ? {
+            cleared_readers: 0,
+            reclaimed_staging: 0,
+            reclaimed_revisions: 0,
+            reclaimed_ownerless: 0,
+            skipped: emptySkipped(),
+            failed: 0,
+            errors: [] as ReclaimError[],
+            reclaim_complete: false,
+          }
+        : await this.reclaim(identity, {
+            recoverOwnerlessBefore: options.recoverOwnerlessBefore,
+          });
+    const report = await this.integrityReport(identity, after);
+    return { ...report, ...mutation };
+  }
+  /** Bütünlük taraması: pin'ler sahipli ve sürelidir; crash sonrası sweep kurtarır. */
+  private async integrityReport(
+    identity: Identity,
+    after?: { skill_id: string; revision: string },
+  ) {
+    await new IdentityService(this.storage.db).authorize(identity, "admin");
+    const insertedAt = await this.storage.now();
     const { rows, pins } = await this.storage.db
       .transaction()
       .execute(async (tx) => {
@@ -1234,7 +1589,10 @@ export class PackageStore {
           id: randomUUID(),
           skill_id: row.skill_id,
           revision: row.revision,
-          created_at: Date.now(),
+          created_at: insertedAt,
+          owner: this.generation,
+          expires_at: insertedAt + this.leaseMs,
+          kind: "integrity" as const,
         }));
         if (pins.length)
           await tx.insertInto("revision_readers").values(pins).execute();
@@ -1291,20 +1649,489 @@ export class PackageStore {
             "in",
             pins.map((pin) => pin.id),
           )
-          .execute();
+          .execute()
+          .catch((error) => {
+            // Temizlik hatası raporu düşürmez; pin süresi dolunca sweep kurtarır.
+            process.stderr.write(
+              `Bütünlük pini temizliği sonraki süpürmeye bırakıldı: ${(error as Error).message}\n`,
+            );
+          });
     }
     await new IdentityService(this.storage.db).authorize(identity, "admin");
     return {
       checked: Math.min(rows.length, 25),
       issues,
-      cleared_readers: expired.length,
-      reclaimed_staging: reclaimedStaging,
-      reclaimed_revisions: reclaimedRevisions,
       next:
         rows.length > 25
           ? { skill_id: rows[24]!.skill_id, revision: rows[24]!.revision }
           : null,
       action: "verified_preserved" as const,
+    };
+  }
+  private claims = new Map<string, Claim>();
+  private claimHeartbeat?: ReturnType<typeof setInterval>;
+  private claimTouchInFlight?: Promise<void>;
+  private claimId(claim: Claim) {
+    return `${claim.kind}\u0000${claim.key}`;
+  }
+  private registerClaim(
+    tenantId: string,
+    kind: Claim["kind"],
+    key: string,
+  ): Claim {
+    const claim: Claim = { tenantId, kind, key, lost: false };
+    this.claims.set(this.claimId(claim), claim);
+    if (!this.claimHeartbeat) {
+      this.claimHeartbeat = setInterval(
+        () => this.touchClaims(),
+        this.heartbeatMs,
+      );
+      this.claimHeartbeat.unref?.();
+    }
+    return claim;
+  }
+  private touchClaims() {
+    if (!this.claims.size || this.claimTouchInFlight) return;
+    this.claimTouchInFlight = this.touchClaimsOnce()
+      .catch((error) => {
+        process.stderr.write(
+          `Claim yenilemesi doğrulanacak: ${(error as Error).message}\n`,
+        );
+      })
+      .finally(() => {
+        this.claimTouchInFlight = undefined;
+      });
+  }
+  private async touchClaimsOnce() {
+    const now = await this.storage.now();
+    const refreshed = await this.storage.db
+      .updateTable("package_claims")
+      .set({ expires_at: now + this.leaseMs })
+      .where("owner", "=", this.generation)
+      .returning(["kind", "claim_key"])
+      .execute();
+    const live = new Set(
+      refreshed.map((row) => `${row.kind}\u0000${row.claim_key}`),
+    );
+    for (const [id, claim] of this.claims) if (!live.has(id)) claim.lost = true;
+  }
+  private claimError(claim: Claim) {
+    return claim.kind === "staging"
+      ? // Staging sahipliği kaybı aday alanının geri kazanılmasıdır.
+        new ForgeError(
+          "candidate_changed",
+          "Staging alanı sahipliği kaybedildi; yeniden yayınlayın.",
+          409,
+        )
+      : new ForgeError(
+          "revision_conflict",
+          "Sürüm dizini sahipliği kaybedildi; yeniden deneyin.",
+          409,
+        );
+  }
+  /** Issue #28: yayıncı, sahipliği kaybettiyse yeni I/O/sonuç kabul etmez. */
+  private async assertClaim(claim: Claim) {
+    if (claim.lost) throw this.claimError(claim);
+    try {
+      const now = await this.storage.now();
+      const row = await this.storage.db
+        .selectFrom("package_claims")
+        .select(["owner", "expires_at"])
+        .where("tenant_id", "=", claim.tenantId)
+        .where("kind", "=", claim.kind)
+        .where("claim_key", "=", claim.key)
+        .executeTakeFirst();
+      if (!row || row.owner !== this.generation) {
+        claim.lost = true;
+        throw this.claimError(claim);
+      }
+      if (row.expires_at <= now) {
+        const renewed = await this.storage.db
+          .updateTable("package_claims")
+          .set({ expires_at: now + this.leaseMs })
+          .where("tenant_id", "=", claim.tenantId)
+          .where("kind", "=", claim.kind)
+          .where("claim_key", "=", claim.key)
+          .where("owner", "=", this.generation)
+          .returning("owner")
+          .executeTakeFirst();
+        if (!renewed) {
+          claim.lost = true;
+          throw this.claimError(claim);
+        }
+      }
+    } catch (error) {
+      if (error instanceof ForgeError) throw error;
+      throw this.claimError(claim);
+    }
+  }
+  private async releaseClaim(claim: Claim) {
+    this.claims.delete(this.claimId(claim));
+    if (!this.claims.size) {
+      clearInterval(this.claimHeartbeat);
+      this.claimHeartbeat = undefined;
+    }
+    await this.storage.db
+      .deleteFrom("package_claims")
+      .where("tenant_id", "=", claim.tenantId)
+      .where("kind", "=", claim.kind)
+      .where("claim_key", "=", claim.key)
+      .where("owner", "=", this.generation)
+      .execute()
+      .catch((error) => {
+        process.stderr.write(
+          `Claim bırakılamadı (${claim.kind}/${claim.key}): ${(error as Error).message}\n`,
+        );
+      });
+  }
+  private async tryAcquireClaim(
+    tenantId: string,
+    kind: Claim["kind"],
+    key: string,
+  ): Promise<Claim | null> {
+    const now = await this.storage.now();
+    const inserted = await this.storage.db
+      .insertInto("package_claims")
+      .values({
+        tenant_id: tenantId,
+        kind,
+        claim_key: key,
+        owner: this.generation,
+        created_at: now,
+        expires_at: now + this.leaseMs,
+      })
+      .onConflict((oc) =>
+        oc.columns(["tenant_id", "kind", "claim_key"]).doNothing(),
+      )
+      .returning("owner")
+      .executeTakeFirst();
+    if (inserted?.owner === this.generation)
+      return this.registerClaim(tenantId, kind, key);
+    const taken = await this.storage.db
+      .updateTable("package_claims")
+      .set({
+        owner: this.generation,
+        created_at: now,
+        expires_at: now + this.leaseMs,
+      })
+      .where("tenant_id", "=", tenantId)
+      .where("kind", "=", kind)
+      .where("claim_key", "=", key)
+      .where("expires_at", "<", now)
+      .returning("owner")
+      .executeTakeFirst();
+    return taken?.owner === this.generation
+      ? this.registerClaim(tenantId, kind, key)
+      : null;
+  }
+  private async acquireClaimWithWait(
+    tenantId: string,
+    kind: Claim["kind"],
+    key: string,
+    waitMs: number,
+  ): Promise<Claim | null> {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const claim = await this.tryAcquireClaim(tenantId, kind, key);
+      if (claim) return claim;
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+    }
+  }
+  private reclaimReason(error: unknown) {
+    if (error instanceof ForgeError) return error.code;
+    return (error as NodeJS.ErrnoException).code ?? "reclaim_remove_failed";
+  }
+  /** ENOENT yokluk sayılır; diğer FS hataları tanılama için yükseltilir. */
+  private async statOptional(path: string) {
+    return lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+  }
+  private async reclaimStagingEntry(
+    tenantId: string,
+    relativePath: string,
+    graceCutoff: number,
+    now: number,
+  ): Promise<"reclaimed" | "grace" | "claim" | "symlink" | "gone"> {
+    const full = this.canonicalPath(relativePath);
+    const info = await this.statOptional(full);
+    if (!info) return "gone";
+    if (info.isSymbolicLink() || !info.isDirectory()) return "symlink";
+    const existing = await this.storage.db
+      .selectFrom("package_claims")
+      .select(["owner", "expires_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("kind", "=", "staging")
+      .where("claim_key", "=", relativePath)
+      .executeTakeFirst();
+    if (existing && existing.expires_at > now) return "claim";
+    const expiredClaim = Boolean(existing);
+    const claim = await this.tryAcquireClaim(tenantId, "staging", relativePath);
+    if (!claim) return "claim";
+    try {
+      if (!expiredClaim && info.mtimeMs > graceCutoff) return "grace";
+      const fresh = await this.statOptional(full);
+      if (!fresh || fresh.isSymbolicLink() || !fresh.isDirectory())
+        return "gone";
+      await removeTreeAnchored(this.dataDir, relativePath);
+      return "reclaimed";
+    } finally {
+      await this.releaseClaim(claim);
+    }
+  }
+  private async reclaimRevisionEntry(
+    tenantId: string,
+    relativePath: string,
+    skillId: string,
+    revision: string,
+    graceCutoff: number,
+    now: number,
+  ): Promise<
+    "reclaimed" | "grace" | "claim" | "symlink" | "gone" | "referenced"
+  > {
+    const full = this.canonicalPath(relativePath);
+    const info = await this.statOptional(full);
+    if (!info) return "gone";
+    if (info.isSymbolicLink() || !info.isDirectory()) return "symlink";
+    const claimKey = `${skillId}/${revision}`;
+    const existing = await this.storage.db
+      .selectFrom("package_claims")
+      .select(["owner", "expires_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("kind", "=", "revision")
+      .where("claim_key", "=", claimKey)
+      .executeTakeFirst();
+    if (existing && existing.expires_at > now) return "claim";
+    const expiredClaim = Boolean(existing);
+    const referenced = await this.storage.db
+      .selectFrom("skill_revisions")
+      .select("revision")
+      .where("tenant_id", "=", tenantId)
+      .where("skill_id", "=", skillId)
+      .where("revision", "=", revision)
+      .executeTakeFirst();
+    if (referenced) return "referenced";
+    const claim = await this.tryAcquireClaim(tenantId, "revision", claimKey);
+    if (!claim) return "claim";
+    try {
+      // Bariyer: claim sonrası referans yeniden okunur; aradaki publish kazanır.
+      const stillReferenced = await this.storage.db
+        .selectFrom("skill_revisions")
+        .select("revision")
+        .where("tenant_id", "=", tenantId)
+        .where("skill_id", "=", skillId)
+        .where("revision", "=", revision)
+        .executeTakeFirst();
+      if (stillReferenced) return "referenced";
+      if (!expiredClaim && info.mtimeMs > graceCutoff) return "grace";
+      const fresh = await lstat(full).catch(() => null);
+      if (!fresh || fresh.isSymbolicLink() || !fresh.isDirectory())
+        return "gone";
+      await removeTreeAnchored(this.dataDir, relativePath);
+      return "reclaimed";
+    } finally {
+      await this.releaseClaim(claim);
+    }
+  }
+  /** Issue #28: bounded tur + kararlı imleç; başarı/atlama/hata ayrı sayılır. */
+  private async reclaimScan(tenantId: string, now: number) {
+    const tenantDir = join(
+      "tenants",
+      createHash("sha256").update(tenantId).digest("hex"),
+    );
+    const stagingRootRelative = join(tenantDir, "staging");
+    const packagesRootRelative = join(tenantDir, "packages");
+    const state = await this.storage.db
+      .selectFrom("package_scan_state")
+      .select(["staging_cursor", "packages_cursor"])
+      .where("tenant_id", "=", tenantId)
+      .executeTakeFirst();
+    let stagingCursor = state?.staging_cursor ?? "";
+    let packagesCursor = state?.packages_cursor ?? "";
+    let budget = this.reclaimBudget;
+    const skipped = emptySkipped();
+    const errors: ReclaimError[] = [];
+    let failed = 0;
+    let reclaimedStaging = 0;
+    let reclaimedRevisions = 0;
+    const graceCutoff = now - this.reclaimGraceMs;
+    const note = (
+      outcome: "grace" | "claim" | "symlink" | "referenced" | "gone",
+    ) => {
+      if (outcome === "grace") skipped.grace++;
+      else if (outcome === "claim") skipped.claims++;
+      else if (outcome === "symlink") skipped.symlinks++;
+      else if (outcome === "referenced") skipped.referenced++;
+    };
+    /** Okuma hatası boş liste sayılmaz; tanılamaya eklenir (ENOENT yokluk). */
+    const listing = async (path: string, label: string) => {
+      try {
+        return await readdir(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        failed++;
+        if (errors.length < RECLAIM_ERROR_LIMIT)
+          errors.push({ path: label, reason: this.reclaimReason(error) });
+        return [];
+      }
+    };
+    // 1) Staging alanları: her turda imleçten devam eder, sona gelince sarar.
+    const stagingRootPath = this.canonicalPath(stagingRootRelative);
+    const stagingNames = (await listing(stagingRootPath, stagingRootRelative))
+      .filter((name) => STAGING_NAME.test(name))
+      .sort();
+    let stagingLast = stagingCursor;
+    let stagingWrapped = false;
+    for (const name of stagingNames) {
+      if (name <= stagingLast) continue;
+      if (budget <= 0) break;
+      budget--;
+      stagingLast = name;
+      const relativePath = `${stagingRootRelative}/${name}`;
+      try {
+        const outcome = await this.reclaimStagingEntry(
+          tenantId,
+          relativePath,
+          graceCutoff,
+          now,
+        );
+        if (outcome === "reclaimed") reclaimedStaging++;
+        else note(outcome);
+      } catch (error) {
+        failed++;
+        if (errors.length < RECLAIM_ERROR_LIMIT)
+          errors.push({
+            path: relativePath,
+            reason: this.reclaimReason(error),
+          });
+      }
+    }
+    if (!stagingNames.some((name) => name > stagingLast)) {
+      stagingLast = "";
+      stagingWrapped = true;
+    }
+    stagingCursor = stagingLast;
+    // 2) Paket ağacı: lexicographic DFS, kararlı devam imleci.
+    let packagesLast = packagesCursor;
+    let exhausted = true;
+    const packagesRoot = this.canonicalPath(packagesRootRelative);
+    const scopeNames = (await listing(packagesRoot, packagesRootRelative))
+      .filter((name) => /^[a-f0-9]{20}$/.test(name))
+      .sort();
+    outer: for (const scope of scopeNames) {
+      const scopeDir = this.canonicalPath(`${packagesRootRelative}/${scope}`);
+      let scopeInfo: Awaited<ReturnType<typeof lstat>> | null;
+      try {
+        scopeInfo = await this.statOptional(scopeDir);
+      } catch (error) {
+        failed++;
+        if (errors.length < RECLAIM_ERROR_LIMIT)
+          errors.push({
+            path: `${packagesRootRelative}/${scope}`,
+            reason: this.reclaimReason(error),
+          });
+        continue;
+      }
+      if (
+        !scopeInfo ||
+        !scopeInfo.isDirectory() ||
+        scopeInfo.isSymbolicLink()
+      ) {
+        if (scopeInfo?.isSymbolicLink()) skipped.symlinks++;
+        continue;
+      }
+      const skillNames = (
+        await listing(scopeDir, `${packagesRootRelative}/${scope}`)
+      )
+        .filter((name) => SKILL_DIR_NAME.test(name))
+        .sort();
+      for (const skill of skillNames) {
+        const revisionsRelative = `${packagesRootRelative}/${scope}/${skill}/revisions`;
+        const revisionsDir = this.canonicalPath(revisionsRelative);
+        let revisionsInfo: Awaited<ReturnType<typeof lstat>> | null;
+        try {
+          revisionsInfo = await this.statOptional(revisionsDir);
+        } catch (error) {
+          failed++;
+          if (errors.length < RECLAIM_ERROR_LIMIT)
+            errors.push({
+              path: revisionsRelative,
+              reason: this.reclaimReason(error),
+            });
+          continue;
+        }
+        if (
+          !revisionsInfo ||
+          !revisionsInfo.isDirectory() ||
+          revisionsInfo.isSymbolicLink()
+        ) {
+          if (revisionsInfo?.isSymbolicLink()) skipped.symlinks++;
+          continue;
+        }
+        const revisionNames = (await listing(revisionsDir, revisionsRelative))
+          .filter((name) => REVISION_NAME.test(name))
+          .sort();
+        for (const revision of revisionNames) {
+          const cursorKey = `${scope}/${skill}/${revision}`;
+          if (packagesLast && cursorKey <= packagesLast) continue;
+          if (budget <= 0) {
+            exhausted = false;
+            break outer;
+          }
+          budget--;
+          packagesLast = cursorKey;
+          const relativePath = `${revisionsRelative}/${revision}`;
+          try {
+            const outcome = await this.reclaimRevisionEntry(
+              tenantId,
+              relativePath,
+              skill,
+              revision,
+              graceCutoff,
+              now,
+            );
+            if (outcome === "reclaimed") reclaimedRevisions++;
+            else note(outcome);
+          } catch (error) {
+            failed++;
+            if (errors.length < RECLAIM_ERROR_LIMIT)
+              errors.push({
+                path: `${skill}/revisions/${revision}`,
+                reason: this.reclaimReason(error),
+              });
+          }
+        }
+      }
+    }
+    if (exhausted) {
+      packagesLast = "";
+      packagesCursor = "";
+    } else packagesCursor = packagesLast;
+    await this.storage.db
+      .insertInto("package_scan_state")
+      .values({
+        tenant_id: tenantId,
+        staging_cursor: stagingCursor,
+        packages_cursor: packagesCursor,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column("tenant_id").doUpdateSet({
+          staging_cursor: stagingCursor,
+          packages_cursor: packagesCursor,
+          updated_at: now,
+        }),
+      )
+      .execute();
+    return {
+      reclaimed_staging: reclaimedStaging,
+      reclaimed_revisions: reclaimedRevisions,
+      skipped,
+      failed,
+      errors,
+      reclaim_complete: stagingWrapped && exhausted,
     };
   }
 }

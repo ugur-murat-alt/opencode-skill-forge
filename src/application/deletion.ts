@@ -23,6 +23,8 @@ export class DeletionService {
     actor: Identity,
     project: string,
     item: Input["items"][number],
+    /** DB saatinden okunan tek karşılaştırma anı; transaction dışında alınır. */
+    now: number,
   ) {
     await new IdentityService(db).authorize(actor, "write", project);
     const row = await db
@@ -71,10 +73,11 @@ export class DeletionService {
       skill_overrides: "proje override kaydı",
     };
     const references: string[] = [];
+    // Issue #27: lease karşılaştırması uygulama saatiyle değil DB saatiyle
+    // yapılır; okuma süresi ile silme kararı aynı ölçeği kullanır.
     for (const table of tables) {
       // Issue #12: an expired reader pin belongs to a dead process; it must
       // not block deletion. Ownerless rows (backup pins) stay authoritative.
-      const now = Date.now();
       let guard = db
         .selectFrom(table)
         .select("skill_id")
@@ -136,6 +139,7 @@ export class DeletionService {
       input.project_ref,
     );
     const items = [];
+    const now = await this.storage.now();
     for (const item of input.items)
       try {
         const row = await this.check(
@@ -143,6 +147,7 @@ export class DeletionService {
           actor,
           input.project_ref,
           item,
+          now,
         );
         const count = await this.storage.db
           .selectFrom("skill_revisions")
@@ -304,6 +309,8 @@ export class DeletionService {
         const hash = createHash("sha256")
           .update(JSON.stringify({ action: "delete", item }))
           .digest("hex");
+        // Issue #27: transaction dışında alınan DB saati tüm guard'lara verilir.
+        const dbNow = await this.storage.now();
         await this.storage.db.transaction().execute(async (tx) => {
           await tx
             .updateTable("tenants")
@@ -344,7 +351,13 @@ export class DeletionService {
             );
             return;
           }
-          const row = await this.check(tx, actor, input.project_ref, item);
+          const row = await this.check(
+            tx,
+            actor,
+            input.project_ref,
+            item,
+            dbNow,
+          );
           const changed = await tx
             .updateTable("skills")
             .set({ active_revision: null })

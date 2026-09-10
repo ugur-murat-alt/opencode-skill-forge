@@ -170,6 +170,21 @@ export interface DB {
     created_at: number;
     owner: string | null;
     expires_at: number | null;
+    kind: "read" | "integrity" | "backup";
+  };
+  package_claims: {
+    tenant_id: string;
+    kind: "revision" | "staging";
+    claim_key: string;
+    owner: string;
+    expires_at: number;
+    created_at: number;
+  };
+  package_scan_state: {
+    tenant_id: string;
+    staging_cursor: string;
+    packages_cursor: string;
+    updated_at: number;
   };
   run_revision_pins: {
     tenant_id: string;

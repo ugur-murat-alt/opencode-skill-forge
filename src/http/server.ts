@@ -740,11 +740,29 @@ export async function createHttpServer(config: LocalConfig) {
         "İki cursor alanı birlikte gerekiyor.",
         400,
       );
+    // Issue #28: salt bütünlük raporu; dosya silmez, okuyucu pin'i süpürmez.
     return new PackageStore(storage, config.dataDir).reconcile(
       requestIdentity(request),
       query.after_skill
         ? { skill_id: query.after_skill, revision: query.after_revision! }
         : undefined,
+      { reclaim: false },
+    );
+  });
+  app.post("/api/packages/integrity", async (request) => {
+    const body = z
+      .object({
+        recover_ownerless_before: z.number().int().positive().optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    // Issue #27/#28: mutasyon ayrı yöntemde, admin ACL ve denetim kaydıyla.
+    return new PackageStore(storage, config.dataDir).reclaim(
+      requestIdentity(request),
+      {
+        recoverOwnerlessBefore: body.recover_ownerless_before,
+        audit: true,
+      },
     );
   });
   const packageManager = (actor: Identity, projectId?: string) => {

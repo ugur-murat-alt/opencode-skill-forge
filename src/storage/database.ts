@@ -10,6 +10,7 @@ import { environmentUniquenessMigration } from "./environment-uniqueness-migrati
 import { bindingIdentityMigration } from "./binding-identity-migration.js";
 import { readerMigration } from "./reader-migration.js";
 import { readerLivenessMigration } from "./reader-liveness-migration.js";
+import { fileLifecycleMigration } from "./file-lifecycle-migration.js";
 import { runPinMigration } from "./run-pin-migration.js";
 import { executionPinMigration } from "./execution-pin-migration.js";
 import { flagImportMigration } from "./flag-import-migration.js";
@@ -100,6 +101,7 @@ export async function openDatabase(options: {
     "019_package_deletion": deletionMigration,
     "018_revision_readers": readerMigration,
     "029_reader_liveness": readerLivenessMigration,
+    "030_file_lifecycle": fileLifecycleMigration,
     "017_run_pins": runPinMigration,
     "016_execution_pins": executionPinMigration,
     "015_flag_import": flagImportMigration,
