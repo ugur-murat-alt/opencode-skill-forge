@@ -573,6 +573,28 @@ export class PackageStore {
         );
         if (input.run)
           await new JobQueue(this.storage).assertLease(tx, input.run);
+        // Issue #2: verify the current source scope inside the publication
+        // transaction. A concurrent setScope() changes scope_key/project_id
+        // without touching active_revision, so the CAS below alone cannot
+        // detect it; the stale-authorized publish must stop here too.
+        if (existing) {
+          const current = await tx
+            .selectFrom("skills")
+            .select(["scope_key", "project_id"])
+            .where("tenant_id", "=", identity.tenantId)
+            .where("id", "=", id)
+            .executeTakeFirst();
+          if (
+            current?.scope_key !== resolvedScope ||
+            current.project_id !==
+              (input.scope === "project" ? input.projectId! : null)
+          )
+            throw new ForgeError(
+              "revision_conflict",
+              "Paket kapsamı eşzamanlı değişti; güncel yetkiyle yeniden yayınlayın.",
+              409,
+            );
+        }
         const now = Date.now();
         if (!existing)
           await tx
@@ -629,6 +651,13 @@ export class PackageStore {
           .where("managed", "=", 1)
           .where("protected", "=", 0)
           .where("pinned", "=", 0);
+        update = update
+          .where("scope_key", "=", resolvedScope)
+          .where(
+            "project_id",
+            input.scope === "project" ? "=" : "is",
+            input.scope === "project" ? input.projectId! : null,
+          );
         update =
           input.baseRevision === null
             ? update.where("active_revision", "is", null)
