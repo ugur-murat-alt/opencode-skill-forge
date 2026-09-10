@@ -1884,6 +1884,15 @@ class IdentityService {
     }).execute();
     return token;
   }
+  async firstActiveTenant(userId) {
+    return this.db.selectFrom("memberships").select("tenant_id").where("user_id", "=", userId).where("disabled", "=", 0).orderBy("tenant_id").executeTakeFirst();
+  }
+  async sessionIdentity(token) {
+    const session = await this.db.selectFrom("auth_sessions").select("user_id").where("token_hash", "=", createHash6("sha256").update(token).digest("hex")).where("kind", "=", "session").where("revoked", "=", 0).where("expires_at", ">", Date.now()).executeTakeFirst();
+    if (!session)
+      throw new ForgeError("unauthorized", "Oturum geçersiz veya süresi doldu.", 401);
+    return { userId: session.user_id, tenantId: "" };
+  }
   async authenticate(token, tenantId, kind = "session") {
     const session = await this.db.selectFrom("auth_sessions").select("user_id").where("token_hash", "=", createHash6("sha256").update(token).digest("hex")).where("kind", "=", kind).where("revoked", "=", 0).where("expires_at", ">", Date.now()).executeTakeFirst();
     if (!session)
@@ -4904,6 +4913,46 @@ class ForgeWorker {
     } else
       this.loops.push(this.localLoop("skill_evolve"));
   }
+  async sweepOutbox() {
+    if (!this.boss)
+      return;
+    const now = await this.queue.storage.now();
+    const livenessMs = this.options.livenessMs ?? 60000;
+    const stranded = this.queue.storage.db.selectFrom("runs").select("id").where((eb) => eb.or([
+      eb.and([eb("state", "=", "running"), eb("lease_until", "<", now)]),
+      eb.and([
+        eb("state", "=", "retry_wait"),
+        eb("available_at", "<=", now)
+      ]),
+      eb.and([
+        eb("state", "=", "queued"),
+        eb("available_at", "<=", now - livenessMs)
+      ])
+    ]));
+    const orphans = await this.queue.storage.db.selectFrom("runs as r").innerJoin("outbox as o", (join14) => join14.onRef("o.tenant_id", "=", "r.tenant_id").onRef("o.run_id", "=", "r.id")).select("r.id").where("r.state", "=", "queued").where("o.delivered", "=", 1).where("r.available_at", "<=", now - livenessMs).limit(100).execute();
+    if (orphans.length)
+      process.stderr.write(`Kuyruk uzlaştırması: ${orphans.length} queued iş teslim penceresi aştı; yeniden teslim ediliyor
+`);
+    await this.queue.storage.db.updateTable("outbox").set({ delivered: 0 }).where("run_id", "in", stranded).execute();
+    const pending = await this.queue.storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "o.tenant_id").onRef("r.id", "=", "o.run_id")).select([
+      "r.tenant_id",
+      "r.id",
+      "r.user_id",
+      "r.kind",
+      "r.available_at",
+      "r.state"
+    ]).where("o.delivered", "=", 0).where((eb) => eb.not(eb.exists(eb.selectFrom("tenant_lifecycle as l").select("l.tenant_id").whereRef("l.tenant_id", "=", "r.tenant_id").where("l.frozen", "=", 1)))).limit(100).execute();
+    for (const run of pending) {
+      if (!terminalStates.includes(run.state))
+        await this.boss.send(run.kind, { tenantId: run.tenant_id, runId: run.id }, {
+          singletonKey: run.id,
+          singletonSeconds: 1,
+          startAfter: new Date(run.available_at),
+          group: { id: `${run.tenant_id}:${run.user_id}` }
+        });
+      await this.queue.storage.db.updateTable("outbox").set({ delivered: 1 }).where("tenant_id", "=", run.tenant_id).where("run_id", "=", run.id).execute();
+    }
+  }
   async pause() {
     await new Promise((resolve13) => setTimeout(resolve13, this.options.pollMs ?? 100));
   }
@@ -4925,36 +4974,7 @@ class ForgeWorker {
   async outboxLoop() {
     while (!this.stopping) {
       try {
-        const now = await this.queue.storage.now();
-        const stranded = this.queue.storage.db.selectFrom("runs").select("id").where((eb) => eb.or([
-          eb.and([
-            eb("state", "=", "running"),
-            eb("lease_until", "<", now)
-          ]),
-          eb.and([
-            eb("state", "=", "retry_wait"),
-            eb("available_at", "<=", now)
-          ])
-        ]));
-        await this.queue.storage.db.updateTable("outbox").set({ delivered: 0 }).where("run_id", "in", stranded).execute();
-        const pending = await this.queue.storage.db.selectFrom("outbox as o").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "o.tenant_id").onRef("r.id", "=", "o.run_id")).select([
-          "r.tenant_id",
-          "r.id",
-          "r.user_id",
-          "r.kind",
-          "r.available_at",
-          "r.state"
-        ]).where("o.delivered", "=", 0).where((eb) => eb.not(eb.exists(eb.selectFrom("tenant_lifecycle as l").select("l.tenant_id").whereRef("l.tenant_id", "=", "r.tenant_id").where("l.frozen", "=", 1)))).limit(100).execute();
-        for (const run of pending) {
-          if (!terminalStates.includes(run.state))
-            await this.boss.send(run.kind, { tenantId: run.tenant_id, runId: run.id }, {
-              singletonKey: run.id,
-              singletonSeconds: 1,
-              startAfter: new Date(run.available_at),
-              group: { id: `${run.tenant_id}:${run.user_id}` }
-            });
-          await this.queue.storage.db.updateTable("outbox").set({ delivered: 1 }).where("tenant_id", "=", run.tenant_id).where("run_id", "=", run.id).execute();
-        }
+        await this.sweepOutbox();
       } catch {
         process.stderr.write(`Outbox teslimi yeniden denenecek
 `);
@@ -8447,9 +8467,19 @@ async function createHttpServer(config) {
       const tenant = typeof request.headers["x-forge-tenant"] === "string" ? request.headers["x-forge-tenant"] : request.cookies.forge_tenant ?? "local";
       const sessionToken = request.cookies.forge_session;
       if (sessionToken) {
-        identity = await identityService.authenticate(sessionToken, tenant);
+        let sessionOnly = false;
+        try {
+          identity = await identityService.authenticate(sessionToken, tenant);
+        } catch (error) {
+          if (!(error instanceof ForgeError) || error.status !== 403)
+            throw error;
+          sessionOnly = true;
+          identity = await identityService.sessionIdentity(sessionToken);
+        }
         if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash20("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
+        if (sessionOnly && !["/api/my-memberships", "/api/tenants/switch", "/api/logout"].includes(path))
+          throw new ForgeError("tenant_unavailable", "Seçili organizasyona erişiminiz yok; aktif üyeliğinizi seçin.", 403);
       } else if (oidc2 && request.headers.authorization?.startsWith("Bearer ")) {
         identity = {
           userId: await oidc2.bearer(request.headers.authorization.slice(7)),
@@ -8551,11 +8581,11 @@ async function createHttpServer(config) {
     if (!value.valid || !value.value)
       throw new ForgeError("invalid_login_state", "Giriş durumu geçersiz.", 401);
     const userId = await oidc2.callback(new URL(request.url, config.url), JSON.parse(value.value));
-    const membership = await storage.db.selectFrom("memberships").select("tenant_id").where("user_id", "=", userId).orderBy("tenant_id").executeTakeFirst();
-    if (!membership)
-      throw new ForgeError("membership_required", "Çalışma alanı üyeliği gerekiyor.", 403);
+    const membership = await identityService.firstActiveTenant(userId);
     const token = await identityService.issueSession(userId, "session", 12 * 60 * 60 * 1000);
-    reply.setCookie("forge_session", token, cookieOptions).setCookie("forge_tenant", membership.tenant_id, cookieOptions);
+    reply.setCookie("forge_session", token, cookieOptions);
+    if (membership)
+      reply.setCookie("forge_tenant", membership.tenant_id, cookieOptions);
     return reply.redirect("/");
   });
   app.get("/auth/github/start", async (request, reply) => {
@@ -8581,11 +8611,11 @@ async function createHttpServer(config) {
       throw new ForgeError("invalid_login_state", "Giriş durumu geçersiz.", 401);
     const query = request.query;
     const userId = await github.callback(query.code ?? "", query.state ?? "", JSON.parse(value.value));
-    const membership = await storage.db.selectFrom("memberships").select("tenant_id").where("user_id", "=", userId).orderBy("tenant_id").executeTakeFirst();
-    if (!membership)
-      throw new ForgeError("membership_required", "Çalışma alanı üyeliği gerekiyor.", 403);
+    const membership = await identityService.firstActiveTenant(userId);
     const token = await identityService.issueSession(userId, "session", 12 * 60 * 60 * 1000);
-    reply.setCookie("forge_session", token, cookieOptions).setCookie("forge_tenant", membership.tenant_id, cookieOptions);
+    reply.setCookie("forge_session", token, cookieOptions);
+    if (membership)
+      reply.setCookie("forge_tenant", membership.tenant_id, cookieOptions);
     return reply.redirect("/");
   });
   app.get("/.well-known/oauth-protected-resource", async () => {
@@ -8668,6 +8698,10 @@ async function createHttpServer(config) {
   app.post("/api/members", async (request) => members.create(requestIdentity(request), request.body));
   app.put("/api/members/:id", async (request) => members.update(requestIdentity(request), request.params.id, request.body));
   app.get("/api/tenants", async (request) => organizations.listTenants(requestIdentity(request).userId));
+  app.get("/api/my-memberships", async (request) => ({
+    items: await organizations.listTenants(requestIdentity(request).userId),
+    csrf: request.cookies.forge_session ? createHash20("sha256").update(request.cookies.forge_session).digest("hex") : null
+  }));
   app.post("/api/tenants/switch", async (request, reply) => {
     const body = z16.object({ tenant_id: z16.string().min(1) }).parse(request.body);
     const identity = requestIdentity(request);
