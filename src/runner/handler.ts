@@ -63,17 +63,10 @@ export function productionHandler(
     try {
       const tools: AgentTool[] = staging.tools();
       const budget = new BudgetService(storage);
-      await storage.db
-        .insertInto("budget_accounts")
-        .values({
-          tenant_id: identity.tenantId,
-          user_id: identity.userId,
-          limit_micros: snapshot.values.maxCostMicros,
-          reserved_micros: 0,
-          spent_micros: 0,
-        })
-        .onConflict((oc) => oc.columns(["tenant_id", "user_id"]).doNothing())
-        .execute();
+      // Issue #8: reconcile the account limit to the current effective
+      // policy (guarded against in-flight reservations) instead of freezing
+      // it at whatever the first job saw.
+      await budget.reconcileAccount(identity, snapshot.values.maxCostMicros);
       let call = 0;
       const stream: StreamFn = async (model, context, options) => {
         await storage.db

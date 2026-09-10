@@ -833,8 +833,8 @@ export async function createHttpServer(config: LocalConfig) {
       `personal:${actor.userId}`,
       `project:${project_ref}`,
     ];
-    const [active, packages, profiles, usage, jobs, events] = await Promise.all(
-      [
+    const [active, packages, profiles, usage, jobs, account, events] =
+      await Promise.all([
         storage.db
           .selectFrom("runs")
           .select((eb) => eb.fn.countAll<number>().as("n"))
@@ -866,6 +866,12 @@ export async function createHttpServer(config: LocalConfig) {
           .execute(),
         forge.invoke("forge_report", actor, { project_ref, limit: 5 }),
         storage.db
+          .selectFrom("budget_accounts")
+          .selectAll()
+          .where("tenant_id", "=", actor.tenantId)
+          .where("user_id", "=", actor.userId)
+          .executeTakeFirst(),
+        storage.db
           .selectFrom("audit_events")
           .select(["id", "kind", "created_at", "detail"])
           .where("tenant_id", "=", actor.tenantId)
@@ -879,9 +885,15 @@ export async function createHttpServer(config: LocalConfig) {
           .orderBy("created_at", "desc")
           .limit(5)
           .execute(),
-      ],
-    );
+      ]);
     return {
+      account_budget: account
+        ? {
+            limit_micros: account.limit_micros,
+            reserved_micros: account.reserved_micros,
+            spent_micros: account.spent_micros,
+          }
+        : null,
       active_jobs: Number(active.n),
       skill_packages: Number(packages.n),
       model_status: profiles.some((p) => p.profile)

@@ -5,6 +5,33 @@ import { ForgeError } from "../domain/errors.js";
 /** Reservations remain held after an uncertain provider call until explicit reconciliation. */
 export class BudgetService {
   constructor(readonly storage: DatabaseHandle) {}
+  /**
+   * Issue #8: explicit account-limit reconciliation. The account limit is
+   * not frozen at the first job's value: while no uncertain provider calls
+   * are outstanding (reserved_micros = 0) the limit follows the current
+   * effective policy; held reservations keep the previous limit and all
+   * settled spending. Never resets reserved/spent accounting.
+   */
+  async reconcileAccount(identity: Identity, limitMicros: number) {
+    if (!Number.isSafeInteger(limitMicros) || limitMicros < 0)
+      throw new ForgeError("invalid_budget", "Bütçe limiti geçersiz.");
+    await this.storage.db
+      .insertInto("budget_accounts")
+      .values({
+        tenant_id: identity.tenantId,
+        user_id: identity.userId,
+        limit_micros: limitMicros,
+        reserved_micros: 0,
+        spent_micros: 0,
+      })
+      .onConflict((oc) =>
+        oc
+          .columns(["tenant_id", "user_id"])
+          .doUpdateSet({ limit_micros: limitMicros })
+          .where("reserved_micros", "=", 0),
+      )
+      .execute();
+  }
   async reserve(
     identity: Identity,
     runId: string,
