@@ -1704,3 +1704,6 @@ işleri yeşil olmadan issue kapatılmaz.
 - Gerçek tarayıcı kabulü CI-tarzı: **101/101** + artifact `--verify` (commit kimliği
   eşleşti); kasıtlı hata kapısı kırmızı + failure raporu/görüntüsü; `npm pack` 40 dosya.
 - Push sonrası tüm CI işleri yeşil olmadan issue'lar kapatılmayacak.
+- İlk final koşu **34533437017** (commit `5d8f744`) beş işin tamamında yeşil:
+  linux-contracts 6m11s, web-acceptance 1m41s (artifact `--verify` + kasıtlı hata kapısı),
+  portable-artifact windows/macos/ubuntu. Issue kapanışları bu koşuya dayanır.

@@ -140,7 +140,14 @@
   "sandbox abort, sandbox timeout, script large JSON"
  ],
  "ci": {
-  "note": "Push sonrası tek HEAD'de 5 iş (linux-contracts, web-acceptance, windows/macos/ubuntu) yeşil olmadan issue kapatılmaz.",
-  "run": null
+  "run": 34533437017,
+  "commit": "5d8f744",
+  "status": "success",
+  "jobs": {
+   "linux-contracts": "success (6m11s; tam bun test + PostgreSQL)",
+   "web-acceptance": "success (1m41s; artifact --verify + kasıtlı hata kapısı)",
+   "portable-artifact": "success (windows 9m58s, macos 50s, ubuntu 50s)"
+  },
+  "note": "Nihai HEAD'de tüm işler yeşil; issue kapanışları bu koşuya dayanır."
  }
 }
