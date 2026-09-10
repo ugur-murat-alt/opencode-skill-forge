@@ -12,6 +12,17 @@ export const overviewTr = {
   manageInstalls: "Kurulumları yönet",
   recentEvents: "Son olaylar",
   noEvents: "Henüz olay yok",
+  budgetTitle: "Bütçe ve limitler",
+  budgetSubtitle:
+    "İş limiti bu projede geçerli politikadır; defter tutarları kullanıcı hesabında ayrı anlam taşır.",
+  jobLimit: "İş limiti (çalıştırma başına)",
+  inFlight: "Devam eden rezervasyon",
+  uncertainBudget: "Belirsiz rezervasyon",
+  settledSpend: "Kesinleşen harcama (tüm projeler)",
+  uncertainList: "Uzlaştırma bekleyen belirsiz çağrılar",
+  reconcileAmount: "Gerçek maliyet (mikro birim)",
+  reconcile: "Uzlaştır",
+  reconcileInvalid: "Geçerli, negatif olmayan bir tam sayı girin.",
 };
 export const overviewEn = {
   title: "Overview",
@@ -27,4 +38,15 @@ export const overviewEn = {
   manageInstalls: "Manage installations",
   recentEvents: "Recent events",
   noEvents: "No events yet",
+  budgetTitle: "Budget and limits",
+  budgetSubtitle:
+    "The job limit is the policy for this project; ledger amounts live on the user account with distinct meanings.",
+  jobLimit: "Job limit (per run)",
+  inFlight: "In-flight reservation",
+  uncertainBudget: "Uncertain reservation",
+  settledSpend: "Settled spending (all projects)",
+  uncertainList: "Uncertain calls awaiting reconciliation",
+  reconcileAmount: "Actual cost (micros)",
+  reconcile: "Reconcile",
+  reconcileInvalid: "Enter a valid, non-negative integer.",
 };

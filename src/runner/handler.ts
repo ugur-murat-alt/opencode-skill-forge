@@ -15,11 +15,34 @@ import { ForgeRunner } from "./forge-runner.js";
 import { resolveProvider } from "./providers.js";
 import { EvolutionStaging } from "./staging.js";
 import { resolvePrompt } from "../application/agent-prompts.js";
+/**
+ * Composition-test seam for the production handler. Only the provider event
+ * stream is replaceable; lease fencing, budget reservation, the real tools
+ * and finalization stay on the production path. Policy is never injectable:
+ * the store always receives the accepted run's effective snapshot.
+ */
+export interface RunnerHandlerOverrides {
+  providerStream?: StreamFn;
+}
+/**
+ * Issue #26: single composition point for the runner's package store. The
+ * accepted run snapshot is a required argument, so an internal search path
+ * cannot be built without the effective policy that external entries use.
+ */
+export function runnerPackageStore(
+  storage: DatabaseHandle,
+  dataDir: string,
+  validateScripts: ConstructorParameters<typeof PackageStore>[2],
+  snapshot: { values: Required<Settings> },
+) {
+  return new PackageStore(storage, dataDir, validateScripts, snapshot.values);
+}
 export function productionHandler(
   storage: DatabaseHandle,
   dataDir: string,
   vault: SecretVault,
   local: boolean,
+  overrides: RunnerHandlerOverrides = {},
 ): JobHandler {
   return async (run, signal) => {
     const identity = { tenantId: run.tenant_id, userId: run.user_id };
@@ -56,16 +79,25 @@ export function productionHandler(
       allowDependencyInstall: snapshot.values.dependencyInstall,
       allowedOrigins: snapshot.values.scriptAllowedOrigins,
     });
-    const store = new PackageStore(storage, dataDir, (path, manifest) =>
-      executor.validate(path, manifest),
+    // Issue #26: the internal inventory resolves search caps from the same
+    // explicit policy context as the external MCP/HTTP paths. The accepted
+    // job snapshot is the upper bound (it already contains the operator
+    // cap); currently stored tenant/workspace/environment/project/personal
+    // layers can only narrow it further for this run.
+    const store = runnerPackageStore(
+      storage,
+      dataDir,
+      (path, manifest) => executor.validate(path, manifest),
+      snapshot,
     );
     const staging = new EvolutionStaging(store, identity, run);
     try {
       const tools: AgentTool[] = staging.tools();
       const budget = new BudgetService(storage);
-      // Issue #8: reconcile the account limit to the current effective
-      // policy (guarded against in-flight reservations) instead of freezing
-      // it at whatever the first job saw.
+      // Issue #25: the account row records the most recent effective job
+      // limit without freezing while calls are in flight. The reservation
+      // itself is bounded by this job's accepted snapshot limit, so another
+      // project's policy or this user's past spending is never a quota.
       await budget.reconcileAccount(identity, snapshot.values.maxCostMicros);
       let call = 0;
       const stream: StreamFn = async (model, context, options) => {
@@ -82,7 +114,13 @@ export function productionHandler(
             ) +
             (options?.maxTokens ?? model.maxTokens) * model.cost.output,
         );
-        await budget.reserve(identity, run.id, id, estimate);
+        await budget.reserve(
+          identity,
+          run.id,
+          id,
+          estimate,
+          snapshot.values.maxCostMicros,
+        );
         const result = createAssistantMessageEventStream();
         void (async () => {
           let terminal = false;
@@ -116,11 +154,10 @@ export function productionHandler(
               },
             });
           try {
-            for await (const event of resolved.models.streamSimple(
-              model,
-              context,
-              options,
-            )) {
+            const events = await (overrides.providerStream
+              ? overrides.providerStream(model, context, options)
+              : resolved.models.streamSimple(model, context, options));
+            for await (const event of events) {
               if (event.type === "done" || event.type === "error")
                 terminal = true;
               if (event.type === "done")

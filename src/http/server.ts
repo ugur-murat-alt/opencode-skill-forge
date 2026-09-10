@@ -21,6 +21,7 @@ import { DockerExecutor } from "../execution/docker.js";
 import { basename } from "node:path";
 import { ForgeService } from "../application/forge.js";
 import { ForgeWorker } from "../jobs/worker.js";
+import { BudgetService } from "../jobs/budgets.js";
 import { productionHandler } from "../runner/handler.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
@@ -866,67 +867,74 @@ export async function createHttpServer(config: LocalConfig) {
         .parse(request.query);
     await identityService.authorize(actor, "read", project_ref);
     const scope = await visibleScopes(storage.db, actor, project_ref);
-    const [active, packages, profiles, usage, jobs, account, events] =
-      await Promise.all([
-        storage.db
-          .selectFrom("runs")
-          .select((eb) => eb.fn.countAll<number>().as("n"))
-          .where("tenant_id", "=", actor.tenantId)
-          .where("user_id", "=", actor.userId)
-          .where("project_id", "=", project_ref)
-          .where("state", "not in", terminalStates)
-          .executeTakeFirstOrThrow(),
-        storage.db
-          .selectFrom("skills")
-          .select((eb) => eb.fn.countAll<number>().as("n"))
-          .where("tenant_id", "=", actor.tenantId)
-          .where("scope_key", "in", scope)
-          .where("archived", "=", 0)
-          .executeTakeFirstOrThrow(),
-        providers.list(actor),
-        storage.db
-          .selectFrom("budget_reservations as b")
-          .innerJoin("runs as r", (j) =>
-            j
-              .onRef("r.tenant_id", "=", "b.tenant_id")
-              .onRef("r.id", "=", "b.run_id"),
-          )
-          .select(["b.actual_micros", "b.state"])
-          .where("b.tenant_id", "=", actor.tenantId)
-          .where("b.user_id", "=", actor.userId)
-          .where("r.project_id", "=", project_ref)
-          .limit(10000)
-          .execute(),
-        forge.invoke("forge_report", actor, { project_ref, limit: 5 }),
-        storage.db
-          .selectFrom("budget_accounts")
-          .selectAll()
-          .where("tenant_id", "=", actor.tenantId)
-          .where("user_id", "=", actor.userId)
-          .executeTakeFirst(),
-        storage.db
-          .selectFrom("audit_events")
-          .select(["id", "kind", "created_at", "detail"])
-          .where("tenant_id", "=", actor.tenantId)
-          .where("user_id", "=", actor.userId)
-          .where((eb) =>
-            eb.or([
-              eb("project_id", "=", project_ref),
-              eb("project_id", "is", null),
-            ]),
-          )
-          .orderBy("created_at", "desc")
-          .limit(5)
-          .execute(),
-      ]);
+    const [
+      active,
+      packages,
+      profiles,
+      usage,
+      jobs,
+      account,
+      effective,
+      events,
+    ] = await Promise.all([
+      storage.db
+        .selectFrom("runs")
+        .select((eb) => eb.fn.countAll<number>().as("n"))
+        .where("tenant_id", "=", actor.tenantId)
+        .where("user_id", "=", actor.userId)
+        .where("project_id", "=", project_ref)
+        .where("state", "not in", terminalStates)
+        .executeTakeFirstOrThrow(),
+      storage.db
+        .selectFrom("skills")
+        .select((eb) => eb.fn.countAll<number>().as("n"))
+        .where("tenant_id", "=", actor.tenantId)
+        .where("scope_key", "in", scope)
+        .where("archived", "=", 0)
+        .executeTakeFirstOrThrow(),
+      providers.list(actor),
+      storage.db
+        .selectFrom("budget_reservations as b")
+        .innerJoin("runs as r", (j) =>
+          j
+            .onRef("r.tenant_id", "=", "b.tenant_id")
+            .onRef("r.id", "=", "b.run_id"),
+        )
+        .select(["b.actual_micros", "b.state"])
+        .where("b.tenant_id", "=", actor.tenantId)
+        .where("b.user_id", "=", actor.userId)
+        .where("r.project_id", "=", project_ref)
+        .limit(10000)
+        .execute(),
+      forge.invoke("forge_report", actor, { project_ref, limit: 5 }),
+      new BudgetService(storage).accountSummary(actor),
+      settings.effective(actor, project_ref),
+      storage.db
+        .selectFrom("audit_events")
+        .select(["id", "kind", "created_at", "detail"])
+        .where("tenant_id", "=", actor.tenantId)
+        .where("user_id", "=", actor.userId)
+        .where((eb) =>
+          eb.or([
+            eb("project_id", "=", project_ref),
+            eb("project_id", "is", null),
+          ]),
+        )
+        .orderBy("created_at", "desc")
+        .limit(5)
+        .execute(),
+    ]);
     return {
-      account_budget: account
-        ? {
-            limit_micros: account.limit_micros,
-            reserved_micros: account.reserved_micros,
-            spent_micros: account.spent_micros,
-          }
-        : null,
+      // Issue #25: the ledger is user-scoped accounting, split by meaning.
+      // `job_limit_micros` is the currently effective per-job policy for
+      // this project; no account/period quota is derived from it.
+      account_budget: {
+        job_limit_micros: effective.values.maxCostMicros,
+        reserved_micros: account.reserved_micros,
+        uncertain_micros: account.uncertain_micros,
+        spent_micros: account.spent_micros,
+        uncertain_reservations: account.uncertain_reservations,
+      },
       active_jobs: Number(active.n),
       skill_packages: Number(packages.n),
       model_status: profiles.some((p) => p.profile)
@@ -943,6 +951,32 @@ export async function createHttpServer(config: LocalConfig) {
         ...event,
         detail: redactMetadata(JSON.parse(event.detail)),
       })),
+    };
+  });
+  // Issue #25: authorized manual recovery for a held reservation whose
+  // provider outcome is unknown. The explicit actual amount is recorded as
+  // settled spending; holds are never zeroed silently.
+  app.post("/api/budget/reservations/:id/reconcile", async (request) => {
+    const { id } = z
+      .object({ id: z.string().min(1).max(200) })
+      .parse(request.params);
+    const body = z
+      .object({ actual_micros: z.number().int().min(0) })
+      .strict()
+      .parse(request.body);
+    const actor = requestIdentity(request);
+    const budget = new BudgetService(storage);
+    const resolved = await budget.resolveReservation(
+      actor,
+      id,
+      body.actual_micros,
+    );
+    const summary = await budget.accountSummary(actor);
+    return {
+      ...resolved,
+      reserved_micros: summary.reserved_micros,
+      uncertain_micros: summary.uncertain_micros,
+      spent_micros: summary.spent_micros,
     };
   });
   app.get("/api/logs", async (request) => {

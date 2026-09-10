@@ -179,7 +179,7 @@ export const en: typeof tr = {
     binding_unavailable: "Local directory could not be read.",
     bootstrap_arguments:
       "Server profile requires --tenant-id, --tenant-name, --subject issuer|sub and --display-name.",
-    budget_exhausted: "Account budget is insufficient.",
+    budget_exhausted: "Job budget is insufficient.",
     budget_unconfigured: "User budget is not configured.",
     candidate_already_selected: "One job changes a single canonical package.",
     candidate_changed: "Candidate file inventory changed during tests.",
@@ -365,6 +365,7 @@ export const en: typeof tr = {
     remote_unavailable:
       "Server transfer could not complete; the same manifest/mapping is safe to resend.",
     reservation_conflict: "Reservation identity belongs to a different call.",
+    reservation_unavailable: "Reservation not found or not authorized.",
     revision_conflict: "Package could not be rebased.",
     revision_corrupt: "Package file inventory changed.",
     revision_unavailable: "Package revision not found.",

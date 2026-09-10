@@ -175,7 +175,7 @@ export const tr = {
     binding_unavailable: "Yerel dizin okunamadı.",
     bootstrap_arguments:
       "Server profilinde --tenant-id, --tenant-name, --subject issuer|sub ve --display-name gerekiyor.",
-    budget_exhausted: "Hesap bütçesi yetersiz.",
+    budget_exhausted: "İş bütçesi yetersiz.",
     budget_unconfigured: "Kullanıcı bütçesi tanımlanmamış.",
     candidate_already_selected: "Bir iş tek kanonik paketi değiştirir.",
     candidate_changed: "Test sırasında aday dosya envanteri değişti.",
@@ -353,6 +353,7 @@ export const tr = {
     remote_unavailable:
       "Sunucu aktarımı tamamlanamadı; aynı manifest/eşleme güvenle tekrar gönderilebilir.",
     reservation_conflict: "Rezervasyon kimliği farklı çağrıya ait.",
+    reservation_unavailable: "Rezervasyon bulunamadı veya yetkiniz yok.",
     revision_conflict: "Paket yeniden tabanlanamadı.",
     revision_corrupt: "Paket dosya envanteri değişti.",
     revision_unavailable: "Paket sürümü bulunamadı.",
