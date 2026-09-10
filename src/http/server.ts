@@ -1,4 +1,5 @@
 import { DeletionService } from "../application/deletion.js";
+import { decodeQueryToolInput } from "./query-decode.js";
 import { Throttle } from "./throttle.js";
 import { registerMigrationHttp } from "../migration/http.js";
 import { MemberService } from "../application/members.js";
@@ -215,7 +216,8 @@ export async function createHttpServer(config: LocalConfig) {
         } catch (error) {
           // Issue #5: a valid session whose selected tenant lost access must
           // keep a recovery path instead of a blanket 403.
-          if (!(error instanceof ForgeError) || error.status !== 403) throw error;
+          if (!(error instanceof ForgeError) || error.status !== 403)
+            throw error;
           sessionOnly = true;
           identity = await identityService.sessionIdentity(sessionToken);
         }
@@ -233,9 +235,11 @@ export async function createHttpServer(config: LocalConfig) {
           );
         if (
           sessionOnly &&
-          !["/api/my-memberships", "/api/tenants/switch", "/api/logout"].includes(
-            path,
-          )
+          ![
+            "/api/my-memberships",
+            "/api/tenants/switch",
+            "/api/logout",
+          ].includes(path)
         )
           throw new ForgeError(
             "tenant_unavailable",
@@ -1028,7 +1032,11 @@ export async function createHttpServer(config: LocalConfig) {
     return { id: body.id, status: "recorded" };
   });
   app.get("/api/skills", async (request) =>
-    forge.invoke("forge_search", requestIdentity(request), request.query),
+    forge.invoke(
+      "forge_search",
+      requestIdentity(request),
+      decodeQueryToolInput(request.query),
+    ),
   );
   app.get("/api/skills/:id/revisions", async (request) => {
     const actor = requestIdentity(request),
@@ -1182,7 +1190,11 @@ export async function createHttpServer(config: LocalConfig) {
     );
   });
   app.get("/api/runs", async (request) =>
-    forge.invoke("forge_report", requestIdentity(request), request.query),
+    forge.invoke(
+      "forge_report",
+      requestIdentity(request),
+      decodeQueryToolInput(request.query),
+    ),
   );
   app.get("/api/runs/:id/attempts", async (request) => {
     const query = z
