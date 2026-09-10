@@ -45,6 +45,14 @@ export function productionHandler(
   overrides: RunnerHandlerOverrides = {},
 ): JobHandler {
   return async (run, signal) => {
+    // Issue #32: this handler owns the skill kind only. A run of another
+    // kind never reaches the skill provider/PackageStore path by accident.
+    if (run.kind !== "skill_evolve")
+      throw new ForgeError(
+        "invalid_kind",
+        "Skill üretim handler'ı yalnız skill_evolve işini yürütür.",
+        422,
+      );
     const identity = { tenantId: run.tenant_id, userId: run.user_id };
     const snapshot = JSON.parse(run.config_json) as {
       values: Required<Settings>;
@@ -184,7 +192,7 @@ export function productionHandler(
         return result;
       };
       const outcome = await new ForgeRunner().run({
-        profile: run.kind,
+        profile: "skill_evolve",
         sessionId: run.session_id,
         model: resolved.model,
         systemPrompt: (

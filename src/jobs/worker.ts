@@ -4,11 +4,28 @@ import { sql } from "kysely";
 import { JobQueue, terminalStates } from "./queue.js";
 import type { Run, RunState } from "../storage/schema.js";
 import { ForgeError } from "../domain/errors.js";
+import type { DefaultJobKind } from "../domain/job-kinds.js";
 export type JobHandler = (
   run: Run,
   signal: AbortSignal,
 ) => Promise<{ state: RunState; result: unknown; errorCode?: string }>;
-export class ForgeWorker {
+export interface ForgeWorkerOptions<Kind extends string> {
+  postgresUrl?: string;
+  leaseMs?: number;
+  pollMs?: number;
+  /** Bounded liveness window before a lost delivery is re-sent. */
+  livenessMs?: number;
+  /** Dispatcher ownership lease for an outbox row. */
+  dispatchLeaseMs?: number;
+  /**
+   * Issue #32: kind-specific handlers. The positional `handler` stays the
+   * default (and the skill handler in production); kinds without an entry
+   * fall back to it, so existing `new ForgeWorker(queue, handler, options)`
+   * callers are unchanged.
+   */
+  handlers?: Partial<Record<Kind, JobHandler>>;
+}
+export class ForgeWorker<Kind extends string = DefaultJobKind> {
   readonly id = randomUUID();
   private stopping = false;
   private boss?: PgBoss;
@@ -22,18 +39,18 @@ export class ForgeWorker {
     "active",
   ]);
   constructor(
-    readonly queue: JobQueue,
+    readonly queue: JobQueue<Kind>,
     readonly handler: JobHandler,
-    readonly options: {
-      postgresUrl?: string;
-      leaseMs?: number;
-      pollMs?: number;
-      /** Bounded liveness window before a lost delivery is re-sent. */
-      livenessMs?: number;
-      /** Dispatcher ownership lease for an outbox row. */
-      dispatchLeaseMs?: number;
-    } = {},
+    readonly options: ForgeWorkerOptions<Kind> = {},
   ) {}
+  private kinds(): Kind[] {
+    return Object.keys(this.queue.kinds) as Kind[];
+  }
+  private handlerFor(kind: string): JobHandler {
+    const handlers = this.options.handlers as
+      Record<string, JobHandler | undefined> | undefined;
+    return handlers?.[kind] ?? this.handler;
+  }
   async start() {
     if (this.options.postgresUrl) {
       this.boss = new PgBoss({
@@ -44,7 +61,7 @@ export class ForgeWorker {
         process.stderr.write("pg-boss queue error\n");
       });
       await this.boss.start();
-      for (const kind of ["skill_evolve"] as const) {
+      for (const kind of this.kinds()) {
         await this.boss.createQueue(kind, {
           retryLimit: 3,
           retryDelay: 1,
@@ -82,7 +99,8 @@ export class ForgeWorker {
         );
       }
       this.loops.push(this.outboxLoop());
-    } else this.loops.push(this.localLoop("skill_evolve"));
+    } else
+      for (const kind of this.kinds()) this.loops.push(this.localLoop(kind));
   }
   /** Is a pg-boss job for this run still pending or executing? */
   private async transportActive(kind: Run["kind"], runId: string) {
@@ -298,7 +316,7 @@ export class ForgeWorker {
       setTimeout(resolve, this.options.pollMs ?? 100),
     );
   }
-  private async localLoop(kind: Run["kind"]) {
+  private async localLoop(kind: Kind) {
     while (!this.stopping) {
       try {
         const run = await this.queue.claim(
@@ -340,7 +358,7 @@ export class ForgeWorker {
       Math.max(20, Math.floor(leaseMs / 3)),
     );
     try {
-      const result = await this.handler(run, controller.signal);
+      const result = await this.handlerFor(run.kind)(run, controller.signal);
       if (!controller.signal.aborted)
         await this.queue.finish(
           run,

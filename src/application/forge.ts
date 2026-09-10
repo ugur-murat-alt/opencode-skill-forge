@@ -1,4 +1,3 @@
-import { redact } from "../telemetry/redact.js";
 import {
   storeExecutionResult,
   executionPage,
@@ -8,6 +7,7 @@ import {
 import { MaintenanceService } from "./maintenance.js";
 import { observe } from "../telemetry/observations.js";
 import { SettingsService } from "./settings.js";
+import { RunReports } from "./run-reports.js";
 import { join } from "node:path";
 import { secureRead } from "../skills/paths.js";
 import type { Settings } from "../domain/settings.js";
@@ -23,11 +23,12 @@ import { ForgeError, errorEnvelope } from "../domain/errors.js";
 import { toolSchemas, type ToolName } from "../domain/tool-contracts.js";
 import { CursorCodec } from "./cursor.js";
 import { validatePackagePath } from "../skills/paths.js";
-import type { Run } from "../storage/schema.js";
 export class ForgeService {
   readonly queue: JobQueue;
   readonly packages: PackageStore;
   readonly cursors: CursorCodec;
+  /** Issue #32: run reporting lives in its own use-case module. */
+  readonly reports: RunReports;
   constructor(
     readonly storage: DatabaseHandle,
     readonly dataDir: string,
@@ -39,6 +40,7 @@ export class ForgeService {
     // as the queue and the settings service, or operator caps vanish.
     this.packages = new PackageStore(storage, dataDir, undefined, policy);
     this.cursors = new CursorCodec(signingKey);
+    this.reports = new RunReports(this.queue, this.cursors);
   }
   async artifact(identity: Identity, executionId: string, reference: string) {
     const execution = await this.storage.db
@@ -68,49 +70,6 @@ export class ForgeService {
         join(this.dataDir, "execution", value.execution, "artifacts"),
         value.path,
       ),
-    };
-  }
-  private publicRun(run: Run, detail = false) {
-    const result = run.result_json ? JSON.parse(run.result_json) : null;
-    const bytes = Buffer.byteLength(run.result_json ?? "null");
-    return {
-      run_id: run.id,
-      kind: run.kind,
-      status: run.state,
-      created_at: run.created_at,
-      updated_at: run.updated_at,
-      attempt: run.attempt,
-      error_code: run.error_code,
-      result: detail && bytes <= 8192 ? result : undefined,
-      result_available: run.result_json !== null,
-      result_truncated: run.result_json !== null && (!detail || bytes > 8192),
-      result_bytes: bytes,
-      result_summary: result
-        ? redact({
-            decision:
-              typeof result.decision === "string"
-                ? result.decision.slice(0, 32)
-                : undefined,
-            reason:
-              typeof result.reason === "string"
-                ? result.reason.slice(0, 500)
-                : undefined,
-            usage: result.usage
-              ? Object.fromEntries(
-                  ["calls", "tokens", "cost_micros", "elapsed_ms"].map(
-                    (key) => [
-                      key,
-                      typeof result.usage[key] === "number" &&
-                      Number.isFinite(result.usage[key])
-                        ? result.usage[key]
-                        : null,
-                    ],
-                  ),
-                )
-              : null,
-            content_expired: result.content_expired === true,
-          })
-        : null,
     };
   }
   async invoke(
@@ -461,70 +420,9 @@ export class ForgeService {
             : null,
         };
       }
-      if (value.run_id) {
-        const run = await this.queue.get(identity, value.run_id);
-        if (run.project_id !== value.project_ref)
-          throw new ForgeError(
-            "project_mismatch",
-            "İş başka projeye ait.",
-            403,
-          );
-        if (value.result_content) {
-          const resultBytes = Buffer.from(run.result_json ?? "null");
-          const resultBinding = [
-            ...binding,
-            createHash("sha256").update(resultBytes).digest("hex"),
-          ];
-          const chunk = byteChunk(
-            resultBytes,
-            value.cursor
-              ? this.cursors.decode<number>(value.cursor, resultBinding)
-              : 0,
-          );
-          return {
-            run_id: run.id,
-            status: run.state,
-            kind: "result_json",
-            ...chunk,
-            next: undefined,
-            next_cursor:
-              chunk.next !== null
-                ? this.cursors.encode(resultBinding, chunk.next)
-                : null,
-          };
-        }
-        return this.publicRun(run, true);
-      }
-      if (value.result_content)
-        throw new ForgeError(
-          "invalid_filter",
-          "İş sonucu içeriği için run_id gerekir.",
-        );
-      let query = this.storage.db
-        .selectFrom("runs")
-        .selectAll()
-        .where("tenant_id", "=", identity.tenantId)
-        .where("user_id", "=", identity.userId)
-        .where("project_id", "=", value.project_ref);
-      if (value.state)
-        query = query.where("state", "=", value.state as Run["state"]);
-      if (value.cursor)
-        query = query.where(
-          "id",
-          ">",
-          this.cursors.decode<string>(value.cursor, binding),
-        );
-      const rows = await query
-        .orderBy("id")
-        .limit(value.limit + 1)
-        .execute();
-      return {
-        items: rows.slice(0, value.limit).map((row) => this.publicRun(row)),
-        next_cursor:
-          rows.length > value.limit
-            ? this.cursors.encode(binding, rows[value.limit - 1]!.id)
-            : null,
-      };
+      // Issue #32: the run report read model is a separate application
+      // use-case; HTTP and MCP adapters share it.
+      return this.reports.report(identity, value);
     }
     const value = toolSchemas.forge_run.parse(input);
     if (Buffer.byteLength(JSON.stringify(value.args)) > 32768)

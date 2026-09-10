@@ -1,5 +1,6 @@
 import type { Generated } from "kysely";
 import type { MemberRole, ProjectRole } from "../domain/roles.js";
+import type { JobKind } from "../domain/job-kinds.js";
 export interface Tenant {
   id: string;
   name: string;
@@ -421,7 +422,13 @@ export interface Run {
   session_id: string;
   user_id: string;
   project_id: string;
-  kind: "skill_evolve";
+  /**
+   * Issue #32: persisted text column; the production union stays visible in
+   * the type while explicitly registered composition kinds (tests, future
+   * kinds) remain assignable. Typed validation lives in `JobQueue` /
+   * `ForgeWorker`, which are keyed by the kind registry.
+   */
+  kind: JobKind;
   state: RunState;
   idempotency_key: string;
   input_hash: string;

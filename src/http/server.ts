@@ -1331,10 +1331,11 @@ export async function createHttpServer(config: LocalConfig) {
     );
   });
   app.get("/api/runs", async (request) =>
-    forge.invoke(
-      "forge_report",
+    // Issue #32: the HTTP adapter calls the shared run-report use-case
+    // directly; the MCP `forge_report` dispatcher reaches the same function.
+    forge.reports.report(
       requestIdentity(request),
-      decodeQueryToolInput(request.query),
+      toolSchemas.forge_report.parse(decodeQueryToolInput(request.query)),
     ),
   );
   app.get("/api/runs/:id/attempts", async (request) => {

@@ -6,6 +6,11 @@ import type { DatabaseHandle } from "../storage/database.js";
 import { IdentityService, type Identity } from "../application/identity.js";
 import { SettingsService } from "../application/settings.js";
 import { ForgeError } from "../domain/errors.js";
+import {
+  defaultJobKinds,
+  type DefaultJobKind,
+  type JobKindDefinition,
+} from "../domain/job-kinds.js";
 export const terminalStates: RunState[] = [
   "completed",
   "no_op",
@@ -17,22 +22,32 @@ export const terminalStates: RunState[] = [
   "unchanged",
   "fallback",
 ];
-export class JobQueue {
+/**
+ * Issue #32: acceptance, scheduling, idempotency, budget and audit stay
+ * common; kind-specific payload validation, config snapshot and skill-owned
+ * gates come from the static `kinds` registry. `skill_evolve` remains the
+ * default so existing `new JobQueue(storage)` callers keep their contract.
+ */
+export class JobQueue<Kind extends string = DefaultJobKind> {
   constructor(
     readonly storage: DatabaseHandle,
     readonly policy: Settings = {},
+    readonly kinds: Readonly<
+      Record<Kind, JobKindDefinition>
+    > = defaultJobKinds as unknown as Readonly<Record<Kind, JobKindDefinition>>,
   ) {}
   async accept(
     identity: Identity,
     input: {
       projectId: string;
-      kind: Run["kind"];
+      kind: Kind;
       key: string;
       payload: Record<string, unknown>;
       deadlineMs?: number;
     },
   ) {
-    if (input.kind !== "skill_evolve")
+    const definition = this.kinds[input.kind];
+    if (!definition)
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     if (
       !input.key ||
@@ -43,8 +58,22 @@ export class JobQueue {
         "invalid_handoff",
         "İş kimliği veya girdi boyutu geçersiz.",
       );
-    const inputJson = JSON.stringify(input.payload),
-      inputHash = createHash("sha256").update(inputJson).digest("hex");
+    let payload: unknown;
+    try {
+      payload = definition.payload.parse(input.payload);
+    } catch {
+      throw new ForgeError(
+        "invalid_handoff",
+        "İş girdisi bu türün sözleşmesine uymuyor.",
+        422,
+        undefined,
+        { kind: input.kind },
+      );
+    }
+    const inputJson = JSON.stringify(payload);
+    if (typeof inputJson !== "string" || Buffer.byteLength(inputJson) > 65536)
+      throw new ForgeError("invalid_handoff", "İş girdisi serileştirilemedi.");
+    const inputHash = createHash("sha256").update(inputJson).digest("hex");
     return this.storage.db.transaction().execute(async (tx) => {
       // Serialize acceptance/budget/backpressure for this actor across processes.
       await tx
@@ -78,25 +107,27 @@ export class JobQueue {
         input.projectId,
         {},
       );
-      const providerProfile = await tx
-        .selectFrom("provider_profiles")
-        .selectAll()
-        .where("tenant_id", "=", identity.tenantId)
-        .where("user_id", "=", identity.userId)
-        .where("role", "=", "skill")
-        .orderBy("revision", "desc")
-        .limit(1)
-        .executeTakeFirst();
-      const config = {
-        ...effective,
-        providerProfile: providerProfile ?? null,
-      };
-      if (input.kind === "skill_evolve" && !config.values.evolutionEnabled)
-        throw new ForgeError(
-          "evolution_disabled",
-          "Skill geliştirme bu kapsamda kapalı.",
-          422,
-        );
+      // Skill-owned kinds alone read the provider snapshot and obey the
+      // evolution flag; other kinds use the same effective policy without it.
+      let config: Record<string, unknown> = { ...effective };
+      if (definition.skillProfile) {
+        const providerProfile = await tx
+          .selectFrom("provider_profiles")
+          .selectAll()
+          .where("tenant_id", "=", identity.tenantId)
+          .where("user_id", "=", identity.userId)
+          .where("role", "=", "skill")
+          .orderBy("revision", "desc")
+          .limit(1)
+          .executeTakeFirst();
+        if (!effective.values.evolutionEnabled)
+          throw new ForgeError(
+            "evolution_disabled",
+            "Skill geliştirme bu kapsamda kapalı.",
+            422,
+          );
+        config = { ...effective, providerProfile: providerProfile ?? null };
+      }
       const pending = await tx
         .selectFrom("runs")
         .select((eb) => eb.fn.countAll<number>().as("n"))
@@ -150,6 +181,16 @@ export class JobQueue {
         max_attempts: 3,
       };
       await tx.insertInto("runs").values(run).execute();
+      await this.audit(
+        tx,
+        run,
+        "job.accepted",
+        {
+          run_id: runId,
+          kind: input.kind,
+        },
+        now,
+      );
       await tx
         .insertInto("outbox")
         .values({ tenant_id: identity.tenantId, run_id: runId, delivered: 0 })
@@ -166,6 +207,27 @@ export class JobQueue {
       return { status: "accepted" as const, run };
     });
   }
+  /** Issue #32: one audit wall entry for every kind, in the same transaction. */
+  private async audit(
+    db: Kysely<DB>,
+    run: Pick<Run, "tenant_id" | "user_id" | "project_id" | "id" | "kind">,
+    kind: string,
+    detail: Record<string, unknown>,
+    now: number,
+  ) {
+    await db
+      .insertInto("audit_events")
+      .values({
+        tenant_id: run.tenant_id,
+        id: randomUUID(),
+        user_id: run.user_id,
+        project_id: run.project_id,
+        kind,
+        detail: JSON.stringify(detail),
+        created_at: now,
+      })
+      .execute();
+  }
   private async now(db: Kysely<DB>) {
     const query =
       this.storage.backend === "postgres"
@@ -180,10 +242,10 @@ export class JobQueue {
   async claim(
     workerId: string,
     leaseMs: number,
-    kind?: Run["kind"],
+    kind?: Kind,
     target?: { tenantId: string; runId: string },
   ) {
-    if (kind && kind !== "skill_evolve")
+    if (kind && !this.kinds[kind])
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
     return this.storage.db.transaction().execute(async (tx) => {
       if (this.storage.backend === "sqlite")
@@ -262,6 +324,18 @@ export class JobQueue {
             .where("id", "=", candidate.id)
             .where("fence", "=", candidate.fence)
             .execute();
+          await this.audit(
+            tx,
+            candidate,
+            "job.finished",
+            {
+              run_id: candidate.id,
+              kind: candidate.kind,
+              state: "failed",
+              error_code: "deadline_or_attempt_limit",
+            },
+            now,
+          );
           continue;
         }
         // Same actor's claims serialize across workers, enforcing concurrency.
@@ -396,6 +470,18 @@ export class JobQueue {
         .where("run_id", "=", run.id)
         .where("fence", "=", run.fence)
         .execute();
+      await this.audit(
+        tx,
+        run,
+        "job.finished",
+        {
+          run_id: run.id,
+          kind: run.kind,
+          state,
+          error_code: errorCode,
+        },
+        now,
+      );
     });
   }
   async fail(run: Run, code: string, retryable: boolean) {
@@ -423,6 +509,18 @@ export class JobQueue {
         .where("tenant_id", "=", run.tenant_id)
         .where("run_id", "=", run.id)
         .execute();
+      await this.audit(
+        tx,
+        run,
+        "job.retry_scheduled",
+        {
+          run_id: run.id,
+          kind: run.kind,
+          error_code: code,
+          attempt: run.attempt,
+        },
+        now,
+      );
     });
   }
   async get(identity: Identity, runId: string) {
@@ -470,17 +568,28 @@ export class JobQueue {
       "run",
       run.project_id,
     );
-    await this.storage.db
-      .updateTable("runs")
-      .set({
-        state: "cancelled",
-        fence: sql`fence + 1`,
-        lease_until: 0,
-        updated_at: await this.storage.now(),
-      })
-      .where("tenant_id", "=", identity.tenantId)
-      .where("id", "=", run.id)
-      .where("state", "not in", terminalStates)
-      .execute();
+    await this.storage.db.transaction().execute(async (tx) => {
+      const now = await this.now(tx);
+      const updated = await tx
+        .updateTable("runs")
+        .set({
+          state: "cancelled",
+          fence: sql`fence + 1`,
+          lease_until: 0,
+          updated_at: now,
+        })
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", run.id)
+        .where("state", "not in", terminalStates)
+        .executeTakeFirst();
+      if (Number(updated.numUpdatedRows) === 1)
+        await this.audit(
+          tx,
+          run,
+          "job.cancelled",
+          { run_id: run.id, kind: run.kind },
+          now,
+        );
+    });
   }
 }
