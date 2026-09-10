@@ -1670,9 +1670,13 @@ işleri yeşil olmadan issue kapatılmaz.
   backlog'ta yinelenen redelivery'nin kesilmesi, gerçek pg-boss exhaustion + recovery).
 - `agent-search` / `issue/24-search-quality`: **#24** (top-k aday seçimi, batch sınırında
   kapsam birleştirme, düz dizi kanıtlı tekrar/atlama testleri, ölçüm raporu).
+  → **main `f153a4a`**; hedefli 17 SQLite + 1 PG test yeşil; `forge_search` artık
+  scanned/scored/queries/token_estimate bildiriyor.
 - `agent-budget` / `issue/25-26-budget-policy`: **#25 + #26** (iş limiti ile hesap/dönem
   limiti ayrımı, sahte lifetime kota kaldırma; üretim handler envanterinin aynı policy
   bağlamını kullanması + sahte model stream'li gerçek iç tool testi).
+  → **main `f289e60`**; hedefli 18/18; rezervasyon iş-başına, `/api/overview` alanları
+  ayrıştı, manuel uzlaştırma uç noktası ACL/audit'li.
 - `agent-web` / `issue/30-31-evidence-drafts`: **#30 + #31** (tek geçerli `--report` JSON
   + artifact kökü + CI hattı; taslak yaşam döngüsü: tüm adaylar için dirty, geçiş
   koordinasyonu, dialog sayısı doğrulayan gerçek tarayıcı testleri).
