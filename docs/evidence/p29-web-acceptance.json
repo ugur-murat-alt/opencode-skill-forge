@@ -1,5 +1,5 @@
 {
-  "passed": 35,
+  "passed": 40,
   "failed": 0,
   "results": [
     {
@@ -10,7 +10,7 @@
     {
       "name": "pairing-code",
       "ok": true,
-      "detail": "leme kodu (5 dakika, tek kullanım): yoxXGM6ItaPb-souD5Si5mCCLmNSPuy5GNee8RGurFw\n"
+      "detail": "leme kodu (5 dakika, tek kullanım): tZYJ4T7uXBik20-cEEESmKOl-n7H9rz9jHPHFI0UD0s\n"
     },
     {
       "name": "seed-skill",
@@ -93,6 +93,31 @@
       "detail": "Kabul Org • — • proje yok"
     },
     {
+      "name": "tenant-id-visible",
+      "ok": true,
+      "detail": "local"
+    },
+    {
+      "name": "tenant-ab-isolated",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tenant-ab-writes-own",
+      "ok": true,
+      "detail": "A-org-metni; create, update, no-op, reject, untrusted kararlarıyla çalış."
+    },
+    {
+      "name": "tenant-tab1-pinned",
+      "ok": true,
+      "detail": "local"
+    },
+    {
+      "name": "tenant-tab2-follows",
+      "ok": true,
+      "detail": "local,b584d719-d7fc-4555-a436-895bd35363a4"
+    },
+    {
       "name": "search-scores",
       "ok": true,
       "detail": "0.500"
@@ -115,7 +140,7 @@
     {
       "name": "invite-create",
       "ok": true,
-      "detail": "K62oRK1Vl0LPJgnK-MIJ"
+      "detail": "DmkgrWQjxkUO8adla4it"
     },
     {
       "name": "invite-revoke",
@@ -150,7 +175,7 @@
     {
       "name": "locale-date",
       "ok": true,
-      "detail": "16.09.2026 06:25 -> 9/16/26, 6:25 AM"
+      "detail": "17.09.2026 03:24 -> 9/17/26, 3:24 AM"
     },
     {
       "name": "aria-en",

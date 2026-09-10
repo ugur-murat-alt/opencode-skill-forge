@@ -1424,6 +1424,43 @@ TDD sırası izlendi: `test/agent-prompts.test.ts` (4 test: çözüm önceliği,
 
 TDD sırası izlendi: `scripts/web-acceptance.mjs` (Playwright, gerçek derlenmiş servis + gerçek Chromium) önce yazıldı, olmayan ekranlarda kırmızı verdi, sonra yeşillendi: 28/28 kontrol (giriş, 12 sayfa, org kur/seç/rozet, skorlu arama görünümü, rol oluştur/sil/geri-yükle, davet oluştur/iptal, prompt düzenle/çift-marker geri al, yetkisiz giriş, sıfır sayfa hatası). `playwright-core@1.63.0` sabitlendi. Yeni ekranlar: Organizasyonlar (kur/seç/devir teklifi+kabul/silme iste+onay+vazgeç), Roller (liste/oluştur/sil + matris görünümü), Davetler (oluştur/anahtar/iptal), Ajan promptları (kapsam seçici, CAS düzenleme, geçmiş + geri alma). Kabuk: org/ortam seçici + kapsam rozeti (`OrgScope`), projesiz açılan yönetim sayfaları; Library skor sütunu + gerekçe + kapsam filtresi. Tasarım standardı: token değişkenleri + compact yoğunluk; `prettier`/`oxlint` temiz. Yeni uçlar: `POST /api/tenants/switch`, `GET /api/organization/transfer/offers`, `GET /api/organization/deletion/status`, `POST /api/projects` artık `environment_id` kabul eder. Kanıt `docs/evidence/p23-web-acceptance.json` + `docs/evidence/design/p23-*.png` (12 ekran).
 
+### Issue düzeltme kampanyası (2026-09-10, GitHub #2–#21; sıra #21'in önerisini izler)
+
+Kural: her issue kendi kabul ölçütleriyle kapanır; kanıt `docs/evidence/issues-progress.json`
++ tekil testler; kullanıcı `docs/reviews/2026-09-09-project-audit` dosyalarına dokunulmaz.
+
+#### #4 Windows checkout (kapanış: 2059f4d)
+- Kırmızı: `test/repo-portability.test.ts` izlenen yolları Windows geçersiz karakteri,
+  rezerve aygıt adı, sondaki nokta/boşluk ve kontrol karakterine karşı tarar —
+  mevcut `docs/evidence/baseline-bun-run-build:plugin.log` tek ihlal olarak yakalandı.
+- Yeşil: dosya `baseline-bun-run-build-plugin.log`'a taşındı; `baseline-results.json`
+  referansı güncellendi. Test yeşil; taşınamaz ad eklenirse kırmızı kalır.
+- Kalan kanıt: push sonrası Windows `portable-artifact` işinin checkout + typecheck +
+  build + daemon-stop + package-smoke gerçekten koşması (CI run sonuçla doğrulanacak).
+
+#### #2 publish/setScope kapsam yarışı (kapanış: 35e5385 + 5fdb0a2)
+- Kırmızı: `test/publish-scope-race.test.ts` bariyerli `validateScripts` ile
+  project→workspace, project→başka project, personal→workspace yarışları — eski yetkili
+  yayın başarıyla commit ediyordu (3 kırmızı + 1 kontrol yeşil).
+- Yeşil: `src/skills/store.ts` publish transaction'ı içinde güncel `scope_key/project_id`
+  yeniden doğrulanır; final UPDATE artık `scope_key` + `project_id` CAS içerir.
+  4/4 yeşil (SQLite); PostgreSQL varyantı FORGE_TEST_POSTGRES_URL kapılı (CI koşar).
+- publishRebased aynı publish yolunu kullandığı için kapsam değişimi sonrası
+  rebase artık revision_conflict ile durur; immutable revision davranışı korunur.
+
+#### #3 tenant bağlamı (kapanış: <feat sha>)
+- Kırmızı: `test/tenant-header.test.ts` — api() `/api/*` çağrılarında görünen ekran
+  tenant'ını `x-forge-tenant` taşımıyor; /auth yolları taşımamalı; yetkisiz açık
+  tenant 403 (sunucu sözleşme kilidi). 4/4 yeşil olduktan sonra 5/5.
+- Yeşil: `api.ts` `setActiveTenant`/`apiHeaders`; `main.tsx` /api/me ile senkron +
+  içerik anahtarına tenant; `OrgScope.switchTenant` hedef tenant'ı başlıkla taşır
+  (geçiş sonrası ilk /api/me eski ekrana sabitlenmesin); `main.tsx` çıkışta temizler;
+  `ExecutionView` artifact indirmesi `apiHeaders` ile aynı kapsamı taşır.
+- Kabul: `scripts/web-acceptance.mjs` `tenant-context` bloğu: iki sekmede A/B yazım
+  (tab1 kendi tenant'ına yazar, Kabul görünmez; tab1 başlıkları çerez değişse de
+  sabit), tenant-id-visible/isolated/writes-own/tab1-pinned/tab2-follows.
+  Kabul 40/40 (35 + 5). Not: prompt-flow artık taze v0 için Kabul Org'a açılır.
+
 ### P25 web EN/TR + dark/light — kayıt (2026-09-09, 3 tur incelemede 0 bulguyla kapandı)
 
 4 tur bağımsız inceleme (plan 3 mercek + final 2 tur + kapanış) yürütüldü; bulunan 1 blocker
