@@ -985,6 +985,7 @@ export async function createHttpServer(config: LocalConfig) {
     }
     const rows = await selected
       .orderBy("created_at", "desc")
+      .orderBy("id", "desc")
       .limit(101)
       .execute();
     const page = rows.length > 100 ? rows.slice(0, 100) : rows;
@@ -1002,20 +1003,30 @@ export async function createHttpServer(config: LocalConfig) {
   });
   app.get("/api/installations", async (request) => {
     const actor = requestIdentity(request),
-      query = z.object({ project_ref: z.string() }).parse(request.query);
+      query = z
+        .object({
+          project_ref: z.string(),
+          after: z.string().max(200).optional(),
+        })
+        .parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
-    const rows = await storage.db
+    let selected = storage.db
       .selectFrom("client_installations")
       .selectAll()
       .where("tenant_id", "=", actor.tenantId)
       .where("user_id", "=", actor.userId)
-      .where("project_id", "=", query.project_ref)
-      .orderBy("id")
-      .limit(101)
-      .execute();
+      .where("project_id", "=", query.project_ref);
+    if (query.after !== undefined) {
+      // Issue #29: installation ids are SHA-256 fingerprints; the cursor must
+      // be validated and applied with the same key the page is ordered by.
+      if (!/^[a-f0-9]{64}$/.test(query.after))
+        throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
+      selected = selected.where("id", ">", query.after);
+    }
+    const rows = await selected.orderBy("id").limit(101).execute();
     const items = rows.length > 100 ? rows.slice(0, 100) : rows;
     return {
-      next: rows.length > 100 ? rows[99]!.id : null,
+      next: rows.length > 100 ? items[99]!.id : null,
       items: items.map((row) => ({
         ...row,
         capabilities: JSON.parse(row.capabilities_json),
@@ -1145,6 +1156,7 @@ export async function createHttpServer(config: LocalConfig) {
     }
     const rows = await selected
       .orderBy("created_at", "desc")
+      .orderBy("revision", "desc")
       .limit(51)
       .execute();
     const items = rows.length > 50 ? rows.slice(0, 50) : rows;

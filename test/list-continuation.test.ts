@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { openDatabase } from "../src/storage/database.js";
 import { IdentityService } from "../src/application/identity.js";
 import { PackageStore } from "../src/skills/store.js";
@@ -22,8 +22,9 @@ async function login(app: Awaited<ReturnType<typeof createHttpServer>>) {
 }
 void login;
 
-/** Issue #15: management and history lists must expose bounded continuation
- * pages instead of silently truncating at 100/50 rows. */
+/** Issue #15/#29: management and history lists must expose bounded
+ * continuation pages instead of silently truncating at 100/50 rows, must not
+ * repeat rows between pages, and the cursor must really be applied. */
 test("P2 #15 projects, logs, installations and revisions page completely", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-pages-"));
   const cfg = await localConfig(root);
@@ -62,7 +63,7 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
         headers,
         payload: { name: `Page project ${i}` },
       });
-    const projectIds = new Set<string>();
+    const projectIds: string[] = [];
     let next = null;
     for (let i = 0; i < 20; i++) {
       const page = await app.inject({
@@ -71,12 +72,13 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
       });
       expect(page.statusCode).toBe(200);
       for (const item of page.json().items as { id: string }[])
-        projectIds.add(item.id);
+        projectIds.push(item.id);
       next = page.json().next;
       if (!next) break;
     }
-    expect(projectIds.size).toBe(105);
-    expect(projectIds.has(projectId)).toBe(true);
+    expect(projectIds.length).toBe(105);
+    expect(new Set(projectIds).size).toBe(105);
+    expect(projectIds).toContain(projectId);
 
     // 55 revision: tek pakette geçmiş tamamen keşfedilir (HTTP handler ile).
     const identities = new IdentityService(storage.db);
@@ -111,7 +113,7 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
           ),
         },
       });
-    const revisions = new Set<string>();
+    const revisions: string[] = [];
     let revisionNext: string | null = null;
     for (let i = 0; i < 5; i++) {
       const page = await app.inject({
@@ -120,11 +122,12 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
       });
       expect(page.statusCode).toBe(200);
       for (const item of page.json().items as { revision: string }[])
-        revisions.add(item.revision);
+        revisions.push(item.revision);
       revisionNext = page.json().next;
       if (!revisionNext) break;
     }
-    expect(revisions.size).toBe(55);
+    expect(revisions.length).toBe(55);
+    expect(new Set(revisions).size).toBe(55);
 
     // 120 audit event (aynı timestamp'li çiftler dahil) tamamen taranır.
     const now = Date.now();
@@ -138,7 +141,7 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
       created_at: now - (i % 5), // 120 kayıt, 3 ayrı timestamp'te kümelenir
     }));
     await storage.db.insertInto("audit_events").values(events).execute();
-    const seen = new Set<string>();
+    const seen: string[] = [];
     let logNext: string | null = null;
     for (let i = 0; i < 5; i++) {
       const page = await app.inject({
@@ -147,17 +150,64 @@ test("P2 #15 projects, logs, installations and revisions page completely", async
       });
       expect(page.statusCode).toBe(200);
       for (const item of page.json().items as { id: string }[])
-        seen.add(item.id);
+        seen.push(item.id);
       logNext = page.json().next;
       if (!logNext) break;
     }
-    // Fixturün 120 kaydının tamamı + gerçek yayın olayları tekrarsız taranır.
-    expect(events.every((e) => seen.has(e.id!))).toBe(true);
-    expect(seen.size).toBe(175);
+    // Fixtürün 120 kaydı eksiksiz ve tekrarsız taranır.
+    expect(events.every((e) => seen.includes(e.id!))).toBe(true);
+    expect(seen.length).toBe(new Set(seen).size);
+    expect(seen.length).toBeGreaterThanOrEqual(120);
     expect(
       (
         await app.inject({
           url: `/api/logs?project_ref=${projectId}&after=bogus`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+
+    // 105 kurulum: after cursor'ı gerçekten uygulanır, hiçbir satır
+    // yinelenmez veya atlanmaz.
+    const installationIds = Array.from({ length: 105 }, (_, i) =>
+      createHash("sha256").update(`list-continuation-${i}`).digest("hex"),
+    );
+    for (const [i, id] of installationIds.entries()) {
+      const recorded = await app.inject({
+        method: "POST",
+        url: "/api/installations",
+        headers,
+        payload: {
+          id,
+          project_ref: projectId,
+          client: "claude",
+          version: null,
+          directory: `/continuation/${i}`,
+          event: "installed",
+        },
+      });
+      expect(recorded.statusCode).toBe(200);
+    }
+    const installed: string[] = [];
+    let installNext: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      const page = await app.inject({
+        url: `/api/installations?project_ref=${projectId}${installNext ? `&after=${installNext}` : ""}`,
+        headers,
+      });
+      expect(page.statusCode).toBe(200);
+      for (const item of page.json().items as { id: string }[])
+        installed.push(item.id);
+      installNext = page.json().next;
+      if (!installNext) break;
+    }
+    expect(installed.length).toBe(105);
+    expect(new Set(installed).size).toBe(105);
+    expect([...installed].sort()).toEqual([...installationIds].sort());
+    expect(
+      (
+        await app.inject({
+          url: `/api/installations?project_ref=${projectId}&after=not-a-cursor`,
           headers,
         })
       ).statusCode,
