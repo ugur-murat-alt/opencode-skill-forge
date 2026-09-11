@@ -53,6 +53,7 @@ import {
   MemoryRetentionService,
   retentionWindows,
 } from "../memory/retention.js";
+import { CuratorReview } from "../memory/curator/review.js";
 import { resolveCuratorModel } from "../runner/curator-model.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
@@ -146,6 +147,13 @@ export async function createHttpServer(config: LocalConfig) {
     db: storage.db,
     vaultRoot: memoryRoot,
     service: memory,
+  });
+  // M06 phase B: human approval/rejection for staged curator proposals. The
+  // write itself still goes through the M02 event + commit path.
+  const curatorReview = new CuratorReview({
+    db: storage.db,
+    service: memory,
+    commits: memoryCommits,
   });
   const memoryAudit = async (
     identity: Identity,
@@ -1915,6 +1923,7 @@ export async function createHttpServer(config: LocalConfig) {
         "title",
         "summary",
         "rationale",
+        "source_refs_json",
         "claim_class",
         "relation",
         "target_note_id",
@@ -1937,6 +1946,39 @@ export async function createHttpServer(config: LocalConfig) {
       items: rows.slice(0, limit),
       next: rows.length > limit ? rows[limit - 1]!.id : null,
     };
+  });
+  // M06 phase B: human decision on one staged proposal. Approval writes a new
+  // note revision through the M02 commit path (CAS + idempotent event key);
+  // rejection only records the decision. No model call, no bulk purge.
+  app.post("/api/memory/curator/proposals/:id/approve", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        expected_revision: z.number().int().min(0).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    return curatorReview.approve(identity, {
+      spaceId: body.space_id,
+      changeId: (request.params as { id: string }).id,
+      expectedRevision: body.expected_revision,
+    });
+  });
+  app.post("/api/memory/curator/proposals/:id/reject", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        reason: z.string().max(500).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    return curatorReview.reject(identity, {
+      spaceId: body.space_id,
+      changeId: (request.params as { id: string }).id,
+      reason: body.reason,
+    });
   });
   app.get("/api/memory/recall", async (request) => {
     const query = z

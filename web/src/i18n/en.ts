@@ -382,6 +382,10 @@ export const en: typeof tr = {
     memory_note_id_mismatch: "Document note_id does not match the target.",
     memory_note_unavailable: "Note not found.",
     memory_path_escape: "The write path escapes the vault root.",
+    memory_proposal_stale:
+      "The proposal is stale; the note has a newer revision.",
+    memory_proposal_state: "The proposal cannot be applied in this state.",
+    memory_proposal_unavailable: "Proposal not found.",
     memory_receipt_unavailable: "The accepted receipt cannot be reconstructed.",
     memory_revision_conflict: "The note has advanced with another change.",
     memory_revision_file_conflict:
