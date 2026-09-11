@@ -1,4 +1,4 @@
-# Skill Forge MCP
+# AGZ Project Management MCP
 
 ## Uygulama sözleşmesi
 

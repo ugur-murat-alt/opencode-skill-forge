@@ -1,6 +1,8 @@
-# Skill Forge MCP
+# AGZ Project Management MCP
 
-Skill Forge; skill paketlerini saklayan, arayan ve çalıştıran, tamamlanan işten skill geliştirme görevlerini kalıcı kuyrukta yürüten bağımsız bir servistir. Node.js üzerinde HTTP/MCP servisi ve web yönetim arayüzü sağlar. OpenCode kurulumu gerekmez.
+Proje adı 11.09.2026 itibarıyla **AGZ Project Management MCP** olarak güncellendi; npm paket kimliği (`@vaur94/opencode2-skill-forge`) ve `skill-forge` komutu korunur.
+
+Bu servis; skill paketlerini saklayan, arayan ve çalıştıran, tamamlanan işten skill geliştirme görevlerini kalıcı kuyrukta yürüten bağımsız bir servistir. Node.js üzerinde HTTP/MCP servisi ve web yönetim arayüzü sağlar. OpenCode kurulumu gerekmez.
 
 Bağımsız MCP sürümü `1.0.0`, npm'de `latest` kanalını kullanır. Bu ana sürüm eski OpenCode eklentisinden bağımsız servise kırıcı bir mimari geçiştir. Bu sürüm küçük ölçekli kullanıma açılır; geniş kullanıcı yükü, dört sağlayıcının canlı kabulü ve macOS/Windows uçtan uca doğrulaması tamamlanmış sayılmaz. [Sürüm notları](docs/tr/surum-notlari.md) çalışan kapsamı ve kalan sınırları açıklar.
 
