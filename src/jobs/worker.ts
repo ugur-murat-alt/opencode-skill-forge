@@ -9,6 +9,32 @@ export type JobHandler = (
   run: Run,
   signal: AbortSignal,
 ) => Promise<{ state: RunState; result: unknown; errorCode?: string }>;
+/**
+ * Issue #36 follow-up: a transient database error (SQLite busy/locked,
+ * PostgreSQL serialization/deadlock) must not terminalize a commit run; the
+ * queue retries it with backoff. Everything else keeps the previous terminal
+ * behavior.
+ */
+const RETRYABLE_DB_CODES = new Set([
+  "SQLITE_BUSY",
+  "SQLITE_BUSY_SNAPSHOT",
+  "SQLITE_LOCKED",
+  "40001",
+  "40P01",
+]);
+export function isRetryableWorkerError(error: unknown): boolean {
+  if (
+    error instanceof ForgeError &&
+    [429, 502, 503, 504].includes(error.status)
+  )
+    return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && RETRYABLE_DB_CODES.has(code)) return true;
+  const message = error instanceof Error ? error.message : "";
+  return /database is locked|database table is locked|SQLITE_BUSY/i.test(
+    message,
+  );
+}
 export interface ForgeWorkerOptions<Kind extends string> {
   postgresUrl?: string;
   leaseMs?: number;
@@ -375,8 +401,7 @@ export class ForgeWorker<Kind extends string = DefaultJobKind> {
           await this.queue.fail(
             run,
             error instanceof ForgeError ? error.code : "worker_error",
-            error instanceof ForgeError &&
-              [429, 502, 503, 504].includes(error.status),
+            isRetryableWorkerError(error),
           );
         } catch {
           controller.abort();
