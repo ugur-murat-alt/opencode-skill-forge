@@ -1832,3 +1832,31 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
 - Paralel yürüyen işler: M03 (#36 indeks/bağlam/altı MCP aracı) çekirdek ajan;
   M07 faz-2 bağımsız doğrulama ajanı; M04 (#37 UI) ve M05 (#38 hook/spool)
   faz-A ajanları.
+
+#### Hafıza modülü 2. faz entegrasyonu (2026-09-11, dal `feat/memory-m03-m08`)
+Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türetildi; PR ile alınacak):
+- **M03 (#36):** türetilmiş indeks + global recall + `memory_context` (bütçe, offered/known
+  revisions, truncation) + `memory_update/link/checkpoint` (CAS, receipt) + altı `memory_*`
+  MCP aracı + benchmark kabulü (recall@k 0.964, kaynak 1.0, çekimserlik 1.0; p95 ve
+  auto-write "not-measured").
+- **M04 (#37):** gerçek API'li hafıza çalışma alanı; faz-B'de graf/backlink, arama kartları,
+  bağlam paneli, görevler/Bu Hafta, inceleme kutusu, sağlık; tarayıcı kabulü **185/185**
+  (M06-B onay akışıyla **207/207**).
+- **M05 (#38):** hook sözleşmesi, dayanıklı spool + idempotent teslim, worktree binding,
+  installer (036), SessionStart/UserPromptSubmit bağlam enjeksiyonu, `[memory:off]`,
+  offered/delivered; native istemci kabulü ortamda yapılamadı (açık).
+- **M06 (#39):** bağımsız `MemoryCurator` profili, dar araçlar, politika modları ve
+  onay/ret yolu (CAS + audit); auto-write ölçümü final tura bırakıldı.
+- **M07 (#40):** AGZ salt-okunur envanter → dry-run/stage/apply/rollback/shadow; bağımsız
+  bulgular (hostile kimlik, tombstone replay, digest bağı) düzeltildi.
+- **M08 (#41):** retention pencereleri, unut/sil (tombstone + türetilmiş geçersizleştirme +
+  makbuz), yedek manifest/uzlaştırma, boş hedefe restore + yeniden indeks, additive health,
+  işletim/doküman rotası.
+- **Entegrasyon düzeltmeleri:** worker geçici DB hataları (SQLITE_BUSY/PG 40001) ve vault
+  yazıcı kilidi artık bounded retry; tipli düzenleme kaynak izi/geçerlilik/bilinmeyen
+  frontmatter'ı korur; bağlam bütçesi tüm pakette `used ≤ max`; `event_key` aynı içerikte
+  replay, farklı içerikte 409; `SUPERSEDES` hedefi superseded; retry deneme satırları kapanır;
+  `memory_note_purged` sözlükleri tamamlandı.
+- **Doğrulama turları:** M01/M02/M07 bağımsız paketleri yeşil; entegrasyon turu 6 yeni
+  bağımsız dosya (63/63) ve 4 defekt bulgusu (düzeltildi); final ret (M06-B + M08 + ölçüm)
+  sürüyor. Nihai kapı: tam takım + tarayıcı kabulü + paket + PR CI.
