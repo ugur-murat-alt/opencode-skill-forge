@@ -93,6 +93,17 @@ araacıdır — gerekçesi ve liveness sözleşmesi `docs/adr/pg-boss-liveness.m
   sürümlü commit hattına bağlar; audit uygulama katmanındadır, böylece HTTP
   ve MCP aynı kaydı üretir. `src/mcp/**` yalnız şema/kayıt adaptörüdür;
   bağımsız graf yazıcısı veya ikinci derleyici yoktur.
+- Yazma idempotency'si M02 olay hattındadır: aynı `event_key` + aynı içerik
+  pending olayı tamamlar veya kabul edilmiş receipt'i replay eder (timeout/
+  crash sonrası tekrar deneme); aynı anahtar farklı içerikle 409
+  `memory_event_conflict`'tir. Kayıpsız düzenleme: tipli patch yalnız açıkça
+  değiştirilen alanları değiştirir; `sources`, bilinmeyen frontmatter,
+  `created_at` ve geçerlilik penceresi yeni revizyona taşınır.
+- SUPERSEDES sözleşmesi: A `--SUPERSEDES-->` B ise **B** superseded olur,
+  A aktif kalır. Yaşam döngüsü operasyonel not durumudur
+  (`memory_notes.lifecycle` + türetilmiş indeks head'i), kabul edilmiş
+  revision dosyasını değiştirmez ve rebuild bu satırdan beslenir. Kaynağı
+  ayrıca arşivlemek isteyen açık `lifecycle`/`archive` işlemini kullanır.
 
 ## Bağlam, araç yüzeyi ve benchmark (issue #36)
 
@@ -100,9 +111,14 @@ araacıdır — gerekçesi ve liveness sözleşmesi `docs/adr/pg-boss-liveness.m
   ve kaynaklı devam adımını derler; her kart
   `note_id + revision + kind + snippet + match_reason + sources` taşır.
   Bütçe **bytes/2.5 tahminidir** (gerçek tokenizer yok; karakter token
-  sayılmaz) ve sert bayt sınırı tüm pakete uygulanır; sığmayan öğe
-  `truncated` + `continuation_note` ile bildirilir. Yetersiz kanıtta boş
-  sonuç döner, bütçe ilgisiz notlarla doldurulmaz.
+  sayılmaz) ve sert bayt sınırı **tüm pakete** (zarf + kartlar + bölümler +
+  offered) uygulanır: önce kartlar, sonra düşük öncelikli bölümler kırpılır;
+  aktif görev/engel/devam adımı korunur ve değişmez kural
+  `used_tokens_estimate <= max_tokens`'tır. Zarfın zorunlu alanları
+  (package_hash, bütçe) nedeniyle etkin en düşük bütçe 192 tahmini tokendır;
+  daha küçük istek bu tabana yükseltilir ve yanıtta etkin `max_tokens` döner.
+  Sığmayan öğe `truncated` + `continuation_note` ile bildirilir. Yetersiz
+  kanıtta boş sonuç döner, bütçe ilgisiz notlarla doldurulmaz.
 - Offered ≠ delivered: yalnız sunulan sürümler `offered`da listelenir; teslim
   istemcinin `known_revisions` beyanıdır ve değişmeyen sürümler tekrar
   enjekte edilmez. Compaction/resume'da beyan yoksa başlangıç paketi yeniden

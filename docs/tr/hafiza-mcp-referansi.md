@@ -14,9 +14,12 @@ Görev/oturum başlangıcı veya delta bağlamı. Aynı yetkili snapshot'tan akt
 görevler, engeller, son kararlar, pinler ve kaynaklı devam adımı derlenir.
 Her kart `note_id + revision + kind + snippet + match_reason + sources`
 taşır; bütçe `bytes/2.5 **tahmini**` ile hesaplanır (gerçek tokenizer yok,
-karakter token sayılmaz) ve zarf/pin/kaynaklar bütçeye dahildir. Varsayılan
-1024 token; `max_tokens` ile 128–8192 arası ayarlanır; en fazla 8 kart.
-Sığmayan kritik öğe `truncated` + `continuation_note` ile bildirilir.
+karakter token sayılmaz) ve zarf/kartlar/bölümler/offered bütçeye dahildir;
+`used_tokens_estimate <= max_tokens` değişmezdir. Varsayılan 1024 token;
+`max_tokens` ile 128–8192 arası istenir, zarfın zorunlu alanları nedeniyle
+etkin alt sınır 192 tahmini tokendır (yanıttaki etkin `max_tokens` esastır);
+en fazla 8 kart. Sığmayan kritik öğe `truncated` + `continuation_note` ile
+bildirilir.
 
 ```json
 {
