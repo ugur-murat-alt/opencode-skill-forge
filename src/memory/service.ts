@@ -342,6 +342,7 @@ export class MemoryService {
         created_at: now,
         updated_at: now,
         committed_revision: null,
+        note_id: null,
         error_code: null,
         receipt_json: null,
         attempts: 0,

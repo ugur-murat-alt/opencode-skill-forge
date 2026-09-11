@@ -1,12 +1,22 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   noteDisplayPath,
   noteWorkingPath,
+  revisionDir,
   revisionPath,
   safeJoin,
+  spaceRoot,
   tempDir,
   vaultRoot,
 } from "../src/memory/paths.js";
@@ -191,4 +201,50 @@ test("#35 quarantine keeps hash and reason, never raw content", async () => {
 
 test("#35 vault root lives under dataDir/memory", () => {
   expect(vaultRoot("/tmp/data")).toBe("/tmp/data/memory");
+});
+
+test("#35 publish refuses a symlinked intermediate directory and writes nothing outside", async () => {
+  const vault = await mkdtemp(join(tmpdir(), "forge-memory-sym-"));
+  const outside = await mkdtemp(join(tmpdir(), "forge-memory-out-"));
+  try {
+    const spaceId = "space-1";
+    const noteId = "note-1";
+    const content = "---\nformat_version: 1\n---\nGövde.\n";
+    const hash = sha256Hex(content);
+    await mkdir(spaceRoot(vault, spaceId), { recursive: true });
+    await mkdir(join(spaceRoot(vault, spaceId), "revisions"), {
+      recursive: true,
+    });
+    // revisions/<note> dışarıya symlink: yazma reddedilmeli.
+    await symlink(outside, revisionDir(vault, spaceId, noteId));
+    await expect(
+      publishRevisionFile(vault, spaceId, noteId, 1, hash, content),
+    ).rejects.toMatchObject({ code: "memory_path_escape", status: 422 });
+    expect(await readdir(outside)).toEqual([]);
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("#35 publish refuses an existing symlink target without touching the linked file", async () => {
+  const vault = await mkdtemp(join(tmpdir(), "forge-memory-sym2-"));
+  const outside = await mkdtemp(join(tmpdir(), "forge-memory-out2-"));
+  try {
+    const spaceId = "space-1";
+    const noteId = "note-1";
+    const content = "---\nformat_version: 1\n---\nGövde.\n";
+    const hash = sha256Hex(content);
+    const linked = join(outside, "linked.md");
+    await writeFile(linked, "dış dosya");
+    await mkdir(revisionDir(vault, spaceId, noteId), { recursive: true });
+    await symlink(linked, revisionPath(vault, spaceId, noteId, 1, hash));
+    await expect(
+      publishRevisionFile(vault, spaceId, noteId, 1, hash, content),
+    ).rejects.toMatchObject({ code: "memory_path_escape", status: 422 });
+    expect(await readFile(linked, "utf8")).toBe("dış dosya");
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });

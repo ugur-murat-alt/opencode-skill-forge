@@ -16,10 +16,11 @@ import {
   MemoryService,
   type MemoryRunScope,
 } from "./service.js";
-import { SpaceSerialQueue, VaultWriter } from "./writer.js";
+import { SpaceSerialQueue, VaultWriter, defaultIsPidAlive } from "./writer.js";
 import {
   atomicWriteFile,
   byteSize,
+  gcTempFiles,
   listRevisionFiles,
   publishRevisionFile,
   readTextIfExists,
@@ -172,6 +173,13 @@ export class MemoryCommitService {
     });
     const lease = await this.writer.acquire();
     try {
+      // Yazıcı kilidi bizdeyken başka canlı yerel yazıcı yoktur: ölü pid'lere
+      // ait geçici dosyalar sahiplik/canlılık denetimiyle temizlenir.
+      await gcTempFiles(this.deps.vaultRoot, {
+        isPidAlive: defaultIsPidAlive,
+      }).catch(() => {
+        process.stderr.write("Hafıza geçici dosya temizliği ertelendi\n");
+      });
       return await this.spaces.run(input.spaceId, () =>
         this.commitLocked(input, event, noteId, record, redacted),
       );
@@ -375,10 +383,19 @@ export class MemoryCommitService {
         .executeTakeFirst();
       expectedWorkingHash = previousRevision?.content_hash ?? null;
     }
-    if (!existingWorking || existingWorking.hash === expectedWorkingHash) {
-      await atomicWriteFile(workingPath, fileContent, {
-        tempDir: tempDir(this.deps.vaultRoot),
-      });
+    if (
+      !existingWorking ||
+      existingWorking.hash === expectedWorkingHash ||
+      // Kesinti replay'i: çalışma kopyası zaten bizim yazacağımız içerikse
+      // kendi yazımızdır; hayalet çatışma üretmeden benimsenir.
+      existingWorking.hash === fileHash
+    ) {
+      if (!existingWorking || existingWorking.hash !== fileHash) {
+        await atomicWriteFile(workingPath, fileContent, {
+          tempDir: tempDir(this.deps.vaultRoot),
+          vaultRoot: this.deps.vaultRoot,
+        });
+      }
     } else {
       workingConflict = {
         previous: expectedWorkingHash,
@@ -516,6 +533,7 @@ export class MemoryCommitService {
           .set({
             state: "committed",
             committed_revision: newRevision,
+            note_id: noteId,
             receipt_json: JSON.stringify(committedReceipt),
             error_code: null,
             attempts: sql`attempts + 1`,
@@ -651,12 +669,21 @@ export class MemoryCommitService {
     event: MemoryEvent,
   ): Promise<MemoryCommitReceipt> {
     const revision = event.committed_revision;
+    // 034: not bağı olmadan revizyon aramak aynı alandaki başka notun
+    // dosyasını döndürebilir; uydurma yerine açık hata.
+    if (!event.note_id)
+      throw new ForgeError(
+        "memory_receipt_unavailable",
+        "Kabul edilmiş receipt yeniden kurulamıyor; olay not bağı taşımıyor.",
+        409,
+      );
     const row = revision
       ? await this.db
           .selectFrom("memory_note_revisions")
           .selectAll()
           .where("tenant_id", "=", event.tenant_id)
           .where("space_id", "=", event.space_id)
+          .where("note_id", "=", event.note_id)
           .where("revision", "=", revision)
           .executeTakeFirst()
       : undefined;
@@ -753,15 +780,34 @@ export class MemoryCommitService {
       .executeTakeFirst();
     if (!event)
       throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    const payload = event.receipt_json
+      ? (JSON.parse(event.receipt_json) as MemoryCommitReceipt)
+      : null;
+    // Kabul edilmiş sürümün dosyası olmadan başarı raporlanmaz.
+    if (event.state === "committed") {
+      if (!payload?.filePath)
+        throw new ForgeError(
+          "memory_revision_file_missing",
+          "Kabul edilmiş revision dosyası bulunamadı.",
+          409,
+        );
+      const content = await readTextIfExists(
+        resolveVaultRelative(this.deps.vaultRoot, payload.filePath),
+      );
+      if (content === null || sha256Hex(content) !== payload.fileHash)
+        throw new ForgeError(
+          "memory_revision_file_missing",
+          "Kabul edilmiş revision dosyası bulunamadı veya bozulmuş.",
+          409,
+        );
+    }
     return {
       event_id: event.id,
       state: event.state,
       indexed: event.indexed_at !== null,
       committed_revision: event.committed_revision,
       error_code: event.error_code,
-      receipt: event.receipt_json
-        ? (JSON.parse(event.receipt_json) as MemoryCommitReceipt)
-        : null,
+      receipt: payload,
     };
   }
 }

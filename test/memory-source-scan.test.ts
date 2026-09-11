@@ -450,6 +450,67 @@ for (const backend of [
     }
   }, 30_000);
 
+  test(`#35 a deleted source root is reported as missing, never throws or deletes notes (${backend})`, async () => {
+    const { env, owner, space, sources } = await fixture(backend);
+    const sourceRoot = await mkdtemp(join(tmpdir(), "forge-source-gone-"));
+    try {
+      const content = "kaynak içerik";
+      await writeFile(join(sourceRoot, "a.md"), content);
+      const source = await sources.registerSource(owner, {
+        spaceId: space.id,
+        rootPath: sourceRoot,
+        mode: "read_only",
+      });
+      await bindNote(env.storage, owner, space.id, {
+        noteId: "gone-note",
+        sourceId: source.id,
+        path: "a.md",
+        hash: sha256Hex(content),
+        revision: 1,
+      });
+      await rm(sourceRoot, { recursive: true, force: true });
+      // Silinen kök ham ENOENT fırlatmaz; kaynak durumu ve rapor döner.
+      const report = await sources.scan(owner, {
+        sourceId: source.id,
+        limit: 50,
+      });
+      expect(report.root_state).toBe("missing");
+      expect(report.scanned).toBe(0);
+      expect(report.done).toBe(true);
+      expect(typeof report.errors).toBe("number");
+      const row = await env.storage.db
+        .selectFrom("memory_sources")
+        .selectAll()
+        .where("id", "=", source.id)
+        .executeTakeFirstOrThrow();
+      expect(row.status).toBe("missing");
+      const note = await env.storage.db
+        .selectFrom("memory_notes")
+        .selectAll()
+        .where("id", "=", "gone-note")
+        .executeTakeFirstOrThrow();
+      expect(note.deleted_at).toBeNull();
+      // Kök geri gelince tarama yeniden çalışır ve kaynak etkinleşir.
+      await mkdir(sourceRoot, { recursive: true });
+      await writeFile(join(sourceRoot, "a.md"), content);
+      const again = await sources.scan(owner, {
+        sourceId: source.id,
+        limit: 50,
+      });
+      expect(again.root_state).toBe("present");
+      expect(again.unchanged).toBe(1);
+      const restored = await env.storage.db
+        .selectFrom("memory_sources")
+        .selectAll()
+        .where("id", "=", source.id)
+        .executeTakeFirstOrThrow();
+      expect(restored.status).toBe("active");
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await env.cleanup();
+    }
+  }, 30_000);
+
   if (backend === "sqlite") {
     test("#35 1000+ sources are fully reconciled with a bounded per-turn read budget", async () => {
       const { env, owner, space, sources } = await fixture(backend);

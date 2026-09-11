@@ -1,6 +1,15 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client as PgClient } from "pg";
 import { openDatabase, type DatabaseHandle } from "../src/storage/database.js";
@@ -11,11 +20,17 @@ import {
   MemoryCommitService,
   type MemoryCommitHooks,
 } from "../src/memory/commit.js";
-import { publishRevisionFile, sha256Hex } from "../src/memory/files.js";
+import {
+  publishRevisionFile,
+  sha256Hex,
+  tempFileName,
+} from "../src/memory/files.js";
 import {
   noteWorkingPath,
   resolveVaultRelative,
   revisionPath,
+  spaceRoot,
+  tempDir,
   vaultRoot,
 } from "../src/memory/paths.js";
 
@@ -655,6 +670,269 @@ for (const backend of [
       ).toBe(true);
       expect(JSON.stringify(entries)).not.toContain("eski başarısız yayın");
     } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test(`#35 receipt reconstruction is scoped to the event's note (${backend})`, async () => {
+    const { env, owner, space, storage, commits, record } =
+      await fixture(backend);
+    try {
+      const textFor = (noteId: string, body: string) =>
+        contentFor(noteId, noteId, body).replace(
+          "memory_space_id: SPACE",
+          `memory_space_id: ${JSON.stringify(space.id)}`,
+        );
+      const commitNote = async (key: string, noteId: string, body: string) => {
+        const content = textFor(noteId, body);
+        const event = await record(key, content);
+        const receipt = await commits.commit({
+          identity: owner,
+          spaceId: space.id,
+          eventId: event.id,
+          sourceKind: "manual",
+          content,
+        });
+        return { event, content, receipt };
+      };
+      await commitNote("recon-a", "note-a", "A gövdesi");
+      const b = await commitNote("recon-b", "note-b", "B gövdesi");
+      // Commit, olayı hedef not kimliğiyle bağlar.
+      expect(
+        (
+          await storage.db
+            .selectFrom("memory_events")
+            .select(["note_id"])
+            .where("id", "=", b.event.id)
+            .executeTakeFirstOrThrow()
+        ).note_id,
+      ).toBe("note-b");
+      // Receipt kaybolsa bile replay aynı alandaki başka notu seçmez.
+      await storage.db
+        .updateTable("memory_events")
+        .set({ receipt_json: null })
+        .where("id", "=", b.event.id)
+        .execute();
+      const replay = await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: b.event.id,
+        sourceKind: "manual",
+        content: b.content,
+      });
+      expect(replay.noteId).toBe("note-b");
+      expect(replay.filePath).toBe(b.receipt.filePath);
+      // Not bağı tamamen kaybolmuşsa uydurma yerine açık hata.
+      const a = await commitNote("recon-a2", "note-a2", "A2 gövdesi");
+      await storage.db
+        .updateTable("memory_events")
+        .set({ receipt_json: null, note_id: null })
+        .where("id", "=", a.event.id)
+        .execute();
+      await expect(
+        commits.commit({
+          identity: owner,
+          spaceId: space.id,
+          eventId: a.event.id,
+          sourceKind: "manual",
+          content: a.content,
+        }),
+      ).rejects.toMatchObject({
+        code: "memory_receipt_unavailable",
+        status: 409,
+      });
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test(`#35 replay adopts its own crashed working-copy write without a ghost conflict (${backend})`, async () => {
+    const { env, owner, space, storage, commits, record } =
+      await fixture(backend);
+    try {
+      const contentForSpace = (title: string, body: string) =>
+        contentFor("ghost-note", title, body).replace(
+          "memory_space_id: SPACE",
+          `memory_space_id: ${JSON.stringify(space.id)}`,
+        );
+      const v1 = contentForSpace("Ghost 1", "Temel.");
+      const e1 = await record("ghost-e1", v1);
+      await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: e1.id,
+        sourceKind: "manual",
+        content: v1,
+      });
+      const v2 = contentForSpace("Ghost 2", "Kesinti.");
+      const e2 = await record("ghost-e2", v2);
+      await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: e2.id,
+        sourceKind: "manual",
+        content: v2,
+        baseRevision: 1,
+      });
+      // Kesinti: rev2 dosyası ve çalışma kopyası diskte, DB rev1.
+      await storage.db
+        .deleteFrom("memory_note_revisions")
+        .where("revision", "=", 2)
+        .where("note_id", "=", "ghost-note")
+        .execute();
+      await storage.db
+        .updateTable("memory_notes")
+        .set({ current_revision: 1 })
+        .where("id", "=", "ghost-note")
+        .execute();
+      await storage.db
+        .updateTable("memory_events")
+        .set({
+          state: "pending",
+          committed_revision: null,
+          receipt_json: null,
+          indexed_at: null,
+        })
+        .where("id", "=", e2.id)
+        .execute();
+      const replay = await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: e2.id,
+        sourceKind: "manual",
+        content: v2,
+        baseRevision: 1,
+      });
+      expect(replay.revision).toBe(2);
+      expect(
+        await storage.db
+          .selectFrom("memory_change_candidates")
+          .select(["id"])
+          .where("reason", "=", "working_copy_changed")
+          .execute(),
+      ).toEqual([]);
+      // Gerçek dış edit hâlâ çatışma olarak görünür.
+      const working = noteWorkingPath(
+        vaultRoot(env.dataDir),
+        space.id,
+        "ghost-note",
+      );
+      await writeFile(working, "dış editör metni");
+      const v3 = contentForSpace("Ghost 3", "Üçüncü.");
+      const e3 = await record("ghost-e3", v3);
+      await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: e3.id,
+        sourceKind: "manual",
+        content: v3,
+        baseRevision: 2,
+      });
+      expect(
+        await storage.db
+          .selectFrom("memory_change_candidates")
+          .select(["reason"])
+          .where("reason", "=", "working_copy_changed")
+          .execute(),
+      ).toHaveLength(1);
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test(`#35 a successful commit cleans dead-pid temp files and keeps live/foreign ones (${backend})`, async () => {
+    const { env, owner, space, commits, record } = await fixture(backend);
+    try {
+      const dir = tempDir(vaultRoot(env.dataDir));
+      await mkdir(dir, { recursive: true });
+      const ownHost = hostname();
+      const dead = tempFileName(424242, ownHost);
+      const live = tempFileName(process.pid, ownHost);
+      const foreign = tempFileName(424243, "other-host");
+      for (const name of [dead, live, foreign])
+        await writeFile(join(dir, name), "tmp");
+      const old = (Date.now() - 60_000) / 1000;
+      for (const name of [dead, live, foreign])
+        await utimes(join(dir, name), old, old);
+      const content = contentFor("gc-note", "GC", "GC gövdesi.").replace(
+        "memory_space_id: SPACE",
+        `memory_space_id: ${JSON.stringify(space.id)}`,
+      );
+      const event = await record("gc-evt", content);
+      await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: event.id,
+        sourceKind: "manual",
+        content,
+      });
+      const left = await readdir(dir);
+      expect(left).not.toContain(dead);
+      expect(left).toContain(live);
+      expect(left).toContain(foreign);
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test(`#35 the receipt reader refuses success when the revision file is gone (${backend})`, async () => {
+    const { env, owner, space, commits, record } = await fixture(backend);
+    try {
+      const content = contentFor(
+        "file-note",
+        "Dosya",
+        "Dosya gövdesi.",
+      ).replace(
+        "memory_space_id: SPACE",
+        `memory_space_id: ${JSON.stringify(space.id)}`,
+      );
+      const event = await record("file-evt", content);
+      const receipt = await commits.commit({
+        identity: owner,
+        spaceId: space.id,
+        eventId: event.id,
+        sourceKind: "manual",
+        content,
+      });
+      const view = await commits.receipt(owner, space.id, "file-evt");
+      expect(view.state).toBe("committed");
+      expect(view.receipt?.revision).toBe(1);
+      await rm(resolveVaultRelative(vaultRoot(env.dataDir), receipt.filePath));
+      await expect(
+        commits.receipt(owner, space.id, "file-evt"),
+      ).rejects.toMatchObject({
+        code: "memory_revision_file_missing",
+        status: 409,
+      });
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test(`#35 commit refuses a symlinked working-copy directory (${backend})`, async () => {
+    const { env, owner, space, commits, record } = await fixture(backend);
+    const outside = await mkdtemp(join(tmpdir(), "forge-m02-work-out-"));
+    try {
+      const vault = vaultRoot(env.dataDir);
+      await mkdir(spaceRoot(vault, space.id), { recursive: true });
+      await symlink(outside, join(spaceRoot(vault, space.id), "notes"));
+      const content = contentFor("work-sym", "Sym", "Sym gövde.").replace(
+        "memory_space_id: SPACE",
+        `memory_space_id: ${JSON.stringify(space.id)}`,
+      );
+      const event = await record("work-sym-evt", content);
+      await expect(
+        commits.commit({
+          identity: owner,
+          spaceId: space.id,
+          eventId: event.id,
+          sourceKind: "manual",
+          content,
+        }),
+      ).rejects.toMatchObject({ code: "memory_path_escape", status: 422 });
+      expect(await readdir(outside)).toEqual([]);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
       await env.cleanup();
     }
   }, 30_000);

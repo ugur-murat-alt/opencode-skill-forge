@@ -32,6 +32,8 @@ export const MEMORY_SCAN_DEFAULT_LIMIT = 200;
 
 export interface ScanReport {
   space_id: string;
+  /** Whether the registered root existed and was readable this turn. */
+  root_state: "present" | "missing";
   scanned: number;
   read: number;
   unchanged: number;
@@ -214,6 +216,7 @@ export class MemorySourceService {
     const cursor = parseCursor(source.cursor_json);
     const report: ScanReport = {
       space_id: source.space_id,
+      root_state: "present",
       scanned: 0,
       read: 0,
       unchanged: 0,
@@ -225,6 +228,40 @@ export class MemorySourceService {
       done: false,
       cursor: cursor,
     };
+    // Silinmiş/erişilemeyen kök ham ENOENT fırlatmaz: kaynak durumu işaretlenir
+    // ve gerçek sayaçlarla rapor döner; not otomatik silinmez.
+    try {
+      await readdir(source.root_path);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (
+        code !== "ENOENT" &&
+        code !== "ENOTDIR" &&
+        code !== "EACCES" &&
+        code !== "EPERM"
+      )
+        throw error;
+      const now = this.now();
+      await this.db
+        .updateTable("memory_sources")
+        .set({
+          status: "missing",
+          cursor_json: null,
+          checkpoint: null,
+          last_scan_at: now,
+          updated_at: now,
+        })
+        .where("tenant_id", "=", identity.tenantId)
+        .where("id", "=", source.id)
+        .execute();
+      return {
+        ...report,
+        root_state: "missing",
+        errors: 1,
+        done: true,
+        cursor: null,
+      };
+    }
     const openCandidates = await this.openCandidates(
       source.id,
       identity.tenantId,
@@ -327,6 +364,7 @@ export class MemorySourceService {
     await this.db
       .updateTable("memory_sources")
       .set({
+        status: "active",
         cursor_json: done ? null : JSON.stringify({ path: lastEntry }),
         checkpoint: done ? null : lastEntry,
         last_scan_at: now,

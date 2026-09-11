@@ -259,4 +259,123 @@ for (const backend of [
       await rm(freshRoot, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test(`#35 033->034 adds the event note binding without data loss (${backend})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "forge-m02-note-mig-"));
+    const admin =
+      backend === "postgres" && process.env.FORGE_TEST_POSTGRES_URL
+        ? new PgClient({
+            connectionString: process.env.FORGE_TEST_POSTGRES_URL,
+          })
+        : undefined;
+    await admin?.connect();
+    const databaseName = `forge_m02_note_${crypto.randomUUID().replaceAll("-", "")}`;
+    let postgresUrl: string | undefined;
+    if (backend === "postgres") {
+      await admin!.query(`CREATE DATABASE "${databaseName}"`);
+      const url = new URL(process.env.FORGE_TEST_POSTGRES_URL!);
+      url.pathname = `/${databaseName}`;
+      postgresUrl = url.toString();
+    }
+    const handle = await openDatabaseConnection({
+      dataDir: root,
+      ...(postgresUrl ? { postgresUrl } : {}),
+    });
+    try {
+      const migrations = migrationsFor(backend);
+      const pre034 = Object.fromEntries(
+        Object.entries(migrations).filter(
+          ([name]) => name < "034_memory_event_note",
+        ),
+      );
+      const first = await new Migrator({
+        db: handle.db,
+        provider: { getMigrations: async () => pre034 },
+      }).migrateToLatest();
+      expect(first.error).toBeUndefined();
+      const now = Date.now();
+      await handle.db
+        .insertInto("tenants")
+        .values({ id: "t1", name: "T", created_at: now })
+        .execute();
+      await handle.db
+        .insertInto("users")
+        .values({ id: "u1", subject: "s1", display_name: "U", created_at: now })
+        .execute();
+      await handle.db
+        .insertInto("memberships")
+        .values({ tenant_id: "t1", user_id: "u1", role: "founder" })
+        .execute();
+      await handle.db
+        .insertInto("memory_spaces")
+        .values({
+          tenant_id: "t1",
+          id: "sp1",
+          kind: "personal",
+          owner_user_id: "u1",
+          project_id: null,
+          name: "S",
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+      await handle.db
+        .insertInto("memory_events")
+        .values({
+          tenant_id: "t1",
+          space_id: "sp1",
+          id: "ev1",
+          source_event_key: "k1",
+          source_kind: "manual",
+          content_hash: "a".repeat(64),
+          state: "committed",
+          observed_at: null,
+          created_at: now,
+          updated_at: now,
+          committed_revision: 1,
+          error_code: null,
+          receipt_json: null,
+          attempts: 0,
+          indexed_at: null,
+        })
+        .execute();
+      const second = await new Migrator({
+        db: handle.db,
+        provider: { getMigrations: async () => migrations },
+      }).migrateToLatest();
+      expect(second.error).toBeUndefined();
+      const event = await handle.db
+        .selectFrom("memory_events")
+        .selectAll()
+        .where("id", "=", "ev1")
+        .executeTakeFirstOrThrow();
+      expect(event.note_id).toBeNull();
+      expect(event.state).toBe("committed");
+      expect(event.committed_revision).toBe(1);
+      await handle.db
+        .updateTable("memory_events")
+        .set({ note_id: "note-x" })
+        .where("id", "=", "ev1")
+        .execute();
+      expect(
+        (
+          await handle.db
+            .selectFrom("memory_events")
+            .select(["note_id"])
+            .where("id", "=", "ev1")
+            .executeTakeFirstOrThrow()
+        ).note_id,
+      ).toBe("note-x");
+    } finally {
+      await handle.close();
+      if (admin) {
+        try {
+          await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+        } finally {
+          await admin.end();
+        }
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 }

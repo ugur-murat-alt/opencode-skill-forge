@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
+  lstat,
   mkdir,
   open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -92,19 +94,79 @@ async function syncDir(dir: string): Promise<void> {
   }
 }
 
+function pathEscape(message = "Yol vault kökünün dışına çıkıyor."): never {
+  throw new ForgeError("memory_path_escape", message, 422);
+}
+
+/**
+ * Issue #35 bağımsız bulgu: yazma yolu symlink bileşenlerden geçemez. Her
+ * mevcut ara bileşen `lstat` ile denetlenir, oluşturma sonrası tekrar
+ * doğrulanır (yarış), ve `realpath(parent)` vault kökünün realpath'i altında
+ * olmak zorundadır. Mevcut hedef symlink ise reddedilir.
+ */
+export async function assertSafeWriteTarget(
+  root: string,
+  target: string,
+): Promise<void> {
+  const rootResolved = root;
+  const rel = relative(rootResolved, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) pathEscape();
+  await ensureDir(root);
+  await assertNoSymlinkComponents(root, target);
+  await ensureDir(dirname(target));
+  // Oluşturmadan sonra tekrar doğrula: araya giren symlink yakalanır.
+  await assertNoSymlinkComponents(root, target);
+  const rootReal = await realpath(root);
+  const parentReal = await realpath(dirname(target));
+  if (parentReal !== rootReal && !parentReal.startsWith(rootReal + sep))
+    pathEscape("Hedef dizin vault kökünün dışında.");
+  const targetInfo = await lstat(target).catch((error) => {
+    if ((error as { code?: string }).code === "ENOENT") return null;
+    throw error;
+  });
+  if (targetInfo?.isSymbolicLink())
+    pathEscape("Mevcut hedef symlink; yazma reddedildi.");
+}
+
+async function assertNoSymlinkComponents(
+  root: string,
+  target: string,
+): Promise<void> {
+  const rel = relative(root, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) pathEscape();
+  const segments = rel.split(sep).slice(0, -1);
+  let current = root;
+  for (const segment of segments) {
+    current = join(current, segment);
+    const info = await lstat(current).catch((error) => {
+      if ((error as { code?: string }).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info) break;
+    if (info.isSymbolicLink())
+      pathEscape("Symlink bileşen üzerinden yazma reddedildi.");
+  }
+}
+
 /**
  * Atomically replace `path`: write to a temp file (same filesystem), fsync,
- * rename over the target, then fsync the directory.
+ * rename over the target, then fsync the directory. When `vaultRoot` is
+ * given, both the target and the temp location are symlink/escape-checked
+ * before anything is written.
  */
 export async function atomicWriteFile(
   path: string,
   content: string | Buffer,
-  options: { tempDir?: string; mode?: number } = {},
+  options: { tempDir?: string; mode?: number; vaultRoot?: string } = {},
 ): Promise<void> {
   const directory = options.tempDir ?? dirname(path);
+  const temp = join(directory, tempFileName(process.pid));
+  if (options.vaultRoot) {
+    await assertSafeWriteTarget(options.vaultRoot, path);
+    await assertSafeWriteTarget(options.vaultRoot, temp);
+  }
   await ensureDir(directory);
   await ensureDir(dirname(path));
-  const temp = join(directory, tempFileName(process.pid));
   const handle = await open(temp, "wx", options.mode ?? 0o600);
   try {
     await handle.writeFile(content);
@@ -176,6 +238,8 @@ export async function publishRevisionFile(
   const relativePath = relativeVaultPath(root, path);
   if (!relativePath)
     throw new ForgeError("invalid_memory_path", "Revision yolu geçersiz.", 422);
+  // Symlink/kaçış denetimi okuma/exists kontrolünden ÖNCE.
+  await assertSafeWriteTarget(root, path);
   if (await fileExists(path)) {
     const existing = await readFile(path, "utf8");
     if (sha256Hex(existing) !== contentHash)
@@ -186,7 +250,10 @@ export async function publishRevisionFile(
       );
     return { path, relativePath, created: false };
   }
-  await atomicWriteFile(path, content, { tempDir: tempDir(root) });
+  await atomicWriteFile(path, content, {
+    tempDir: tempDir(root),
+    vaultRoot: root,
+  });
   return { path, relativePath, created: true };
 }
 
@@ -302,6 +369,9 @@ export async function writeQuarantine(
     created_at: Date.now(),
   };
   const path = join(dir, `${id}.json`);
-  await atomicWriteFile(path, JSON.stringify(record), { tempDir: dir });
+  await atomicWriteFile(path, JSON.stringify(record), {
+    tempDir: dir,
+    vaultRoot: root,
+  });
   return path;
 }

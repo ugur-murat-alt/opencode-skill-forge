@@ -329,6 +329,8 @@ export const tr = {
     memory_note_deleted: "Not arşivlenmiş; önce açık restore gerekir.",
     memory_note_id_mismatch: "Belge note_id hedefle eşleşmiyor.",
     memory_note_unavailable: "Not bulunamadı.",
+    memory_path_escape: "Yazma yolu vault kökünün dışına çıkıyor.",
+    memory_receipt_unavailable: "Kabul edilmiş receipt yeniden kurulamıyor.",
     memory_revision_conflict: "Not başka bir değişiklikle ilerlemiş.",
     memory_revision_file_conflict: "Revision yolu farklı içerikle dolu.",
     memory_revision_file_missing: "Kabul edilmiş revision dosyası bulunamadı.",

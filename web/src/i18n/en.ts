@@ -337,6 +337,8 @@ export const en: typeof tr = {
     memory_note_deleted: "Note is archived; an explicit restore is required.",
     memory_note_id_mismatch: "Document note_id does not match the target.",
     memory_note_unavailable: "Note not found.",
+    memory_path_escape: "The write path escapes the vault root.",
+    memory_receipt_unavailable: "The accepted receipt cannot be reconstructed.",
     memory_revision_conflict: "The note has advanced with another change.",
     memory_revision_file_conflict:
       "Revision path already holds different content.",

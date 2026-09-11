@@ -538,6 +538,8 @@ export interface MemoryEvent {
   created_at: number;
   updated_at: number;
   committed_revision: number | null;
+  /** Issue #35 follow-up (034): target note for receipt reconstruction. */
+  note_id: string | null;
   /** Issue #35: durable receipt/diagnostic and derived-index marker. */
   error_code: string | null;
   receipt_json: string | null;
