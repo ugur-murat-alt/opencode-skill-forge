@@ -6,7 +6,14 @@
  * yolu kullanılmaz. Hedef, geçici dizinde açılan gerçek SQLite + vault'tur.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,6 +50,8 @@ import {
 } from "./fixtures/agz/buildAgzFixture.js";
 
 const FIXED_NOW = 1_775_000_000_000;
+// Gerçek SQLite/vault kurulumu tam takım yükü altında 5 sn'yi aşabilir.
+setDefaultTimeout(60_000);
 
 interface TestEnv {
   root: string;

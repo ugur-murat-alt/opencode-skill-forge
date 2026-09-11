@@ -9,7 +9,7 @@
  *  - sahiplik tespiti LIKE yerine literal önek karşılaştırması kullanır.
  */
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,10 @@ import { openWritableSqlite } from "../src/memory/agz/sqlite-driver.js";
 
 const FIXED_NOW = 1_776_000_000_000;
 const roots: string[] = [];
+
+// Gerçek SQLite/vault kurulumu tam takım yükü altında 5 sn'yi aşabilir;
+// testler kendi başına deterministik kalır.
+setDefaultTimeout(60_000);
 
 afterAll(async () => {
   await Promise.all(
