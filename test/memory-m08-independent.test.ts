@@ -493,7 +493,9 @@ test("arşiv türetilmiş indeksi geçersizleştirir; replay tombstone'u dirilte
     } catch (error) {
       revived = error;
     }
-    expect((revived as { code?: string }).code).toBe("memory_note_unavailable");
+    // M07 sözleşmesi: arşivli/tombstoned hedef, committed olay replay'inde
+    // bile memory_note_deleted (409) ile reddedilir ve otomatik diriltilmez.
+    expect((revived as { code?: string }).code).toBe("memory_note_deleted");
     // Açık restore sonrası yeni revizyon yazılabilir.
     await env.memory.restoreNote(env.owner, {
       spaceId: env.spaceId,
