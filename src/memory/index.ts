@@ -281,7 +281,7 @@ export class MemoryIndexService {
   ): Promise<boolean> {
     const note = await this.db
       .selectFrom("memory_notes")
-      .select(["current_revision"])
+      .select(["current_revision", "lifecycle"])
       .where("tenant_id", "=", tenantId)
       .where("space_id", "=", spaceId)
       .where("id", "=", noteId)
@@ -302,6 +302,10 @@ export class MemoryIndexService {
         ? await indexedRecordFromFile(row, this.vaultRoot)
         : null);
     if (!record) return false;
+    // Lifecycle operasyonel not durumudur (supersede/arşiv yeni revision
+    // gerektirmez); indeks head'i not satırından beslenir ki rebuild aynı
+    // sonucu üretsin.
+    record.lifecycle = note.lifecycle;
     await this.indexRevision({
       tenantId,
       spaceId,

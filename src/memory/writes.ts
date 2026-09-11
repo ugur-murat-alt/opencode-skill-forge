@@ -4,6 +4,7 @@ import type { DB } from "../storage/schema.js";
 import type { Identity } from "../application/identity.js";
 import { ForgeError } from "../domain/errors.js";
 import {
+  parseMemoryDocument,
   serializeMemoryDocument,
   type MemoryEdge,
   type MemoryKind,
@@ -14,7 +15,8 @@ import {
 } from "../domain/memory.js";
 import { MemoryService } from "./service.js";
 import { MemoryCommitService, type MemoryCommitReceipt } from "./commit.js";
-import { sha256Hex } from "./files.js";
+import { sha256Hex, readTextIfExists } from "./files.js";
+import { resolveVaultRelative } from "./paths.js";
 
 /**
  * Issue #36 (M03): typed write operations shared by HTTP and MCP.
@@ -50,6 +52,7 @@ export class MemoryWriteService {
       db: Kysely<DB>;
       service: MemoryService;
       commits: MemoryCommitService;
+      vaultRoot?: string;
     },
   ) {}
 
@@ -64,18 +67,16 @@ export class MemoryWriteService {
     },
   ): Promise<MemoryCommitReceipt> {
     const content = serializeMemoryDocument(input.record);
+    // M02 idempotency: aynı `event_key` + aynı içerik `duplicate` döner ve
+    // commit ya pending olayı tamamlar ya da kabul edilmiş receipt'i replay
+    // eder (timeout/crash sonrası tekrar deneme). Aynı anahtar FARKLI
+    // içerikle kayıtlıysa `recordEvent` 409 `memory_event_conflict` fırlatır.
     const event = await this.deps.service.recordEvent(identity, {
       spaceId: input.spaceId,
       sourceEventKey: input.eventKey ?? `mcp:${randomUUID()}`,
       sourceKind: "manual",
       contentHash: sha256Hex(content),
     });
-    if (event.status === "duplicate")
-      throw new ForgeError(
-        "memory_event_conflict",
-        "Aynı olay anahtarı zaten kullanılmış.",
-        409,
-      );
     return this.deps.commits.commit({
       identity,
       spaceId: input.spaceId,
@@ -116,6 +117,32 @@ export class MemoryWriteService {
         "Kabul edilmiş sürüm bulunamadı.",
         409,
       );
+    // Kayıpsız düzenleme: kabul edilmiş revision dosyası tam kayıt olarak
+    // (sources, unknown frontmatter, geçerlilik penceresi, created_at dahil)
+    // geri okunur. Kök, servis kurulumundan da çözülebilir; dosya yoksa
+    // anlamsal metadata'ya düşülür.
+    const root = this.deps.vaultRoot ?? this.deps.service.vaultRoot;
+    if (root && row.file_path) {
+      const text = await readTextIfExists(
+        resolveVaultRelative(root, row.file_path),
+      );
+      if (text !== null) {
+        const parsed = parseMemoryDocument(text);
+        if (
+          parsed.status === "ok" &&
+          parsed.record.noteId === noteId &&
+          parsed.record.spaceId === spaceId
+        )
+          return {
+            note,
+            record: {
+              ...parsed.record,
+              baseRevision: note.current_revision,
+              revision: note.current_revision,
+            },
+          };
+      }
+    }
     const metadata = JSON.parse(row.metadata_json) as {
       record?: {
         kind?: string;
@@ -127,6 +154,12 @@ export class MemoryWriteService {
         verification?: string;
         sources?: unknown[];
         edges?: { relation: string; target: string }[];
+        valid_from?: number | null;
+        valid_until?: number | null;
+        created_at?: number | null;
+        observed_at?: number | null;
+        stale?: boolean | null;
+        unknown?: Record<string, unknown>;
       };
     };
     const meta = metadata.record;
@@ -147,16 +180,16 @@ export class MemoryWriteService {
       pinned: Boolean(meta.pinned),
       taskStatus: (meta.task_status ?? null) as TaskStatus | null,
       verification: (meta.verification ?? "declared") as MemoryVerification,
-      stale: null,
-      sources: [],
+      stale: meta.stale ?? null,
+      sources: (meta.sources ?? []) as MemoryRecord["sources"],
       edges: (meta.edges ?? []) as MemoryEdge[],
-      createdAt: null,
-      observedAt: null,
-      validFrom: null,
-      validUntil: null,
+      createdAt: meta.created_at ?? null,
+      observedAt: meta.observed_at ?? null,
+      validFrom: meta.valid_from ?? null,
+      validUntil: meta.valid_until ?? null,
       baseRevision: note.current_revision,
       revision: note.current_revision,
-      unknown: {},
+      unknown: meta.unknown ?? {},
       body: row.body_md,
     };
     return { note, record };
@@ -290,9 +323,10 @@ export class MemoryWriteService {
     };
     if (input.supersede_target) {
       await this.assertTarget(identity, space.id, input.supersede_target);
+      // Sözleşme: A --SUPERSEDES--> B ise B superseded olur, A aktif kalır.
+      // Kaynağı ayrıca arşivlemek isteyen açık `lifecycle`/`archive` kullanır.
       next = {
         ...next,
-        lifecycle: "superseded",
         edges: addEdge(next.edges, "SUPERSEDES", input.supersede_target),
       };
     }
@@ -303,11 +337,21 @@ export class MemoryWriteService {
       record: next,
       eventKey: input.event_key,
     });
+    if (input.supersede_target)
+      await this.markSuperseded(
+        identity,
+        space.id,
+        input.supersede_target,
+        input.note_id,
+      );
     await this.audit(identity, "memory.update.applied", {
       space_id: space.id,
       note_id: input.note_id,
       revision: receipt.revision,
-      status: "patched",
+      status: input.supersede_target ? "superseded_target" : "patched",
+      ...(input.supersede_target
+        ? { supersede_target: input.supersede_target }
+        : {}),
     });
     return {
       status: receipt.status,
@@ -315,6 +359,39 @@ export class MemoryWriteService {
       revision: receipt.revision,
       receipt,
     };
+  }
+
+  /**
+   * Lifecycle is operational note state: `memory_notes.lifecycle` (and its
+   * derived index head) changes, the target's accepted revision/file is
+   * untouched. Rebuild reads lifecycle from `memory_notes`, so this survives
+   * an index rebuild.
+   */
+  private async markSuperseded(
+    identity: Identity,
+    spaceId: string,
+    targetNoteId: string,
+    sourceNoteId: string,
+  ): Promise<void> {
+    const now = Date.now();
+    await this.deps.db
+      .updateTable("memory_notes")
+      .set({
+        lifecycle: "superseded",
+        superseded_by: sourceNoteId,
+        updated_at: now,
+      })
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", spaceId)
+      .where("id", "=", targetNoteId)
+      .execute();
+    await this.deps.db
+      .updateTable("memory_index_heads")
+      .set({ lifecycle: "superseded", indexed_at: now })
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", spaceId)
+      .where("note_id", "=", targetNoteId)
+      .execute();
   }
 
   async link(

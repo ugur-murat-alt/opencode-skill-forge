@@ -74,6 +74,7 @@ export class MemoryOperations {
       db: deps.db,
       service: deps.service,
       commits: deps.commits,
+      vaultRoot: deps.vaultRoot,
     });
   }
 

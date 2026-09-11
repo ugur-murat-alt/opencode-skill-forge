@@ -20,6 +20,13 @@ import { MemoryService } from "./service.js";
 export const MEMORY_CONTEXT_START_TOKENS = 1024;
 export const MEMORY_CONTEXT_MAX_CARDS = 8;
 /**
+ * Zarf zorunlu alanları (package_hash, bütçe, devam adımı) nedeniyle
+ * hesaplanabilir en küçük bütçe. Daha küçük istekler bu tabana yükseltilir ve
+ * etkin `max_tokens` yanıtta açıkça döner; iddia edilen değer bu etkin
+ * bütçedir.
+ */
+export const MEMORY_CONTEXT_MIN_TOKENS = 192;
+/**
  * Conservative byte-based token estimate. The benchmark harness measures with
  * `utf8_bytes / 2.5`; using the same divisor (instead of 3) keeps the hard
  * byte limit directly comparable to the frozen budget thresholds. It is an
@@ -63,7 +70,10 @@ export class MemoryContextService {
 
   async context(identity: Identity, input: MemoryContextInput) {
     const maxTokens = Math.min(
-      Math.max(input.maxTokens ?? MEMORY_CONTEXT_START_TOKENS, 128),
+      Math.max(
+        input.maxTokens ?? MEMORY_CONTEXT_START_TOKENS,
+        MEMORY_CONTEXT_MIN_TOKENS,
+      ),
       8192,
     );
     const byteLimit = maxTokens * MEMORY_CONTEXT_BYTES_PER_TOKEN;
@@ -253,24 +263,28 @@ export class MemoryContextService {
         );
         return card;
       });
-    const sections = {
+    const sectionLists = {
       active_tasks: tasks
         .filter((head) => head.task_status === "doing")
-        .map((head) => head.note_id)
-        .slice(0, 20),
+        .map((head) => head.note_id),
       blockers: tasks
         .filter((head) => head.task_status === "blocked")
-        .map((head) => head.note_id)
-        .slice(0, 20),
-      recent_decisions: decisions.map((head) => head.note_id).slice(0, 20),
-      pins: pinned.map((head) => head.note_id).slice(0, 20),
-      continuation:
-        tasks.length > 0
-          ? tasks[0]!.note_id
-          : (fresh
-              .filter((head) => head.kind === "session")
-              .sort((a, b) => updatedAt(b) - updatedAt(a))[0]?.note_id ?? null),
+        .map((head) => head.note_id),
+      recent_decisions: decisions.map((head) => head.note_id),
+      pins: pinned.map((head) => head.note_id),
     };
+    const sectionCaps = {
+      active_tasks: 20,
+      blockers: 20,
+      recent_decisions: 20,
+      pins: 20,
+    };
+    const continuation =
+      tasks.length > 0
+        ? tasks[0]!.note_id
+        : (fresh
+            .filter((head) => head.kind === "session")
+            .sort((a, b) => updatedAt(b) - updatedAt(a))[0]?.note_id ?? null);
     const buildPackage = () => {
       const offered = cards
         .map((card) => ({
@@ -284,50 +298,99 @@ export class MemoryContextService {
             )?.content_hash ?? "",
         }))
         .sort((a, b) => a.note_id.localeCompare(b.note_id));
-      return {
-        envelope: {
-          version: 1 as const,
-          generated_at: Date.now(),
-          session_key: input.session_key ?? null,
-          generation: input.generation ?? null,
-          branch: input.branch ?? null,
-          worktree: input.worktree ?? null,
-          package_hash: createHash("sha256")
-            .update(JSON.stringify(offered))
-            .digest("hex"),
-          token_estimator: "bytes/2.5 (estimate; no tokenizer installed)",
-          budget: {
-            max_tokens: maxTokens,
-            used_tokens_estimate: 0,
-            byte_limit: byteLimit,
-          },
+      const sections: Record<string, unknown> = {};
+      if (sectionCaps.blockers > 0 && sectionLists.blockers.length > 0)
+        sections.blockers = sectionLists.blockers.slice(
+          0,
+          sectionCaps.blockers,
+        );
+      if (sectionCaps.active_tasks > 0 && sectionLists.active_tasks.length > 0)
+        sections.active_tasks = sectionLists.active_tasks.slice(
+          0,
+          sectionCaps.active_tasks,
+        );
+      if (
+        sectionCaps.recent_decisions > 0 &&
+        sectionLists.recent_decisions.length > 0
+      )
+        sections.recent_decisions = sectionLists.recent_decisions.slice(
+          0,
+          sectionCaps.recent_decisions,
+        );
+      if (sectionCaps.pins > 0 && sectionLists.pins.length > 0)
+        sections.pins = sectionLists.pins.slice(0, sectionCaps.pins);
+      if (continuation) sections.continuation = continuation;
+      const envelope: Record<string, unknown> = {
+        version: 1,
+        generated_at: Date.now(),
+        package_hash: createHash("sha256")
+          .update(JSON.stringify(offered))
+          .digest("hex"),
+        token_estimator: "bytes/2.5 (estimate)",
+        budget: {
+          max_tokens: maxTokens,
+          used_tokens_estimate: 0,
+          byte_limit: byteLimit,
         },
+      };
+      if (input.session_key) envelope.session_key = input.session_key;
+      if (input.generation !== undefined)
+        envelope.generation = input.generation;
+      if (input.branch) envelope.branch = input.branch;
+      if (input.worktree) envelope.worktree = input.worktree;
+      const pkg: Record<string, unknown> = {
+        envelope,
         cards,
         sections,
-        truncated,
-        continuation_note: continuationNote,
         offered,
       };
+      if (truncated) pkg.truncated = true;
+      if (continuationNote) pkg.continuation_note = continuationNote;
+      return pkg;
     };
-    // Zarf alanları için küçük bir güvenlik payı bırakılır; sığmayan kartlar
-    // sondan kırpılır ve kesme açıkça raporlanır.
-    const safetyBytes = 192;
-    while (
-      Buffer.byteLength(JSON.stringify(buildPackage()), "utf8") >
-        byteLimit - safetyBytes &&
-      cards.length > 0
-    ) {
-      const removed = cards.pop()!;
-      truncated = true;
-      continuationNote = {
-        note_id: removed.note_id,
-        revision: removed.revision,
-      };
+    // Öncelik: aktif görev/engel/devam adımı korunur; önce kartlar, sonra
+    // düşük öncelikli bölümler kısaltılır. İddia edilen `used` yalnız
+    // hesaplanan değerdir ve etkin bütçeyi aşamaz.
+    const safetyBytes = 32;
+    const size = () =>
+      Buffer.byteLength(JSON.stringify(buildPackage()), "utf8");
+    let guard = 0;
+    while (size() > byteLimit - safetyBytes && guard++ < 2000) {
+      if (cards.length > 0) {
+        const removed = cards.pop()!;
+        truncated = true;
+        continuationNote = {
+          note_id: removed.note_id,
+          revision: removed.revision,
+        };
+        continue;
+      }
+      let shrunk = false;
+      for (const key of ["recent_decisions", "pins", "active_tasks"] as const) {
+        if (sectionCaps[key] > 0) {
+          sectionCaps[key] = Math.floor(sectionCaps[key] / 2);
+          shrunk = true;
+          truncated = true;
+          break;
+        }
+      }
+      // Engel listesi en az bir kaydı korur; devam adımı zaten tekildir.
+      if (!shrunk && sectionCaps.blockers > 1) {
+        sectionCaps.blockers = Math.max(
+          1,
+          Math.floor(sectionCaps.blockers / 2),
+        );
+        shrunk = true;
+        truncated = true;
+      }
+      if (!shrunk) break;
     }
     const finalPackage = buildPackage();
-    finalPackage.envelope.budget.used_tokens_estimate = Math.ceil(
-      Buffer.byteLength(JSON.stringify(finalPackage), "utf8") /
-        MEMORY_CONTEXT_BYTES_PER_TOKEN,
+    const finalBytes = Buffer.byteLength(JSON.stringify(finalPackage), "utf8");
+    (
+      finalPackage.envelope as { budget: { used_tokens_estimate: number } }
+    ).budget.used_tokens_estimate = Math.ceil(
+      finalBytes / MEMORY_CONTEXT_BYTES_PER_TOKEN,
     );
     return finalPackage;
   }
@@ -337,11 +400,31 @@ export class MemoryContextService {
     refs: { space_id: string; note_id: string; revision: number }[],
   ) {
     if (refs.length === 0) return [];
+    // Yalnız gereken (space, note, revision) çiftleri yüklenir; aday notların
+    // tüm revizyon geçmişi okunmaz.
+    const unique = [
+      ...new Map(
+        refs.map((ref) => [
+          `${ref.space_id}\u0000${ref.note_id}\u0000${ref.revision}`,
+          ref,
+        ]),
+      ).values(),
+    ].slice(0, 64);
     return this.db
       .selectFrom("memory_note_revisions")
       .select(["space_id", "note_id", "revision", "body_md"])
       .where("tenant_id", "=", tenantId)
-      .where("note_id", "in", [...new Set(refs.map((ref) => ref.note_id))])
+      .where((eb) =>
+        eb.or(
+          unique.map((ref) =>
+            eb.and([
+              eb("space_id", "=", ref.space_id),
+              eb("note_id", "=", ref.note_id),
+              eb("revision", "=", ref.revision),
+            ]),
+          ),
+        ),
+      )
       .execute();
   }
 }
