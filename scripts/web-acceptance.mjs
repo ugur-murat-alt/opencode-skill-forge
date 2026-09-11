@@ -395,6 +395,76 @@ async function main() {
     await page.locator(".project-switcher select").selectOption(id);
     if (label) await waitScope(page, label);
   };
+  // Issue #37: memory helpers. Seeding uses the real owner API; the browser
+  // only ever talks to the same HTTP surface a user would. The ingest/receipt
+  // helpers live next to `base`/`ownerHeaders` inside the server try block.
+  const selectMemorySpace = async (page, text) => {
+    let value = "";
+    for (let i = 0; i < 40 && !value; i++) {
+      value = await page.evaluate((needle) => {
+        const select = document.querySelector(
+          '[data-testid="memory-space-select"]',
+        );
+        const option = [...(select?.options ?? [])].find((row) =>
+          row.textContent?.includes(needle),
+        );
+        return option?.value ?? "";
+      }, text);
+      if (!value) await sleep(200);
+    }
+    if (!value) throw new Error(`memory space option missing: ${text}`);
+    await page
+      .locator('[data-testid="memory-space-select"]')
+      .selectOption(value);
+    await page.waitForTimeout(250);
+    return value;
+  };
+  const openMemoryNote = async (page, title) => {
+    await page
+      .getByRole("button", { name: title, exact: false })
+      .first()
+      .click();
+    // The detail request is asynchronous; the title field must show the
+    // requested note (a stale, still-rendered previous note must not pass)
+    // and the source panel must carry the accepted revision.
+    await page.waitForFunction(
+      (expected) =>
+        (document.querySelector('[data-testid="memory-title"]')?.value ??
+          "") === expected,
+      title,
+      { timeout: 10000 },
+    );
+    await page.waitForFunction(
+      () =>
+        (
+          document.querySelector('[data-testid="memory-source-revision"]')
+            ?.textContent ?? ""
+        ).trim() !== "",
+      null,
+      { timeout: 10000 },
+    );
+  };
+  const editMemoryBody = async (page) => {
+    const editor = page.locator("textarea.memory-editor");
+    if (!(await editor.count())) {
+      await page.locator('[data-testid="memory-toggle-preview"]').click();
+    }
+    await editor.waitFor({ timeout: 8000 });
+    return editor.first();
+  };
+  const ensureMemoryPreview = async (page) => {
+    if (!(await page.locator('[data-testid="memory-preview"]').count()))
+      await page.locator('[data-testid="memory-toggle-preview"]').click();
+    await page
+      .locator('[data-testid="memory-preview"]')
+      .first()
+      .waitFor({ timeout: 8000 });
+  };
+  const readMemoryBody = async (page) => {
+    const editor = page.locator("textarea.memory-editor");
+    if (await editor.count()) return editor.first().inputValue();
+    return page.locator('[data-testid="memory-preview"]').first().innerText();
+  };
 
   const startedAt = new Date().toISOString();
   const reportPath = args.get("--report") ? resolve(args.get("--report")) : "";
@@ -413,6 +483,13 @@ async function main() {
   } catch {}
   let chromiumVersion = "";
   const tmp = await mkdtemp(join(tmpdir(), "forge-web-acc-"));
+  // Issue #37: the memory module is gated by an independent flag; the local
+  // acceptance server needs it enabled before boot.
+  await writeFile(
+    join(tmp, "policy.json"),
+    JSON.stringify({ memoryEnabled: true }),
+    { mode: 0o600 },
+  );
   const shotsArg = args.get("--shots") ?? "";
   const shots = shotsArg ? resolve(shotsArg) : join(tmp, "shots");
   // Issue #30: the artifact root is recreated so a previous run's report,
@@ -456,6 +533,57 @@ async function main() {
     const ownerHeaders = {
       host: `127.0.0.1:${PORT}`,
       authorization: `Bearer ${ownerToken}`,
+    };
+    // Issue #37: owner-API seeding helpers for the memory workspace. They use
+    // the same real HTTP surface the browser drives.
+    const memoryIngest = async (
+      spaceId,
+      noteId,
+      title,
+      body,
+      eventKey,
+      baseRevision,
+    ) => {
+      const content = [
+        "---",
+        "format_version: 1",
+        `note_id: ${JSON.stringify(noteId)}`,
+        `memory_space_id: ${JSON.stringify(spaceId)}`,
+        "kind: note",
+        `title: ${JSON.stringify(title)}`,
+        "---",
+        "",
+        body,
+        "",
+      ].join("\n");
+      return fetch(`${base}/api/memory/ingest`, {
+        method: "POST",
+        headers: { ...ownerHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          space_id: spaceId,
+          source_event_key: eventKey,
+          source_kind: "ui",
+          content,
+          ...(baseRevision === undefined
+            ? {}
+            : { base_revision: baseRevision }),
+        }),
+      });
+    };
+    const memoryReceiptWait = async (spaceId, eventKey) => {
+      for (let i = 0; i < 200; i++) {
+        const response = await fetch(
+          `${base}/api/memory/events?space_id=${encodeURIComponent(spaceId)}` +
+            `&source_event_key=${encodeURIComponent(eventKey)}`,
+          { headers: ownerHeaders },
+        );
+        if (response.status === 200) {
+          const payload = await response.json();
+          if (payload.state !== "pending") return payload;
+        }
+        await sleep(150);
+      }
+      throw new Error(`memory receipt timeout: ${eventKey}`);
     };
     const loginOut = await exec(
       "node",
@@ -533,6 +661,7 @@ async function main() {
       const pages = [
         ["overview", "Genel durum"],
         ["library", "Skill kütüphanesi"],
+        ["memory", "Hafıza"],
         ["jobs", "İşler"],
         ["maintenance", "Bakım"],
         ["installations", "Kurulumlar"],
@@ -2378,6 +2507,458 @@ async function main() {
           await page.unroute("**/api/me");
           await page.unroute("**/api/tenants/switch");
         }
+      });
+
+      // Issue #37 (M04) phase A: the memory workspace against the real M02
+      // HTTP surface. Seeding uses the owner API; the browser drives the UI.
+      let memorySpaceId = "";
+      let memorySeedTitle = "";
+      let memoryCreatedTitle = "";
+      let memoryXssTitle = "";
+      let memoryConflictTitle = "";
+      let memoryArchiveTitle = "";
+      await safe("memory-workspace", async () => {
+        await chooseTenant(page, "Kişisel çalışma alanı");
+        const personalResponse = await fetch(`${base}/api/memory/spaces`, {
+          method: "POST",
+          headers: { ...ownerHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ kind: "personal" }),
+        });
+        check(
+          "memory-personal-space",
+          personalResponse.ok,
+          personalResponse.status,
+        );
+        const personalSpace = await personalResponse.json();
+        memorySpaceId = personalSpace.id;
+        const orgResponse = await fetch(`${base}/api/memory/spaces`, {
+          method: "POST",
+          headers: { ...ownerHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "organization",
+            name: `Kabul Ortak ${Date.now()}`,
+          }),
+        });
+        check("memory-org-space", orgResponse.ok, orgResponse.status);
+        const stamp = Date.now();
+        memorySeedTitle = `UI tohum ${stamp}`;
+        memoryXssTitle = `UI xss ${stamp}`;
+        memoryConflictTitle = `UI catisma ${stamp}`;
+        memoryArchiveTitle = `UI arsiv ${stamp}`;
+        const seedKey = `ui-seed-${stamp}`;
+        const seeded = await memoryIngest(
+          memorySpaceId,
+          "ui-seed-note",
+          memorySeedTitle,
+          "İlk gövde.",
+          seedKey,
+        );
+        check("memory-seed-note", seeded.ok, seeded.status);
+        const seedReceipt = await memoryReceiptWait(memorySpaceId, seedKey);
+        check(
+          "memory-seed-committed",
+          seedReceipt.state === "committed" &&
+            seedReceipt.committed_revision === 1,
+          `${seedReceipt.state}/${seedReceipt.committed_revision}`,
+        );
+        const xssKey = `ui-xss-${stamp}`;
+        const xssBody = [
+          "<script>window.__xss=1</script>",
+          "[tıkla](javascript:alert(1))",
+          "![uzak](https://evil.example/pixel.png)",
+          '<iframe src="https://evil.example/frame"></iframe>',
+        ].join("\n\n");
+        const xssSeed = await memoryIngest(
+          memorySpaceId,
+          "ui-xss-note",
+          memoryXssTitle,
+          xssBody,
+          xssKey,
+        );
+        check("memory-xss-seed", xssSeed.ok, xssSeed.status);
+        check(
+          "memory-xss-committed",
+          (await memoryReceiptWait(memorySpaceId, xssKey)).state ===
+            "committed",
+        );
+        const conflictKey = `ui-conflict-${stamp}`;
+        const conflictSeed = await memoryIngest(
+          memorySpaceId,
+          "ui-conflict-note",
+          memoryConflictTitle,
+          "Çatışma temeli.",
+          conflictKey,
+        );
+        check("memory-conflict-seed", conflictSeed.ok, conflictSeed.status);
+        check(
+          "memory-conflict-seed-committed",
+          (await memoryReceiptWait(memorySpaceId, conflictKey)).state ===
+            "committed",
+        );
+        const archiveKey = `ui-archive-${stamp}`;
+        const archiveSeed = await memoryIngest(
+          memorySpaceId,
+          "ui-archive-note",
+          memoryArchiveTitle,
+          "Arşiv gövdesi.",
+          archiveKey,
+        );
+        check("memory-archive-seed", archiveSeed.ok, archiveSeed.status);
+        check(
+          "memory-archive-seed-committed",
+          (await memoryReceiptWait(memorySpaceId, archiveKey)).state ===
+            "committed",
+        );
+
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await page
+          .getByRole("heading", { name: "Hafıza", exact: false })
+          .first()
+          .waitFor({ timeout: 8000 });
+        check("memory-screen", true, "memory screen visible");
+        await selectMemorySpace(page, "Kişisel");
+        const options = await page.evaluate(() =>
+          [
+            ...(document.querySelector('[data-testid="memory-space-select"]')
+              ?.options ?? []),
+          ].map((option) => option.textContent ?? ""),
+        );
+        check(
+          "memory-space-options",
+          options.some((text) => text.includes("Kişisel")) &&
+            options.some((text) => text.includes("Ortak")),
+          options.join(" | ").slice(0, 120),
+        );
+        await page
+          .getByRole("button", { name: memorySeedTitle, exact: false })
+          .first()
+          .waitFor({ timeout: 10000 });
+        check("memory-list-seeded", true, "seeded note visible");
+        await openMemoryNote(page, memorySeedTitle);
+        const previewText = await readMemoryBody(page);
+        check(
+          "memory-open-note",
+          previewText.includes("İlk gövde."),
+          previewText.slice(0, 60),
+        );
+        const sourceRevision = await page
+          .locator('[data-testid="memory-source-revision"]')
+          .innerText();
+        check(
+          "memory-source-panel",
+          sourceRevision.trim() === "1",
+          sourceRevision,
+        );
+        check(
+          "memory-history-list",
+          (await page.locator('[data-testid="memory-history"] li').count()) >=
+            1,
+        );
+        await page.locator('[data-testid="lang-toggle"]').click();
+        await page
+          .getByRole("heading", { name: "Memory", exact: false })
+          .first()
+          .waitFor({ timeout: 8000 });
+        check("memory-locale-en", true, "english heading visible");
+        await page.locator('[data-testid="lang-toggle"]').click();
+        await page
+          .getByRole("heading", { name: "Hafıza", exact: false })
+          .first()
+          .waitFor({ timeout: 8000 });
+
+        memoryCreatedTitle = `UI yeni ${Date.now()}`;
+        await page.locator('[data-testid="memory-new"]').click();
+        await page
+          .locator('[data-testid="memory-title"]')
+          .fill(memoryCreatedTitle);
+        let editor = await editMemoryBody(page);
+        await editor.fill("# Yeni içerik\n\nTarayıcıdan oluşturuldu.");
+        await page.locator('[data-testid="memory-save"]').click();
+        await page
+          .getByRole("button", { name: memoryCreatedTitle, exact: false })
+          .first()
+          .waitFor({ timeout: 20000 });
+        check("memory-create", true, "created note visible");
+        await openMemoryNote(page, memoryCreatedTitle);
+        const createdPreview = await readMemoryBody(page);
+        check(
+          "memory-create-reopen",
+          createdPreview.includes("Tarayıcıdan oluşturuldu."),
+          createdPreview.slice(0, 60),
+        );
+
+        const marker = `duzenleme-${Date.now()}`;
+        editor = await editMemoryBody(page);
+        await editor.fill(
+          `# Yeni içerik\n\nTarayıcıdan oluşturuldu.\n\n${marker}`,
+        );
+        await page.locator('[data-testid="memory-save"]').click();
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector('[data-testid="memory-source-revision"]')
+              ?.textContent?.trim() === "2",
+          null,
+          { timeout: 20000 },
+        );
+        check("memory-edit-save", true, "revision 2 committed");
+        check(
+          "memory-committed-visible",
+          (await page
+            .locator('[data-testid="memory-pending-committed"]')
+            .count()) > 0,
+        );
+        await page
+          .locator('[data-testid="memory-view-revision"]')
+          .first()
+          .click();
+        await page
+          .locator('[data-testid="memory-viewing-revision"]')
+          .waitFor({ timeout: 8000 });
+        const historyText = await page
+          .locator('[data-testid="memory-history-preview"]')
+          .innerText();
+        check(
+          "memory-history-view",
+          historyText.includes("Tarayıcıdan oluşturuldu.") &&
+            !historyText.includes(marker),
+          historyText.slice(-60),
+        );
+        await page.locator('[data-testid="memory-history-back"]').click();
+      });
+
+      await safe("memory-drafts", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memoryCreatedTitle);
+        const draftMarker = `taslak-${Date.now()}`;
+        let editor = await editMemoryBody(page);
+        await editor.fill(`${await editor.inputValue()}\n${draftMarker}`);
+        try {
+          await page
+            .locator('[data-testid="memory-dirty"]')
+            .waitFor({ timeout: 8000 });
+          check("memory-dirty-indicator", true, "dirty chip visible");
+        } catch (caught) {
+          check("memory-dirty-indicator", false, String(caught).slice(0, 120));
+        }
+        await page.evaluate(() => {
+          location.hash = "#jobs";
+        });
+        await page
+          .getByRole("heading", { name: "İşler", exact: false })
+          .first()
+          .waitFor({ timeout: 8000 });
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memoryCreatedTitle);
+        editor = await editMemoryBody(page);
+        const afterHash = await editor.inputValue();
+        check(
+          "memory-draft-hash",
+          afterHash.includes(draftMarker),
+          afterHash.slice(-40),
+        );
+        await page.reload({ waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memoryCreatedTitle);
+        editor = await editMemoryBody(page);
+        const afterReload = await editor.inputValue();
+        check(
+          "memory-draft-reload",
+          afterReload.includes(draftMarker),
+          afterReload.slice(-40),
+        );
+        await page.locator('[data-testid="memory-discard"]').click();
+        await page
+          .locator('[data-testid="memory-dirty"]')
+          .waitFor({ state: "detached", timeout: 8000 });
+        check("memory-draft-discard", true, "draft cleared explicitly");
+      });
+
+      await safe("memory-conflict", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memoryConflictTitle);
+        const before = await (
+          await fetch(
+            `${base}/api/memory/notes/ui-conflict-note?space_id=${encodeURIComponent(memorySpaceId)}`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        check(
+          "memory-conflict-base-1",
+          before.revision?.revision === 1,
+          `base=${before.revision?.revision ?? "none"}`,
+        );
+        const advanceKey = `ui-conflict-srv-${Date.now()}`;
+        const advanced = await memoryIngest(
+          memorySpaceId,
+          "ui-conflict-note",
+          memoryConflictTitle,
+          "Sunucu revizyonu.",
+          advanceKey,
+          1,
+        );
+        check("memory-conflict-advance", advanced.ok, advanced.status);
+        const advanceReceipt = await memoryReceiptWait(
+          memorySpaceId,
+          advanceKey,
+        );
+        check(
+          "memory-conflict-advance-committed",
+          advanceReceipt.state === "committed" &&
+            advanceReceipt.committed_revision === 2,
+          JSON.stringify({
+            state: advanceReceipt.state,
+            rev: advanceReceipt.committed_revision,
+            err: advanceReceipt.error_code,
+            run: advanceReceipt.run_state,
+            runErr: advanceReceipt.run_error_code,
+          }),
+        );
+        const editor = await editMemoryBody(page);
+        const localText = `${await editor.inputValue()}\n\nBenim metnim ${Date.now()}`;
+        await editor.fill(localText);
+        await page.locator('[data-testid="memory-save"]').click();
+        await page
+          .locator('[data-testid="memory-conflict"]')
+          .waitFor({ timeout: 25000 });
+        // The rejected receipt triggers a server refresh; wait for the newer
+        // revision to reach the panel before comparing the two bodies.
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector('[data-testid="memory-source-revision"]')
+              ?.textContent?.trim() === "2",
+          null,
+          { timeout: 15000 },
+        );
+        const mine = await page
+          .locator('[data-testid="memory-conflict"] pre')
+          .first()
+          .innerText();
+        const theirs = await page
+          .locator('[data-testid="memory-conflict"] pre')
+          .last()
+          .innerText();
+        check(
+          "memory-conflict-panel",
+          mine.includes("Benim metnim") && theirs.includes("Sunucu revizyonu."),
+          `${mine.slice(0, 30)} | ${theirs.slice(0, 30)}`,
+        );
+        await page.locator('[data-testid="memory-rebase"]').click();
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector('[data-testid="memory-source-revision"]')
+              ?.textContent?.trim() === "3",
+          null,
+          { timeout: 25000 },
+        );
+        const rebased = await readMemoryBody(page);
+        check(
+          "memory-conflict-rebase",
+          rebased.includes("Benim metnim"),
+          rebased.slice(-60),
+        );
+      });
+
+      await safe("memory-xss", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        const external = [];
+        const recordExternal = (request) => {
+          const url = request.url();
+          if (!url.startsWith(base)) external.push(url);
+        };
+        page.on("request", recordExternal);
+        try {
+          await openMemoryNote(page, memoryXssTitle);
+          await ensureMemoryPreview(page);
+          await page.waitForTimeout(900);
+          const probe = await page.evaluate(() => ({
+            executed: Boolean(window.__xss),
+            nodes: document.querySelectorAll(
+              '[data-testid="memory-preview"] script, [data-testid="memory-preview"] iframe, [data-testid="memory-preview"] img',
+            ).length,
+            text:
+              document.querySelector('[data-testid="memory-preview"]')
+                ?.textContent ?? "",
+          }));
+          check(
+            "memory-xss-no-exec",
+            probe.executed === false && probe.nodes === 0,
+            JSON.stringify({ executed: probe.executed, nodes: probe.nodes }),
+          );
+          check(
+            "memory-xss-raw-html-text",
+            probe.text.includes("<script>"),
+            probe.text.slice(0, 80),
+          );
+          check(
+            "memory-xss-no-network",
+            external.length === 0,
+            external.slice(0, 3).join(" | "),
+          );
+        } finally {
+          page.off("request", recordExternal);
+        }
+      });
+
+      await safe("memory-archive", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memoryArchiveTitle);
+        await page.locator('[data-testid="memory-archive-toggle"]').click();
+        await page
+          .locator('[data-testid="memory-archived"]')
+          .waitFor({ timeout: 10000 });
+        check("memory-archive", true, "archived banner visible");
+        await page.locator('[data-testid="memory-archive-toggle"]').click();
+        await page
+          .locator('[data-testid="memory-archived"]')
+          .waitFor({ state: "detached", timeout: 10000 });
+        check("memory-restore", true, "archived banner cleared");
+      });
+
+      await safe("memory-responsive", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await openMemoryNote(page, memorySeedTitle);
+        const geometry = [];
+        for (const width of [320, 375, 768, 1440]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.waitForTimeout(200);
+          const probe = await page.evaluate(() => ({
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth: window.innerWidth,
+          }));
+          geometry.push(`w${width} ${probe.scrollWidth}/${probe.innerWidth}`);
+          check(
+            `memory-width-${width}`,
+            probe.scrollWidth <= probe.innerWidth + 1,
+            geometry[geometry.length - 1],
+          );
+        }
+        await page.setViewportSize({ width: 320, height: 900 });
+        const narrow = await page.evaluate(() => ({
+          back: Boolean(
+            document.querySelector('[data-testid="memory-back"]')?.offsetParent,
+          ),
+          list: Boolean(document.querySelector(".memory-list")?.offsetParent),
+        }));
+        check(
+          "memory-narrow-detail",
+          narrow.back && !narrow.list,
+          JSON.stringify(narrow),
+        );
+        await page.locator('[data-testid="memory-back"]').click();
+        const listVisible = await page.evaluate(() =>
+          Boolean(document.querySelector(".memory-list")?.offsetParent),
+        );
+        check("memory-narrow-list", listVisible, String(listVisible));
+        await page.setViewportSize({ width: 1440, height: 1000 });
       });
 
       check(
