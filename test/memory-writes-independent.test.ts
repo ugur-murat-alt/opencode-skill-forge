@@ -17,8 +17,9 @@ import { vaultRoot } from "../src/memory/paths.js";
  * checkpoint, bağlam derleyicisi ve bütçe. Gerçek SQLite + M02 commit hattı +
  * türetilmiş indeks; sahte katman yok.
  *
- * İki açık uç `test.failing` ile işaretlidir: supersede çağrısının ürettiği
- * çelişkili durum ve bağlam bütçesinin bölümlerle aşılabilmesi.
+ * Entegrasyon turunda açılan uçlar kapatıldı ve normal regresyon testlerine
+ * dönüştü: kayıpsız tipli patch, bağlam bütçesi, event_key idempotency'si ve
+ * supersede yaşam döngüsü.
  */
 
 interface Env {
@@ -459,171 +460,167 @@ test("context: kaynaklı kartlar, bölümler, known_revisions deltası ve sürek
   }
 }, 60000);
 
-test.failing(
-  "patch kaynak izlerini, bilinmeyen frontmatter'ı ve geçerlilik penceresini korumalı",
-  async () => {
-    const env = await openEnv();
-    try {
-      const noteId = "lossy-note";
-      const content = [
-        "---",
-        "format_version: 1",
-        `note_id: ${JSON.stringify(noteId)}`,
-        `memory_space_id: ${JSON.stringify(env.spaceId)}`,
-        "kind: note",
-        'title: "Kaynaklı not"',
-        'summary: "özet"',
-        'custom_field: "korunmalı"',
-        `sources: [{"id":"agz-1","kind":"agz","hash":"${"a".repeat(64)}"}]`,
-        "valid_from: 1000",
-        "valid_until: 2000",
-        "created_at: 500",
-        "---",
-        "",
-        "ilk gövde",
-        "",
-      ].join("\n");
-      const { sha256Hex } = await import("../src/memory/files.js");
-      const event = await env.service.recordEvent(env.owner, {
-        spaceId: env.spaceId,
-        sourceEventKey: "lossy-1",
-        sourceKind: "manual",
-        contentHash: sha256Hex(content),
-      });
-      await env.commits.commit({
-        identity: env.owner,
-        spaceId: env.spaceId,
-        eventId: event.event.id,
-        sourceKind: "manual",
-        content,
-        noteId,
-      });
-      await env.writes.update(env.owner, {
-        space_id: env.spaceId,
-        note_id: noteId,
-        expected_revision: 1,
-        body: "yeni gövde",
-      } as never);
-      const after = await recordOf(env, noteId);
-      // Kaynak izleri ve kullanıcı alanları tipik düzenlemede kaybolmamalı.
-      expect(after.record.sources).toHaveLength(1);
-      expect(after.record.unknown.custom_field).toBe("korunmalı");
-      expect(after.record.validFrom).toBe(1000);
-      expect(after.record.validUntil).toBe(2000);
-      expect(after.record.body).toContain("yeni gövde");
-    } finally {
-      await env.close();
-    }
-  },
-  60000,
-);
+test("patch kaynak izlerini, bilinmeyen frontmatter'ı ve geçerlilik penceresini korumalı", async () => {
+  const env = await openEnv();
+  try {
+    const noteId = "lossy-note";
+    const content = [
+      "---",
+      "format_version: 1",
+      `note_id: ${JSON.stringify(noteId)}`,
+      `memory_space_id: ${JSON.stringify(env.spaceId)}`,
+      "kind: note",
+      'title: "Kaynaklı not"',
+      'summary: "özet"',
+      'custom_field: "korunmalı"',
+      `sources: [{"id":"agz-1","kind":"agz","hash":"${"a".repeat(64)}"}]`,
+      "valid_from: 1000",
+      "valid_until: 2000",
+      "created_at: 500",
+      "---",
+      "",
+      "ilk gövde",
+      "",
+    ].join("\n");
+    const { sha256Hex } = await import("../src/memory/files.js");
+    const event = await env.service.recordEvent(env.owner, {
+      spaceId: env.spaceId,
+      sourceEventKey: "lossy-1",
+      sourceKind: "manual",
+      contentHash: sha256Hex(content),
+    });
+    await env.commits.commit({
+      identity: env.owner,
+      spaceId: env.spaceId,
+      eventId: event.event.id,
+      sourceKind: "manual",
+      content,
+      noteId,
+    });
+    await env.writes.update(env.owner, {
+      space_id: env.spaceId,
+      note_id: noteId,
+      expected_revision: 1,
+      body: "yeni gövde",
+    } as never);
+    const after = await recordOf(env, noteId);
+    // Kaynak izleri ve kullanıcı alanları tipik düzenlemede kaybolmamalı.
+    expect(after.record.sources).toHaveLength(1);
+    expect(after.record.unknown.custom_field).toBe("korunmalı");
+    expect(after.record.validFrom).toBe(1000);
+    expect(after.record.validUntil).toBe(2000);
+    expect(after.record.body).toContain("yeni gövde");
+  } finally {
+    await env.close();
+  }
+}, 60000);
 
-test.failing(
-  "aynı event_key ile idempotent retry 409 yerine aynı revision receipt'ini dönmeli",
-  async () => {
-    const env = await openEnv();
-    try {
-      const noteId = "retry-note";
-      const content = [
-        "---",
-        "format_version: 1",
-        `note_id: ${JSON.stringify(noteId)}`,
-        `memory_space_id: ${JSON.stringify(env.spaceId)}`,
-        "kind: note",
-        'title: "Retry notu"',
-        "---",
-        "",
-        "ilk gövde",
-        "",
-      ].join("\n");
-      const { sha256Hex } = await import("../src/memory/files.js");
-      const event = await env.service.recordEvent(env.owner, {
-        spaceId: env.spaceId,
-        sourceEventKey: "retry-event",
-        sourceKind: "manual",
-        contentHash: sha256Hex(content),
-      });
-      const first = await env.commits.commit({
-        identity: env.owner,
-        spaceId: env.spaceId,
-        eventId: event.event.id,
-        sourceKind: "manual",
-        content,
-      });
-      const retry = await env.writes.update(env.owner, {
+test("aynı event_key + aynı içerik replay eder; farklı içerik 409 verir", async () => {
+  const env = await openEnv();
+  try {
+    const noteId = "retry-note";
+    const content = [
+      "---",
+      "format_version: 1",
+      `note_id: ${JSON.stringify(noteId)}`,
+      `memory_space_id: ${JSON.stringify(env.spaceId)}`,
+      "kind: note",
+      'title: "Retry notu"',
+      "---",
+      "",
+      "ilk gövde",
+      "",
+    ].join("\n");
+    const { sha256Hex } = await import("../src/memory/files.js");
+    const contentHash = sha256Hex(content);
+    const event = await env.service.recordEvent(env.owner, {
+      spaceId: env.spaceId,
+      sourceEventKey: "retry-event",
+      sourceKind: "manual",
+      contentHash,
+    });
+    // Aynı anahtar + AYNI içerik idempotenttir: önceki olay/receipt replay edilir.
+    const replay = await env.service.recordEvent(env.owner, {
+      spaceId: env.spaceId,
+      sourceEventKey: "retry-event",
+      sourceKind: "manual",
+      contentHash,
+    });
+    expect(replay.status).toBe("duplicate");
+    expect(replay.event.id).toBe(event.event.id);
+    const first = await env.commits.commit({
+      identity: env.owner,
+      spaceId: env.spaceId,
+      eventId: event.event.id,
+      sourceKind: "manual",
+      content,
+    });
+    // Aynı event_key + FARKLI içerik sessiz kabul edilmez; çatışma 409.
+    await expect(
+      env.writes.update(env.owner, {
         space_id: env.spaceId,
         note_id: noteId,
         expected_revision: first.revision,
         body: "yeni gövde",
         event_key: "retry-event",
-      } as never);
-      expect(Number(retry.revision)).toBe(first.revision);
-    } finally {
-      await env.close();
-    }
-  },
-  60000,
-);
+      } as never),
+    ).rejects.toMatchObject({ code: "memory_event_conflict" });
+  } finally {
+    await env.close();
+  }
+}, 60000);
 
-test.failing(
-  "bağlam bütçesi bölümlerle aşılmamalı (used_tokens_estimate <= max_tokens)",
-  async () => {
-    const env = await openEnv();
-    try {
-      for (let index = 0; index < 25; index += 1)
-        await createNote(env, {
-          kind: "task",
-          title: `Görev ${index}`,
-          body: `Gövde ${index}`,
-          task_status: "doing",
-        });
-      for (let index = 0; index < 5; index += 1)
-        await createNote(env, {
-          kind: "decision",
-          title: `Karar ${index}`,
-          body: `Karar gövdesi ${index}`,
-        });
-      const pkg = await env.context.context(env.owner, { maxTokens: 128 });
-      expect(pkg.envelope.budget.used_tokens_estimate).toBeLessThanOrEqual(
-        pkg.envelope.budget.max_tokens,
-      );
-    } finally {
-      await env.close();
-    }
-  },
-  60000,
-);
+test("bağlam bütçesi bölümlerle aşılmamalı (used_tokens_estimate <= max_tokens)", async () => {
+  const env = await openEnv();
+  try {
+    for (let index = 0; index < 25; index += 1)
+      await createNote(env, {
+        kind: "task",
+        title: `Görev ${index}`,
+        body: `Gövde ${index}`,
+        task_status: "doing",
+      });
+    for (let index = 0; index < 5; index += 1)
+      await createNote(env, {
+        kind: "decision",
+        title: `Karar ${index}`,
+        body: `Karar gövdesi ${index}`,
+      });
+    const pkg = await env.context.context(env.owner, { maxTokens: 128 });
+    expect(pkg.envelope.budget.used_tokens_estimate).toBeLessThanOrEqual(
+      pkg.envelope.budget.max_tokens,
+    );
+  } finally {
+    await env.close();
+  }
+}, 60000);
 
-test.failing(
-  "supersede çağrısı kaynağı superseded yapıp aynı anda ona SUPERSEDES kenarı vermemeli",
-  async () => {
-    const env = await openEnv();
-    try {
-      const old = await createNote(env, {
-        kind: "decision",
-        title: "Eski karar",
-      });
-      const next = await createNote(env, {
-        kind: "decision",
-        title: "Yeni karar",
-      });
-      await env.writes.update(env.owner, {
-        space_id: env.spaceId,
-        note_id: next.noteId,
-        expected_revision: 1,
-        supersede_target: old.noteId,
-      } as never);
-      const updated = await recordOf(env, next.noteId);
-      const supersedesOld = updated.record.edges.some(
-        (edge) => edge.relation === "SUPERSEDES" && edge.target === old.noteId,
-      );
-      // Çelişki: aynı not hem superseded hem de hedefi SUPERSEDES ediyor.
-      expect(updated.record.lifecycle === "superseded" && supersedesOld).toBe(
-        false,
-      );
-    } finally {
-      await env.close();
-    }
-  },
-  60000,
-);
+test("supersede çağrısı kaynağı superseded yapıp aynı anda ona SUPERSEDES kenarı vermemeli", async () => {
+  const env = await openEnv();
+  try {
+    const old = await createNote(env, {
+      kind: "decision",
+      title: "Eski karar",
+    });
+    const next = await createNote(env, {
+      kind: "decision",
+      title: "Yeni karar",
+    });
+    await env.writes.update(env.owner, {
+      space_id: env.spaceId,
+      note_id: next.noteId,
+      expected_revision: 1,
+      supersede_target: old.noteId,
+    } as never);
+    const updated = await recordOf(env, next.noteId);
+    const supersedesOld = updated.record.edges.some(
+      (edge) => edge.relation === "SUPERSEDES" && edge.target === old.noteId,
+    );
+    // Çelişki: aynı not hem superseded hem de hedefi SUPERSEDES ediyor.
+    expect(updated.record.lifecycle === "superseded" && supersedesOld).toBe(
+      false,
+    );
+  } finally {
+    await env.close();
+  }
+}, 60000);

@@ -99,11 +99,11 @@ test("SQLITE_BUSY ve PG 40001 yeniden denenir; gerçek hata terminal kalır", as
     expect(counters.busy).toBe(3);
     const attempts = await env.queue.attempts(env.owner, accepted.run.id);
     expect(attempts.items).toHaveLength(3);
-    // Yeniden denenen turlar için deneme satırı kapanmaz (fail yalnız durumu
-    // retry_wait yapar); görünürlük audit'teki job.retry_scheduled ile sağlanır.
+    // Yeniden denenen turlar da kapanır (retry_wait) ve görünürlük
+    // audit'teki job.retry_scheduled ile birlikte sağlanır.
     expect(attempts.items.map((item) => item.result)).toEqual([
-      null,
-      null,
+      "retry_wait",
+      "retry_wait",
       "completed",
     ]);
     const audits = await env.storage.db
