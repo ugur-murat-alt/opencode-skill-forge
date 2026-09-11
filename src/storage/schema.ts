@@ -365,6 +365,9 @@ export interface DB {
   memory_index_terms: MemoryIndexTerm;
   memory_index_heads: MemoryIndexHead;
   memory_index_edges: MemoryIndexEdge;
+  memory_spool: MemorySpoolRow;
+  memory_turn_flags: MemoryTurnFlag;
+  memory_spool_counters: MemorySpoolCounter;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -562,6 +565,51 @@ export interface MemorySource {
   status: string;
   created_by: string;
   created_at: number;
+  updated_at: number;
+}
+/**
+ * Issue #38 (M05): local hook spool rows. This is a delivery buffer, not a
+ * primary record; `state` never claims a durable memory commit by itself.
+ */
+export type MemorySpoolState =
+  "pending" | "delivered" | "rejected" | "conflict";
+export interface MemorySpoolRow {
+  id: string;
+  installation_id: string;
+  project_ref: string;
+  client: string;
+  event: string;
+  session_id: string;
+  turn_ref: string | null;
+  worktree_key: string | null;
+  event_id: string;
+  source_kind: string;
+  kind: string;
+  content: string;
+  content_hash: string;
+  content_bytes: number;
+  state: MemorySpoolState;
+  attempts: number;
+  next_attempt_at: number;
+  run_id: string | null;
+  last_error: string | null;
+  observed_at: number;
+  created_at: number;
+  updated_at: number;
+}
+/** Whole-turn `[memory:off]` state; Stop consumes the flag. */
+export interface MemoryTurnFlag {
+  installation_id: string;
+  session_id: string;
+  turn_ref: string | null;
+  memory_off: number;
+  created_at: number;
+  expires_at: number;
+}
+/** Visible diagnostics counters; no user content is stored here. */
+export interface MemorySpoolCounter {
+  key: string;
+  value: number;
   updated_at: number;
 }
 export type MemoryCandidateState =

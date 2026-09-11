@@ -1142,7 +1142,17 @@ export async function createHttpServer(config: LocalConfig) {
           version: z.string().max(100).nullable().default(null),
           directory: z.string().max(2000),
           event: z
-            .enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"])
+            .enum([
+              "installed",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionStart",
+              "SessionEnd",
+              "Interrupt",
+              "PreCompact",
+              "PostCompact",
+              "mcp_connected",
+            ])
             .default("installed"),
         })
         .strict()
