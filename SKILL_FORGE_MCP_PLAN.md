@@ -1814,3 +1814,21 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
 - Birleşme öncesi doğrulama: push ve PR CI koşuları doğrulanan HEAD'de beş
   işte yeşil; yerel tam takım 691 test / 679 pass / 12 ortamsal; bağımsız
   M01/M02 kapıları yeşil; tarayıcı kabulü 101/101.
+
+#### Yeniden adlandırma ve M07 faz-2 (2026-09-11)
+- Proje adı **AGZ Project Management MCP**: GitHub `ugur-murat-alt/agz-project-management-mcp`,
+  yerel kök `/home/ugur/Projects/agz-project-management-mcp`; 7 worktree onarıldı,
+  oturum taşındı. Referans PR'ı **#43** birleşti (`73031d3`); main CI beş işte
+  yeşil. Paket/bin kimliği, `bun.lock`, tarihsel kanıtlar ve legacy fixture'lar
+  korundu; **agz-memory MCP'sine dokunulmadı**.
+- İkinci faz entegrasyon dalı `feat/memory-m03-m08` (main'den). **M07 faz-2**
+  alındı (`309422f`, `24d29c8`, `905b958`): manifest v1/stage/apply/rollback/
+  shadow; M02 `MemoryCommitService` yolu; idempotent re-import; crash-resume;
+  insan düzenlemesini koruyan tombstone rollback; kaynak salt-okunurluk.
+  `commit.ts` güvenilir kaynak türlerine `migration` eklendi (fail-closed:
+  sanitizasyon değişikliği gerektiren içerik `memory_unsafe_content` ile açık
+  incelemeye gider, sessiz yeniden yazım yok). Yerel kanıt: AGZ 31/31;
+  hafıza+i18n 83/83.
+- Paralel yürüyen işler: M03 (#36 indeks/bağlam/altı MCP aracı) çekirdek ajan;
+  M07 faz-2 bağımsız doğrulama ajanı; M04 (#37 UI) ve M05 (#38 hook/spool)
+  faz-A ajanları.
