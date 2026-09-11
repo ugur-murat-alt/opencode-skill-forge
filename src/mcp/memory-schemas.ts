@@ -46,6 +46,7 @@ export const memoryToolSchemas = {
       graph_depth: z.number().int().min(0).max(2).optional(),
       limit: z.number().int().min(1).max(20).optional(),
       cursor: z.string().max(2048).optional(),
+      as_of: z.string().min(1).max(40).optional(),
     })
     .strict(),
   memory_read: z
@@ -105,7 +106,7 @@ export type MemoryToolName = keyof typeof memoryToolSchemas;
 
 export const memoryToolDescriptions: Record<MemoryToolName, string> = {
   memory_context:
-    "Compile a sourced, budgeted startup/delta context from the same authorized snapshot: active tasks, blockers, recent decisions, pins and a sourced continuation step. Returns note_id+revision per card; delivered revisions must be declared via known_revisions to get a delta. Text is a token estimate (bytes/3), never presented as exact tokenizer output.",
+    "Compile a sourced, budgeted startup/delta context from the same authorized snapshot: active tasks, blockers, recent decisions, pins and a sourced continuation step. Returns note_id+revision per card; delivered revisions must be declared via known_revisions to get a delta. Text is a token estimate (bytes/2.5), never presented as exact tokenizer output.",
   memory_recall:
     "Search accepted memory revisions across authorized spaces. Global candidate discovery then bounded lexical scoring with Turkish/English normalization and a limited typed-graph expansion. Cards carry note_id, revision, kind, snippet, match reason and sources; stale index hits are excluded and reported.",
   memory_read:

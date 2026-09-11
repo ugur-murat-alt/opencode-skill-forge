@@ -658,6 +658,9 @@ export interface MemoryIndexHead {
   verification: string;
   sources_json: string;
   edges_json: string;
+  /** Issue #36 temporal validity of the indexed revision (epoch ms). */
+  valid_from: number | null;
+  valid_until: number | null;
   indexed_at: number;
 }
 /** Derived typed relations from accepted revision metadata. */

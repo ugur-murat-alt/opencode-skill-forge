@@ -37,6 +37,8 @@ export interface IndexedRecord {
   sources: readonly unknown[];
   edges: { relation: string; target: string }[];
   body: string;
+  validFrom: number | null;
+  validUntil: number | null;
 }
 
 interface RevisionRow {
@@ -71,6 +73,8 @@ export async function indexedRecordFromRevision(
       verification?: string;
       sources?: unknown[];
       edges?: { relation: string; target: string }[];
+      valid_from?: number | null;
+      valid_until?: number | null;
     };
   } = {};
   try {
@@ -91,6 +95,8 @@ export async function indexedRecordFromRevision(
       sources: metadata.record.sources ?? [],
       edges: metadata.record.edges ?? [],
       body: row.body_md,
+      validFrom: metadata.record.valid_from ?? null,
+      validUntil: metadata.record.valid_until ?? null,
     };
   }
   return null;
@@ -123,6 +129,8 @@ export async function indexedRecordFromFile(
       target: edge.target,
     })),
     body: parsed.record.body,
+    validFrom: parsed.record.validFrom,
+    validUntil: parsed.record.validUntil,
   };
 }
 
@@ -211,6 +219,8 @@ export class MemoryIndexService {
       verification: input.record.verification,
       sources_json: JSON.stringify(input.record.sources),
       edges_json: JSON.stringify(input.record.edges),
+      valid_from: input.record.validFrom,
+      valid_until: input.record.validUntil,
       indexed_at: now,
     };
     await this.db.transaction().execute(async (tx) => {
@@ -254,6 +264,8 @@ export class MemoryIndexService {
             verification: head.verification,
             sources_json: head.sources_json,
             edges_json: head.edges_json,
+            valid_from: head.valid_from,
+            valid_until: head.valid_until,
             indexed_at: head.indexed_at,
           }),
         )

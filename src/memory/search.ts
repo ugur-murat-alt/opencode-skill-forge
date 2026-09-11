@@ -31,6 +31,8 @@ export interface MemorySearchInput {
   graphDepth?: number;
   limit?: number;
   after?: string;
+  /** Temporal query instant (epoch ms): closed validity windows are stale. */
+  asOf?: number;
 }
 
 export interface MemorySearchCard {
@@ -172,7 +174,10 @@ export class MemorySearchService {
         head.revision !== candidate.revision ||
         head.content_hash !== candidate.content_hash ||
         head.lifecycle === "superseded" ||
-        head.lifecycle === "archived"
+        head.lifecycle === "archived" ||
+        (input.asOf !== undefined &&
+          head.valid_until !== null &&
+          head.valid_until < input.asOf)
       ) {
         stale += 1;
         continue;

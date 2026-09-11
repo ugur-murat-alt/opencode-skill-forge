@@ -36,6 +36,11 @@ import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
 import { sha256Hex } from "../memory/files.js";
 import { vaultRoot } from "../memory/paths.js";
 import { MEMORY_KINDS } from "../domain/memory.js";
+import {
+  MEMORY_LIFECYCLES,
+  MEMORY_RELATIONS,
+  TASK_STATUSES,
+} from "../domain/memory.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -1723,6 +1728,101 @@ export async function createHttpServer(config: LocalConfig) {
     });
     return report;
   });
+  app.get("/api/memory/context", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        goal: z.string().min(1).max(2000).optional(),
+        session_key: z.string().min(1).max(200).optional(),
+        generation: z.string().regex(/^\d+$/).optional(),
+        branch: z.string().min(1).max(200).optional(),
+        worktree: z.string().min(1).max(500).optional(),
+        max_tokens: z.string().regex(/^\d+$/).optional(),
+        known: z.string().max(8000).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    const knownRevisions = query.known
+      ? query.known.split(",").flatMap((entry) => {
+          const [noteId, revision] = entry.split(":");
+          if (!noteId || !revision || !/^\d+$/.test(revision)) return [];
+          return [{ note_id: noteId, revision: Number(revision) }];
+        })
+      : undefined;
+    return memoryOperations.contextFor(requestIdentity(request), {
+      space_id: query.space_id,
+      goal: query.goal,
+      session_key: query.session_key,
+      generation:
+        query.generation === undefined ? undefined : Number(query.generation),
+      branch: query.branch,
+      worktree: query.worktree,
+      max_tokens:
+        query.max_tokens === undefined ? undefined : Number(query.max_tokens),
+      known_revisions: knownRevisions,
+    });
+  });
+  app.post("/api/memory/update", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200).optional(),
+        expected_revision: z.number().int().min(1).optional(),
+        kind: z.enum(MEMORY_KINDS).optional(),
+        title: z.string().min(1).max(500).optional(),
+        summary: z.string().max(8000).optional(),
+        body: z.string().max(49152).optional(),
+        lifecycle: z.enum(MEMORY_LIFECYCLES).optional(),
+        pinned: z.boolean().optional(),
+        task_status: z.enum(TASK_STATUSES).optional(),
+        verification: z.enum(["declared", "verified", "proposed"]).optional(),
+        archive: z.boolean().optional(),
+        restore: z.boolean().optional(),
+        supersede_target: z.string().min(1).max(200).optional(),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.update(identity, body);
+    return result;
+  });
+  app.post("/api/memory/link", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200),
+        relation: z.enum(MEMORY_RELATIONS),
+        target_note_id: z.string().min(1).max(200),
+        remove: z.boolean().optional(),
+        expected_revision: z.number().int().min(1),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.link(identity, body);
+    return result;
+  });
+  app.post("/api/memory/checkpoint", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200).optional(),
+        expected_revision: z.number().int().min(1).optional(),
+        goal: z.string().min(1).max(2000),
+        progress: z.string().max(8000).optional(),
+        blocker: z.string().max(4000).optional(),
+        next_step: z.string().max(4000).optional(),
+        status: z.enum(TASK_STATUSES).optional(),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.checkpoint(identity, body);
+    return result;
+  });
   app.route({
     method: ["GET", "POST", "DELETE"],
     url: "/mcp",
@@ -1739,6 +1839,11 @@ export async function createHttpServer(config: LocalConfig) {
         {
           enabled: async (identity) =>
             (await settings.effective(identity)).values.memoryEnabled,
+          context: (identity, input) =>
+            memoryOperations.contextFor(
+              identity,
+              input as Record<string, unknown>,
+            ),
           recall: (identity, input) =>
             memoryOperations.recall(identity, input as Record<string, unknown>),
           read: (identity, input) => {
@@ -1755,6 +1860,15 @@ export async function createHttpServer(config: LocalConfig) {
               neighbors: args.neighbors,
             });
           },
+          update: (identity, input) =>
+            memoryOperations.update(identity, input as Record<string, unknown>),
+          link: (identity, input) =>
+            memoryOperations.link(identity, input as Record<string, unknown>),
+          checkpoint: (identity, input) =>
+            memoryOperations.checkpoint(
+              identity,
+              input as Record<string, unknown>,
+            ),
         },
       );
       await mcp.connect(transport);

@@ -527,6 +527,8 @@ export class MemoryCommitService {
                 verification: finalRecord.verification,
                 sources: finalRecord.sources,
                 edges: finalRecord.edges,
+                valid_from: finalRecord.validFrom,
+                valid_until: finalRecord.validUntil,
               },
             }),
             sources_json: JSON.stringify(finalRecord.sources),
@@ -633,6 +635,8 @@ export class MemoryCommitService {
               target: edge.target,
             })),
             body: finalRecord.body,
+            validFrom: finalRecord.validFrom,
+            validUntil: finalRecord.validUntil,
           },
         });
       } catch {

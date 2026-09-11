@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "notes": [
+    {
+      "note_id": "bench-decision-cache",
+      "kind": "decision",
+      "title": "Önbellek anahtarı sözleşmesi",
+      "body": "Arama önbelleği kullanıcı, alan ve sorgu bağlamına bağlı anahtar taşır.",
+      "sources": [{ "id": "issue:36", "kind": "issue" }]
+    },
+    {
+      "note_id": "bench-decision-retention",
+      "kind": "decision",
+      "title": "Saklama süresi kararı",
+      "body": "Silinen kayıtlar tombstone ile işaretlenir ve aramada görünmez.",
+      "sources": [{ "id": "issue:35", "kind": "issue" }]
+    },
+    {
+      "note_id": "bench-task-benchmark",
+      "kind": "task",
+      "title": "Benchmark kabulü",
+      "body": "Çekimserlik ve güncellik ölçümü donmuş eşiklerle yapılır."
+    },
+    {
+      "note_id": "bench-task-tokenizer",
+      "kind": "task",
+      "title": "Tokenizer ölçümü",
+      "body": "Gerçek tokenizer yoksa bytes/3 tahmini açıkça bildirilir."
+    },
+    {
+      "note_id": "bench-fact-tr",
+      "kind": "fact",
+      "title": "Türkçe normalizasyon",
+      "body": "İÇİN ve için aynı terime katlanır; IŞIK ile ışık eşleşir."
+    },
+    {
+      "note_id": "bench-fact-scope",
+      "kind": "fact",
+      "title": "Kapsam filtresi",
+      "body": "Alan filtresi aday seçiminden önce uygulanır ve sızıntı üretmez."
+    },
+    {
+      "note_id": "bench-note-irrelevant",
+      "kind": "note",
+      "title": "Alakasız not",
+      "body": "balkabağı bahçe sulama listesi"
+    },
+    {
+      "note_id": "bench-session-continuation",
+      "kind": "session",
+      "title": "Oturum özeti",
+      "body": "Sıradaki adım benchmark raporunu kapatmak."
+    }
+  ],
+  "queries": [
+    {
+      "query": "önbellek anahtarı",
+      "expected": ["bench-decision-cache"]
+    },
+    {
+      "query": "tombstone silinen kayıtlar",
+      "expected": ["bench-decision-retention"]
+    },
+    {
+      "query": "tokenizer ölçümü",
+      "expected": ["bench-task-tokenizer"]
+    },
+    {
+      "query": "icin isik",
+      "expected": ["bench-fact-tr"]
+    },
+    {
+      "query": "kapsam filtresi sızıntı",
+      "expected": ["bench-fact-scope"]
+    },
+    {
+      "query": "kuantum rezonans spektroskopisi",
+      "expected": [],
+      "abstain": true
+    }
+  ]
+}

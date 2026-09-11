@@ -6,6 +6,8 @@ import { ForgeError } from "../domain/errors.js";
 import { MemoryService, jobScopeForSpace } from "./service.js";
 import { MemorySearchService } from "./search.js";
 import { MemoryIndexService } from "./index.js";
+import { MemoryContextService } from "./context.js";
+import { MemoryWriteService } from "./writes.js";
 import type { MemoryCommitService, MemoryCommitReceipt } from "./commit.js";
 import { resolveVaultRelative } from "./paths.js";
 import { readTextIfExists } from "./files.js";
@@ -53,6 +55,8 @@ export interface MemoryReadResult {
 export class MemoryOperations {
   readonly search: MemorySearchService;
   readonly index: MemoryIndexService;
+  readonly context: MemoryContextService;
+  readonly writes: MemoryWriteService;
 
   constructor(
     readonly deps: {
@@ -65,6 +69,49 @@ export class MemoryOperations {
   ) {
     this.search = new MemorySearchService(deps.db, deps.service);
     this.index = new MemoryIndexService(deps.db, deps.vaultRoot, deps.service);
+    this.context = new MemoryContextService(deps.db, deps.service);
+    this.writes = new MemoryWriteService({
+      db: deps.db,
+      service: deps.service,
+      commits: deps.commits,
+    });
+  }
+
+  async contextFor(identity: Identity, input: Record<string, unknown>) {
+    return this.context.context(identity, {
+      spaceId: input.space_id ? String(input.space_id) : undefined,
+      spaceIds: Array.isArray(input.space_ids)
+        ? input.space_ids.map(String)
+        : undefined,
+      goal: input.goal ? String(input.goal) : undefined,
+      knownRevisions: Array.isArray(input.known_revisions)
+        ? (
+            input.known_revisions as { note_id: string; revision: number }[]
+          ).map((revision) => ({
+            note_id: String(revision.note_id),
+            revision: Number(revision.revision),
+          }))
+        : undefined,
+      session_key: input.session_key ? String(input.session_key) : undefined,
+      generation:
+        input.generation === undefined ? undefined : Number(input.generation),
+      branch: input.branch ? String(input.branch) : undefined,
+      worktree: input.worktree ? String(input.worktree) : undefined,
+      maxTokens:
+        input.max_tokens === undefined ? undefined : Number(input.max_tokens),
+    });
+  }
+
+  async update(identity: Identity, input: Record<string, unknown>) {
+    return this.writes.update(identity, input as never);
+  }
+
+  async link(identity: Identity, input: Record<string, unknown>) {
+    return this.writes.link(identity, input as never);
+  }
+
+  async checkpoint(identity: Identity, input: Record<string, unknown>) {
+    return this.writes.checkpoint(identity, input as never);
   }
 
   async recall(identity: Identity, input: Record<string, unknown>) {
@@ -79,6 +126,7 @@ export class MemoryOperations {
         input.graph_depth === undefined ? undefined : Number(input.graph_depth),
       limit: input.limit === undefined ? undefined : Number(input.limit),
       after: input.cursor ? String(input.cursor) : undefined,
+      asOf: input.as_of ? Date.parse(String(input.as_of)) : undefined,
     });
   }
 
