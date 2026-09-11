@@ -1130,177 +1130,169 @@ describe("M07 bağımsız envanter/şema ve migration güveni", () => {
     expect(tampered.code).toBe("invalid_agz_manifest");
   });
 
-  test.failing(
-    "13) bekleyen: hostile note_id stage dizini dışına yol açmamalı",
-    async () => {
-      const env = await openEnv();
-      try {
-        const space = await env.service.ensureSpace(env.owner, {
-          type: "personal",
-        });
-        const hostileId = "../../../../polluted";
-        const content = "---\nformat_version: 1\n---\nGövde.\n";
-        const documentSha = sha256Hex(content);
-        const plan = {
-          manifest: {
-            manifestVersion: 1,
-            kind: "agz-memory-import-manifest",
-            createdAt: 1,
-            generator: { product: "probe", module: "m07-agz-import" },
-            source: {
-              productId: "agz-memory",
-              version: "0.5.2",
-              commit: "x",
-              schemaVersion: 11,
-              hashPolicy: "hash-tuple/2",
-              schemaFingerprint: "a".repeat(64),
-              databaseId: "probe-db",
-              fileSha256: "b".repeat(64),
-              fileSizeBytes: 1,
-              inventoryDigest: "c".repeat(64),
-              journalMode: "delete",
-              integrityCheck: "ok",
-            },
-            mappings: [
-              {
-                sourceProjectId: "p1",
-                sourceName: "P",
-                normalizedName: "p",
-                target: {
-                  tenantId: env.owner.tenantId,
-                  memorySpaceId: space.id,
-                  projectId: null,
-                  kind: "personal" as const,
-                },
-              },
-            ],
-            notes: [
-              {
-                sourceProjectId: "p1",
-                sourceNoteId: hostileId,
-                targetNoteId: "victim",
-                idDecision: "preserved" as const,
-                idDecisionReason: null,
-                title: "T",
-                kind: "note",
-                lifecycle: "active",
-                pinned: false,
-                status: "ready" as const,
-                issues: [],
-                revisions: [
-                  {
-                    sourceRevision: 1,
-                    sourceContentHash: "d".repeat(64),
-                    targetRevision: 1,
-                    documentSha256,
-                    recordHash: "e".repeat(64),
-                    bytes: content.length,
-                  },
-                ],
-                edges: [],
-                provenanceCount: 0,
-              },
-            ],
-            counts: {
-              projects: 1,
-              notes: 1,
-              readyNotes: 1,
-              quarantinedNotes: 0,
-              revisions: 1,
-              edges: 0,
-              droppedEdges: 0,
-              provenance: 0,
-              pinned: 0,
-            },
-            exclusions: [],
-            issues: [],
-            decision: {
-              status: "ready" as const,
-              blockingIssues: 0,
-              warningIssues: 0,
-            },
+  test("13) hostile note_id stage dizini dışına yol açmamalı", async () => {
+    const env = await openEnv();
+    try {
+      const space = await env.service.ensureSpace(env.owner, {
+        type: "personal",
+      });
+      const hostileId = "../../../../polluted";
+      const content = "---\nformat_version: 1\n---\nGövde.\n";
+      const documentSha = sha256Hex(content);
+      const plan = {
+        manifest: {
+          manifestVersion: 1,
+          kind: "agz-memory-import-manifest",
+          createdAt: 1,
+          generator: { product: "probe", module: "m07-agz-import" },
+          source: {
+            productId: "agz-memory",
+            version: "0.5.2",
+            commit: "x",
+            schemaVersion: 11,
+            hashPolicy: "hash-tuple/2",
+            schemaFingerprint: "a".repeat(64),
+            databaseId: "probe-db",
+            fileSha256: "b".repeat(64),
+            fileSizeBytes: 1,
+            inventoryDigest: "c".repeat(64),
+            journalMode: "delete",
+            integrityCheck: "ok",
           },
-          documents: [
+          mappings: [
+            {
+              sourceProjectId: "p1",
+              sourceName: "P",
+              normalizedName: "p",
+              target: {
+                tenantId: env.owner.tenantId,
+                memorySpaceId: space.id,
+                projectId: null,
+                kind: "personal" as const,
+              },
+            },
+          ],
+          notes: [
             {
               sourceProjectId: "p1",
               sourceNoteId: hostileId,
-              sourceRevision: 1,
-              relativePath: agzDocumentRelativePath(hostileId, 1, documentSha),
-              content,
-              sha256: documentSha,
-              bytes: content.length,
+              targetNoteId: "victim",
+              idDecision: "preserved" as const,
+              idDecisionReason: null,
+              title: "T",
+              kind: "note",
+              lifecycle: "active",
+              pinned: false,
+              status: "ready" as const,
+              issues: [],
+              revisions: [
+                {
+                  sourceRevision: 1,
+                  sourceContentHash: "d".repeat(64),
+                  targetRevision: 1,
+                  documentSha,
+                  recordHash: "e".repeat(64),
+                  bytes: content.length,
+                },
+              ],
+              edges: [],
+              provenanceCount: 0,
             },
           ],
-        };
-        let threw = false;
-        let stageDir = "";
-        try {
-          const staged = await stageAgzImport(
-            plan as unknown as Parameters<typeof stageAgzImport>[0],
-            { vaultRoot: env.vault },
-          );
-          stageDir = staged.stageDir;
-        } catch {
-          threw = true;
-        }
-        const files = await listVaultFiles(env.vault).catch(() => []);
-        const stagePrefix = stageDir
-          ? stageDir
-              .slice(env.vault.length + 1)
-              .split("/")
-              .join("/")
-          : null;
-        const outsideStage = files.filter(
-          (file) => !stagePrefix || !file.startsWith(`${stagePrefix}/`),
-        );
-        expect(threw || outsideStage.length === 0).toBe(true);
-      } finally {
-        await env.storage.close();
-      }
-    },
-    30000,
-  );
-
-  test.failing(
-    "14) bekleyen: rollback sonrası replay 'already_applied' dememeli, tombstone görünür olmalı",
-    async () => {
-      const env = await openEnv();
-      const dir = await freshDir("forge-m07-replay-");
-      const fixturePath = join(dir, "agz.db");
-      await buildAgzFixture(fixturePath, { profile: "clean" });
-      const source = await sourceOf(fixturePath);
+          counts: {
+            projects: 1,
+            notes: 1,
+            readyNotes: 1,
+            quarantinedNotes: 0,
+            revisions: 1,
+            edges: 0,
+            droppedEdges: 0,
+            provenance: 0,
+            pinned: 0,
+          },
+          exclusions: [],
+          issues: [],
+          decision: {
+            status: "ready" as const,
+            blockingIssues: 0,
+            warningIssues: 0,
+          },
+        },
+        documents: [
+          {
+            sourceProjectId: "p1",
+            sourceNoteId: hostileId,
+            sourceRevision: 1,
+            relativePath: agzDocumentRelativePath(hostileId, 1, documentSha),
+            content,
+            sha256: documentSha,
+            bytes: content.length,
+          },
+        ],
+      };
+      let threw = false;
+      let stageDir = "";
       try {
-        const mappings = await bindMappings(env);
-        const plan = await planOf(env, source, mappings);
-        const staged = await stageAgzImport(plan, { vaultRoot: env.vault });
-        await applyAgzImport({
-          service: env.service,
-          commits: env.commits,
-          identity: env.owner,
-          stageDir: staged.stageDir,
-          sourcePath: fixturePath,
-        });
-        const rolled = await rollbackAgzImport({
-          service: env.service,
-          identity: env.owner,
-          stageDir: staged.stageDir,
-        });
-        expect(rolled.counters.rolledBack).toBeGreaterThan(0);
-        const replay = await applyAgzImport({
-          service: env.service,
-          commits: env.commits,
-          identity: env.owner,
-          stageDir: staged.stageDir,
-          sourcePath: fixturePath,
-        });
-        // Replay, arşivlenmiş 7 hedefe rağmen tam başarı bildirmemeli.
-        expect(replay.status).not.toBe("already_applied");
-        expect(replay.counters.notes.duplicate).toBeLessThan(8);
-      } finally {
-        await source.close();
-        await env.storage.close();
+        const staged = await stageAgzImport(
+          plan as unknown as Parameters<typeof stageAgzImport>[0],
+          { vaultRoot: env.vault },
+        );
+        stageDir = staged.stageDir;
+      } catch {
+        threw = true;
       }
-    },
-    90000,
-  );
+      const files = await listVaultFiles(env.vault).catch(() => []);
+      const stagePrefix = stageDir
+        ? stageDir
+            .slice(env.vault.length + 1)
+            .split("/")
+            .join("/")
+        : null;
+      const outsideStage = files.filter(
+        (file) => !stagePrefix || !file.startsWith(`${stagePrefix}/`),
+      );
+      expect(threw || outsideStage.length === 0).toBe(true);
+    } finally {
+      await env.storage.close();
+    }
+  }, 30000);
+
+  test("14) rollback sonrası replay 'already_applied' dememeli, tombstone görünür olmalı", async () => {
+    const env = await openEnv();
+    const dir = await freshDir("forge-m07-replay-");
+    const fixturePath = join(dir, "agz.db");
+    await buildAgzFixture(fixturePath, { profile: "clean" });
+    const source = await sourceOf(fixturePath);
+    try {
+      const mappings = await bindMappings(env);
+      const plan = await planOf(env, source, mappings);
+      const staged = await stageAgzImport(plan, { vaultRoot: env.vault });
+      await applyAgzImport({
+        service: env.service,
+        commits: env.commits,
+        identity: env.owner,
+        stageDir: staged.stageDir,
+        sourcePath: fixturePath,
+      });
+      const rolled = await rollbackAgzImport({
+        service: env.service,
+        identity: env.owner,
+        stageDir: staged.stageDir,
+      });
+      expect(rolled.counters.rolledBack).toBeGreaterThan(0);
+      const replay = await applyAgzImport({
+        service: env.service,
+        commits: env.commits,
+        identity: env.owner,
+        stageDir: staged.stageDir,
+        sourcePath: fixturePath,
+      });
+      // Replay, arşivlenmiş 7 hedefe rağmen tam başarı bildirmemeli.
+      expect(replay.status).not.toBe("already_applied");
+      expect(replay.counters.notes.duplicate).toBeLessThan(8);
+    } finally {
+      await source.close();
+      await env.storage.close();
+    }
+  }, 90000);
 });
