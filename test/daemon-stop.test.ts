@@ -6,6 +6,25 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 const exec = promisify(execFile);
+
+/**
+ * Windows can keep daemon log/pipe files busy for a moment after exit;
+ * a bounded retry keeps the cleanup deterministic without masking real
+ * failures (anything but EBUSY still throws immediately).
+ */
+async function rmWithRetry(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt === 5)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
 test("Node daemon stop: owner-only shutdown, exit, idempotence, restart and retained data", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-stop-"));
   const listener = createServer();
@@ -103,6 +122,6 @@ test("Node daemon stop: owner-only shutdown, exit, idempotence, restart and reta
     await exec("node", [cli, "stop", ...args], { env, timeout: 20000 });
   } finally {
     if (child && child.exitCode === null) child.kill("SIGTERM");
-    await rm(root, { recursive: true, force: true });
+    await rmWithRetry(root);
   }
 }, 40000);
