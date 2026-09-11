@@ -1,5 +1,6 @@
 import {
   Archive,
+  Brain,
   Home,
   BookOpen,
   Briefcase,
@@ -35,6 +36,12 @@ export const screens: ScreenDef[] = [
     titleKey: "nav.library",
     Icon: BookOpen,
     needsProject: true,
+  },
+  {
+    id: "memory",
+    titleKey: "nav.memory",
+    Icon: Brain,
+    needsProject: false,
   },
   { id: "jobs", titleKey: "nav.jobs", Icon: Briefcase, needsProject: true },
   {

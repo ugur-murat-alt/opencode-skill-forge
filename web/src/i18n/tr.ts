@@ -11,6 +11,7 @@ import { installsTr } from "./parts/installs";
 import { membersTr } from "./parts/members";
 import { execTr } from "./parts/exec";
 import { pkgdetailTr } from "./parts/pkgdetail";
+import { memoryTr } from "./parts/memory";
 export const tr = {
   invites: invitesTr,
   prompts: promptsTr,
@@ -25,6 +26,7 @@ export const tr = {
   members: membersTr,
   exec: execTr,
   pkgdetail: pkgdetailTr,
+  memory: memoryTr,
   nav: {
     overview: "Genel durum",
     library: "Skill kütüphanesi",
@@ -39,6 +41,7 @@ export const tr = {
     models: "Modeller ve tüketim",
     logs: "Log ve teşhis",
     members: "Üyeler",
+    memory: "Hafıza",
   },
   common: {
     refresh: "Yenile",
@@ -158,6 +161,26 @@ export const tr = {
     unknown: "Bilinmiyor",
     configured: "Yapılandırıldı",
     unconfigured: "Yapılandırılmadı",
+    active: "Etkin",
+    archived: "Arşivli",
+    planned: "Planlandı",
+    doing: "Sürüyor",
+    blocked: "Engelli",
+    done: "Tamam",
+    declared: "Beyan",
+    verified: "Doğrulandı",
+    proposed: "Öneri",
+    pending: "Bekliyor",
+    committed: "Kaydedildi",
+    indexed: "İndekslendi",
+    present: "Yerinde",
+    missing: "Eksik",
+    conflict: "Çatışma",
+    candidate: "Aday",
+    applied: "Uygulandı",
+    quarantined: "Karantina",
+    read_only: "Salt okunur",
+    managed: "Yönetilen",
   },
   errors: {
     aborted: "İş iptal edildi.",
@@ -348,7 +371,7 @@ export const tr = {
     memory_revision_file_conflict: "Revision yolu farklı içerikle dolu.",
     memory_revision_file_missing: "Kabul edilmiş revision dosyası bulunamadı.",
     memory_revision_required: "Güncelleme için base_revision zorunludur.",
-    memory_revision_unavailable: "Sürüm anlamsal metadata taşımıyor.",
+    memory_revision_unavailable: "Sürüm bulunamadı.",
     memory_scope_mismatch: "İş kapsamı ile hedef alan uyuşmuyor.",
     memory_source_unavailable: "Kaynak bulunamadı.",
     memory_space_mismatch: "Belge hedef alanla eşleşmiyor.",

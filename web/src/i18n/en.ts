@@ -13,6 +13,7 @@ import { installsEn } from "./parts/installs";
 import { membersEn } from "./parts/members";
 import { execEn } from "./parts/exec";
 import { pkgdetailEn } from "./parts/pkgdetail";
+import { memoryEn } from "./parts/memory";
 export const en: typeof tr = {
   invites: invitesEn,
   prompts: promptsEn,
@@ -27,6 +28,7 @@ export const en: typeof tr = {
   members: membersEn,
   exec: execEn,
   pkgdetail: pkgdetailEn,
+  memory: memoryEn,
   nav: {
     overview: "Overview",
     library: "Skill library",
@@ -41,6 +43,7 @@ export const en: typeof tr = {
     models: "Models & usage",
     logs: "Logs & diagnostics",
     members: "Members",
+    memory: "Memory",
   },
   common: {
     refresh: "Refresh",
@@ -161,6 +164,26 @@ export const en: typeof tr = {
     unknown: "Unknown",
     configured: "Configured",
     unconfigured: "Not configured",
+    active: "Active",
+    archived: "Archived",
+    planned: "Planned",
+    doing: "Doing",
+    blocked: "Blocked",
+    done: "Done",
+    declared: "Declared",
+    verified: "Verified",
+    proposed: "Proposed",
+    pending: "Pending",
+    committed: "Committed",
+    indexed: "Indexed",
+    present: "Present",
+    missing: "Missing",
+    conflict: "Conflict",
+    candidate: "Candidate",
+    applied: "Applied",
+    quarantined: "Quarantined",
+    read_only: "Read-only",
+    managed: "Managed",
   },
   errors: {
     aborted: "The job was aborted.",
@@ -358,7 +381,7 @@ export const en: typeof tr = {
       "Revision path already holds different content.",
     memory_revision_file_missing: "Accepted revision file is missing.",
     memory_revision_required: "base_revision is required for updates.",
-    memory_revision_unavailable: "Revision does not carry semantic metadata.",
+    memory_revision_unavailable: "Revision not found.",
     memory_scope_mismatch: "Job scope does not match the target space.",
     memory_source_unavailable: "Source not found.",
     memory_space_mismatch: "Document does not match the target space.",
