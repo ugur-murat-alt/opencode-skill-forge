@@ -181,6 +181,11 @@ export const tr = {
     quarantined: "Karantina",
     read_only: "Salt okunur",
     managed: "Yönetilen",
+    off: "Kapalı",
+    manual: "Elle",
+    shadow: "Gölge",
+    proposal: "Öneri modu",
+    auto: "Otomatik",
   },
   errors: {
     aborted: "İş iptal edildi.",

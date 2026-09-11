@@ -184,6 +184,11 @@ export const en: typeof tr = {
     quarantined: "Quarantined",
     read_only: "Read-only",
     managed: "Managed",
+    off: "Off",
+    manual: "Manual",
+    shadow: "Shadow",
+    proposal: "Proposal mode",
+    auto: "Automatic",
   },
   errors: {
     aborted: "The job was aborted.",

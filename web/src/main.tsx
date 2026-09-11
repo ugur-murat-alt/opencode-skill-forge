@@ -282,7 +282,13 @@ function App() {
   const pages: Record<string, React.ReactNode> = {
     overview: <Overview project={project} />,
     library: <Library project={project} tenant={account.identity.tenantId} />,
-    memory: <Memory tenant={account.identity.tenantId} project={project} />,
+    memory: (
+      <Memory
+        tenant={account.identity.tenantId}
+        project={project}
+        canWrite={["founder", "admin", "writer"].includes(account.role)}
+      />
+    ),
     jobs: <Jobs project={project} />,
     organizations: (
       <Organizations

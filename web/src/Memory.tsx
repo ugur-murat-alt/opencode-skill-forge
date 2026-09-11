@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, FileText, Plus, RotateCcw } from "lucide-react";
+import { Archive, FileText, Pin, Plus, RotateCcw } from "lucide-react";
 import { errorCode } from "./api";
 import { useLang } from "./i18n/lang";
 import { ErrorNotice, Empty, Refresh, Status, date, useResource } from "./ui";
 import { Markdown } from "./memory/Markdown";
 import { SourcePanel } from "./memory/SourcePanel";
+import { GraphView } from "./memory/GraphView";
+import { SearchPanel } from "./memory/SearchPanel";
+import { ContextPanel } from "./memory/ContextPanel";
+import { TasksView } from "./memory/TasksView";
+import { ReviewPanel } from "./memory/ReviewPanel";
+import { HealthPanel } from "./memory/HealthPanel";
 import {
   ensureMemorySpace,
   isRevisionConflict,
@@ -14,6 +20,7 @@ import {
   memoryReceipt,
   memoryRestore,
   memoryRevision,
+  memoryUpdate,
   type MemoryCandidate,
   type MemoryNoteDetail,
   type MemoryNoteList,
@@ -110,9 +117,11 @@ function PendingChip({ pending }: { pending: MemoryPendingSave }) {
 function MemoryWorkspace({
   tenant,
   space,
+  canWrite,
 }: {
   tenant: string;
   space: MemorySpace;
+  canWrite: boolean;
 }) {
   const { t, lang } = useLang();
   const spaceId = space.id;
@@ -128,6 +137,10 @@ function MemoryWorkspace({
 
   const [noteId, setNoteId] = useState("");
   const [newNoteId, setNewNoteId] = useState("");
+  const [view, setView] = useState<
+    "notes" | "search" | "context" | "tasks" | "review" | "health"
+  >("notes");
+  const [detailTab, setDetailTab] = useState<"editor" | "links">("editor");
   const [fields, setFields] = useState({
     title: "",
     summary: "",
@@ -369,8 +382,36 @@ function MemoryWorkspace({
     setViewing(null);
     setError("");
     setNotice("");
+    setView("notes");
+    setDetailTab("editor");
     rememberRecentNote(tenant, spaceId, id);
     setRecent(readRecentNotes(tenant, spaceId));
+  }
+
+  function refreshNotes() {
+    void list.refresh();
+    void detail.refresh();
+    void revisions.refresh();
+  }
+
+  async function togglePin() {
+    if (!noteId || !activeDetail?.revision || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await memoryUpdate({
+        spaceId,
+        noteId,
+        expectedRevision: activeDetail.revision.revision,
+        patch: { pinned: !activeDetail.note.pinned },
+      });
+      refreshNotes();
+    } catch (caught) {
+      setError(errorCode(caught));
+      if (errorCode(caught) === "memory_revision_conflict") refreshNotes();
+    } finally {
+      setBusy(false);
+    }
   }
 
   function startNewNote() {
@@ -379,6 +420,8 @@ function MemoryWorkspace({
     setViewing(null);
     setError("");
     setNotice("");
+    setView("notes");
+    setDetailTab("editor");
     editorRef.current = null;
     setFields({ title: "", summary: "", body: "", kind: "note" });
   }
@@ -634,6 +677,28 @@ function MemoryWorkspace({
         )}
         <Refresh run={() => void list.refresh()} loading={list.loading} />
       </div>
+      <nav className="memory-tabs" aria-label={t("memory.title")}>
+        {(
+          [
+            ["notes", "memory.tabs.notes"],
+            ["search", "memory.tabs.search"],
+            ["context", "memory.tabs.context"],
+            ["tasks", "memory.tabs.tasks"],
+            ["review", "memory.tabs.review"],
+            ["health", "memory.tabs.health"],
+          ] as const
+        ).map(([id, key]) => (
+          <button
+            key={id}
+            data-testid={`memory-tab-${id}`}
+            aria-current={view === id ? "page" : undefined}
+            className={view === id ? "primary" : ""}
+            onClick={() => setView(id)}
+          >
+            {t(key)}
+          </button>
+        ))}
+      </nav>
       <ErrorNotice
         message={
           error ||
@@ -732,255 +797,345 @@ function MemoryWorkspace({
             </button>
           )}
         </section>
-        <section className="panel memory-detail" aria-label={t("memory.title")}>
-          {!activeId ? (
-            <p className="muted">{t("memory.notices.selectNote")}</p>
-          ) : (
-            <>
-              <div className="memory-detail-head">
-                <button
-                  className="link-button memory-back"
-                  data-testid="memory-back"
-                  onClick={() => {
-                    setNoteId("");
-                    setNewNoteId("");
-                    setViewing(null);
-                  }}
-                >
-                  {t("memory.actions.back")}
-                </button>
-                <h2>
-                  {newNoteId
-                    ? t("memory.editor.newTitle")
-                    : note?.title || t("memory.editor.untitled")}
-                </h2>
-                {queuedPending && <PendingChip pending={queuedPending} />}
-                {rejectedConflict && <PendingChip pending={rejectedConflict} />}
-                {!queuedPending && !rejectedConflict && published && (
-                  <PendingChip pending={published} />
-                )}
-                {dirty && (
-                  <span
-                    className="memory-chip memory-chip-dirty"
-                    data-testid="memory-dirty"
-                  >
-                    {t("memory.editor.dirty")}
-                  </span>
-                )}
-              </div>
-              {rejectedConflict && (
-                <section
-                  className="memory-conflict"
-                  data-testid="memory-conflict"
-                >
-                  <h3>{t("memory.conflict.title")}</h3>
-                  <p>{t("memory.conflict.detail")}</p>
-                  <div className="memory-conflict-grid">
-                    <div>
-                      <h4>{t("memory.conflict.mine")}</h4>
-                      <pre>
-                        {rejectedConflict.submitted.body.slice(0, 4000)}
-                      </pre>
-                    </div>
-                    <div>
-                      <h4>{t("memory.conflict.server")}</h4>
-                      <pre>{serverBody.slice(0, 4000)}</pre>
-                    </div>
-                  </div>
-                  <p>
-                    <small>
-                      {t("memory.conflict.myBase", {
-                        revision: rejectedConflict.baseRevision ?? "—",
-                      })}{" "}
-                      ·{" "}
-                      {t("memory.conflict.serverRevision", {
-                        revision: activeDetail?.revision?.revision ?? "—",
-                      })}
-                    </small>
-                  </p>
-                  <button
-                    className="primary"
-                    data-testid="memory-rebase"
-                    onClick={() => void rebaseMine()}
-                  >
-                    {t("memory.conflict.rebaseMine")}
-                  </button>{" "}
-                  <button
-                    data-testid="memory-load-server"
-                    onClick={() => void loadServerRevision()}
-                  >
-                    {t("memory.conflict.reloadServer")}
-                  </button>
-                </section>
-              )}
-              {activeDraft &&
-                !rejectedConflict &&
-                activeDraft.baseRevision !== null &&
-                activeDetail?.revision &&
-                activeDraft.baseRevision !== activeDetail.revision.revision && (
-                  <p className="memory-banner" data-testid="memory-stale-base">
-                    {t("memory.editor.staleBase")}
-                  </p>
-                )}
-              {viewing ? (
-                <section aria-label={t("memory.history.title")}>
-                  <p
-                    className="memory-banner"
-                    data-testid="memory-viewing-revision"
-                  >
-                    {t("memory.history.viewing", {
-                      revision: viewing.revision,
-                    })}{" "}
-                    · {t("memory.history.readOnly")}
-                  </p>
-                  <button
-                    className="link-button"
-                    onClick={() => setViewing(null)}
-                  >
-                    {t("memory.history.backToCurrent")}
-                  </button>
-                  {viewing.content === null ? (
-                    <p className="muted">{t("memory.history.noContent")}</p>
-                  ) : (
-                    <Markdown
-                      source={splitMemoryDocument(viewing.content).body}
-                      testId="memory-history-preview"
-                    />
-                  )}
-                </section>
+        {view === "notes" ? (
+          <>
+            <section
+              className="panel memory-detail"
+              aria-label={t("memory.title")}
+            >
+              {!activeId ? (
+                <p className="muted">{t("memory.notices.selectNote")}</p>
               ) : (
                 <>
-                  {!newNoteId && archived && (
-                    <p className="memory-banner" data-testid="memory-archived">
-                      {t("memory.source.state")}: <Status value="archived" />.{" "}
-                      {t("memory.actions.restore")}
-                    </p>
-                  )}
-                  <div className="memory-fields">
-                    <label>
-                      {t("memory.editor.titleLabel")}
-                      <input
-                        data-testid="memory-title"
-                        value={fields.title}
-                        disabled={saving || archived}
-                        onChange={(event) =>
-                          updateFields({ title: event.target.value })
-                        }
-                      />
-                    </label>
-                    <label>
-                      {t("memory.editor.kindLabel")}
-                      <select
-                        data-testid="memory-kind"
-                        value={fields.kind}
-                        disabled={saving || archived}
-                        onChange={(event) =>
-                          updateFields({ kind: event.target.value })
-                        }
-                      >
-                        {NOTE_KINDS.map((kind) => (
-                          <option key={kind} value={kind}>
-                            {kind}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="memory-summary-field">
-                      {t("memory.editor.summaryLabel")}{" "}
-                      <small>({t("memory.editor.summaryHint")})</small>
-                      <textarea
-                        rows={2}
-                        data-testid="memory-summary"
-                        value={fields.summary}
-                        disabled={saving || archived}
-                        onChange={(event) =>
-                          updateFields({ summary: event.target.value })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div className="memory-editor-head">
-                    <strong>{t("memory.editor.bodyLabel")}</strong>
+                  <div className="memory-detail-head">
                     <button
-                      className="link-button"
-                      data-testid="memory-toggle-preview"
-                      onClick={() => setPreview((value) => !value)}
+                      className="link-button memory-back"
+                      data-testid="memory-back"
+                      onClick={() => {
+                        setNoteId("");
+                        setNewNoteId("");
+                        setViewing(null);
+                      }}
                     >
-                      {preview
-                        ? t("memory.actions.edit")
-                        : t("memory.actions.preview")}
+                      {t("memory.actions.back")}
                     </button>
-                  </div>
-                  {preview ? (
-                    <Markdown source={fields.body} testId="memory-preview" />
-                  ) : (
-                    <textarea
-                      className="code-editor memory-editor"
-                      rows={16}
-                      data-testid="memory-body"
-                      value={fields.body}
-                      disabled={saving || archived}
-                      aria-label={t("memory.editor.bodyLabel")}
-                      onChange={(event) =>
-                        updateFields({ body: event.target.value })
-                      }
-                    />
-                  )}
-                  <div className="toolbar">
-                    <button
-                      className="primary"
-                      data-testid="memory-save"
-                      disabled={!canSave}
-                      onClick={() => void save()}
-                    >
-                      {saving
-                        ? t("memory.actions.saving")
-                        : t("memory.actions.save")}
-                    </button>
-                    {dirty && !queuedPending && (
-                      <button
-                        data-testid="memory-discard"
-                        disabled={saving}
-                        onClick={discardDraft}
+                    <h2>
+                      {newNoteId
+                        ? t("memory.editor.newTitle")
+                        : note?.title || t("memory.editor.untitled")}
+                    </h2>
+                    {queuedPending && <PendingChip pending={queuedPending} />}
+                    {rejectedConflict && (
+                      <PendingChip pending={rejectedConflict} />
+                    )}
+                    {!queuedPending && !rejectedConflict && published && (
+                      <PendingChip pending={published} />
+                    )}
+                    {dirty && (
+                      <span
+                        className="memory-chip memory-chip-dirty"
+                        data-testid="memory-dirty"
                       >
-                        {t("memory.actions.discard")}
-                      </button>
+                        {t("memory.editor.dirty")}
+                      </span>
                     )}
                     {!newNoteId && (
                       <button
-                        data-testid="memory-archive-toggle"
-                        disabled={busy || saving}
-                        onClick={() => void toggleArchive(archived)}
+                        className="icon-button"
+                        data-testid="memory-pin-toggle"
+                        aria-label={t("memory.actions.pin")}
+                        title={t("memory.actions.pin")}
+                        disabled={busy || !activeDetail?.revision}
+                        onClick={() => void togglePin()}
                       >
-                        {archived ? (
-                          <>
-                            <RotateCcw size={15} />{" "}
-                            {t("memory.actions.restore")}
-                          </>
-                        ) : (
-                          <>
-                            <Archive size={15} /> {t("memory.actions.archive")}
-                          </>
-                        )}
+                        <Pin size={15} />
                       </button>
                     )}
                   </div>
+                  {!newNoteId && !viewing && (
+                    <div className="toolbar memory-detail-tabs">
+                      <button
+                        data-testid="memory-detail-tab-editor"
+                        className={detailTab === "editor" ? "primary" : ""}
+                        aria-current={
+                          detailTab === "editor" ? "page" : undefined
+                        }
+                        onClick={() => setDetailTab("editor")}
+                      >
+                        {t("memory.detailTabs.editor")}
+                      </button>
+                      <button
+                        data-testid="memory-detail-tab-links"
+                        className={detailTab === "links" ? "primary" : ""}
+                        aria-current={
+                          detailTab === "links" ? "page" : undefined
+                        }
+                        onClick={() => setDetailTab("links")}
+                      >
+                        {t("memory.detailTabs.links")}
+                      </button>
+                    </div>
+                  )}
+                  {rejectedConflict && (
+                    <section
+                      className="memory-conflict"
+                      data-testid="memory-conflict"
+                    >
+                      <h3>{t("memory.conflict.title")}</h3>
+                      <p>{t("memory.conflict.detail")}</p>
+                      <div className="memory-conflict-grid">
+                        <div>
+                          <h4>{t("memory.conflict.mine")}</h4>
+                          <pre>
+                            {rejectedConflict.submitted.body.slice(0, 4000)}
+                          </pre>
+                        </div>
+                        <div>
+                          <h4>{t("memory.conflict.server")}</h4>
+                          <pre>{serverBody.slice(0, 4000)}</pre>
+                        </div>
+                      </div>
+                      <p>
+                        <small>
+                          {t("memory.conflict.myBase", {
+                            revision: rejectedConflict.baseRevision ?? "—",
+                          })}{" "}
+                          ·{" "}
+                          {t("memory.conflict.serverRevision", {
+                            revision: activeDetail?.revision?.revision ?? "—",
+                          })}
+                        </small>
+                      </p>
+                      <button
+                        className="primary"
+                        data-testid="memory-rebase"
+                        onClick={() => void rebaseMine()}
+                      >
+                        {t("memory.conflict.rebaseMine")}
+                      </button>{" "}
+                      <button
+                        data-testid="memory-load-server"
+                        onClick={() => void loadServerRevision()}
+                      >
+                        {t("memory.conflict.reloadServer")}
+                      </button>
+                    </section>
+                  )}
+                  {activeDraft &&
+                    !rejectedConflict &&
+                    activeDraft.baseRevision !== null &&
+                    activeDetail?.revision &&
+                    activeDraft.baseRevision !==
+                      activeDetail.revision.revision && (
+                      <p
+                        className="memory-banner"
+                        data-testid="memory-stale-base"
+                      >
+                        {t("memory.editor.staleBase")}
+                      </p>
+                    )}
+                  {detailTab === "links" && !viewing && !newNoteId ? (
+                    <GraphView
+                      spaceId={spaceId}
+                      detail={activeDetail}
+                      notes={items}
+                      canWrite={canWrite}
+                      onSelectNote={selectNote}
+                      onChanged={refreshNotes}
+                    />
+                  ) : viewing ? (
+                    <section aria-label={t("memory.history.title")}>
+                      <p
+                        className="memory-banner"
+                        data-testid="memory-viewing-revision"
+                      >
+                        {t("memory.history.viewing", {
+                          revision: viewing.revision,
+                        })}{" "}
+                        · {t("memory.history.readOnly")}
+                      </p>
+                      <button
+                        className="link-button"
+                        onClick={() => setViewing(null)}
+                      >
+                        {t("memory.history.backToCurrent")}
+                      </button>
+                      {viewing.content === null ? (
+                        <p className="muted">{t("memory.history.noContent")}</p>
+                      ) : (
+                        <Markdown
+                          source={splitMemoryDocument(viewing.content).body}
+                          testId="memory-history-preview"
+                        />
+                      )}
+                    </section>
+                  ) : (
+                    <>
+                      {!newNoteId && archived && (
+                        <p
+                          className="memory-banner"
+                          data-testid="memory-archived"
+                        >
+                          {t("memory.source.state")}:{" "}
+                          <Status value="archived" />.{" "}
+                          {t("memory.actions.restore")}
+                        </p>
+                      )}
+                      <div className="memory-fields">
+                        <label>
+                          {t("memory.editor.titleLabel")}
+                          <input
+                            data-testid="memory-title"
+                            value={fields.title}
+                            disabled={saving || archived}
+                            onChange={(event) =>
+                              updateFields({ title: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          {t("memory.editor.kindLabel")}
+                          <select
+                            data-testid="memory-kind"
+                            value={fields.kind}
+                            disabled={saving || archived}
+                            onChange={(event) =>
+                              updateFields({ kind: event.target.value })
+                            }
+                          >
+                            {NOTE_KINDS.map((kind) => (
+                              <option key={kind} value={kind}>
+                                {kind}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="memory-summary-field">
+                          {t("memory.editor.summaryLabel")}{" "}
+                          <small>({t("memory.editor.summaryHint")})</small>
+                          <textarea
+                            rows={2}
+                            data-testid="memory-summary"
+                            value={fields.summary}
+                            disabled={saving || archived}
+                            onChange={(event) =>
+                              updateFields({ summary: event.target.value })
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="memory-editor-head">
+                        <strong>{t("memory.editor.bodyLabel")}</strong>
+                        <button
+                          className="link-button"
+                          data-testid="memory-toggle-preview"
+                          onClick={() => setPreview((value) => !value)}
+                        >
+                          {preview
+                            ? t("memory.actions.edit")
+                            : t("memory.actions.preview")}
+                        </button>
+                      </div>
+                      {preview ? (
+                        <Markdown
+                          source={fields.body}
+                          testId="memory-preview"
+                        />
+                      ) : (
+                        <textarea
+                          className="code-editor memory-editor"
+                          rows={16}
+                          data-testid="memory-body"
+                          value={fields.body}
+                          disabled={saving || archived}
+                          aria-label={t("memory.editor.bodyLabel")}
+                          onChange={(event) =>
+                            updateFields({ body: event.target.value })
+                          }
+                        />
+                      )}
+                      <div className="toolbar">
+                        <button
+                          className="primary"
+                          data-testid="memory-save"
+                          disabled={!canSave}
+                          onClick={() => void save()}
+                        >
+                          {saving
+                            ? t("memory.actions.saving")
+                            : t("memory.actions.save")}
+                        </button>
+                        {dirty && !queuedPending && (
+                          <button
+                            data-testid="memory-discard"
+                            disabled={saving}
+                            onClick={discardDraft}
+                          >
+                            {t("memory.actions.discard")}
+                          </button>
+                        )}
+                        {!newNoteId && (
+                          <button
+                            data-testid="memory-archive-toggle"
+                            disabled={busy || saving}
+                            onClick={() => void toggleArchive(archived)}
+                          >
+                            {archived ? (
+                              <>
+                                <RotateCcw size={15} />{" "}
+                                {t("memory.actions.restore")}
+                              </>
+                            ) : (
+                              <>
+                                <Archive size={15} />{" "}
+                                {t("memory.actions.archive")}
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </>
               )}
-            </>
-          )}
-        </section>
-        <SourcePanel
-          detail={activeDetail}
-          sources={sources.data?.items ?? []}
-          conflicts={conflictRows}
-          revisions={revisionRows}
-          viewingRevision={viewing?.revision ?? null}
-          onViewRevision={(row) => void viewRevision(row)}
-          onBackToCurrent={() => setViewing(null)}
-          onMoreRevisions={() => void revisions.loadMore()}
-          hasMoreRevisions={revisions.next !== null}
-        />
+            </section>
+            <SourcePanel
+              detail={activeDetail}
+              sources={sources.data?.items ?? []}
+              conflicts={conflictRows}
+              revisions={revisionRows}
+              viewingRevision={viewing?.revision ?? null}
+              onViewRevision={(row) => void viewRevision(row)}
+              onBackToCurrent={() => setViewing(null)}
+              onMoreRevisions={() => void revisions.loadMore()}
+              hasMoreRevisions={revisions.next !== null}
+            />
+          </>
+        ) : (
+          <section
+            className="panel memory-main-view"
+            data-testid="memory-main-view"
+            aria-label={t("memory.title")}
+          >
+            {view === "search" && (
+              <SearchPanel spaceId={spaceId} onSelectNote={selectNote} />
+            )}
+            {view === "context" && (
+              <ContextPanel spaceId={spaceId} onSelectNote={selectNote} />
+            )}
+            {view === "tasks" && (
+              <TasksView
+                spaceId={spaceId}
+                onSelectNote={selectNote}
+                onChanged={refreshNotes}
+              />
+            )}
+            {view === "review" && (
+              <ReviewPanel spaceId={spaceId} onSelectNote={selectNote} />
+            )}
+            {view === "health" && <HealthPanel spaceId={spaceId} />}
+          </section>
+        )}
       </div>
     </>
   );
@@ -989,9 +1144,11 @@ function MemoryWorkspace({
 export function Memory({
   tenant,
   project,
+  canWrite,
 }: {
   tenant: string;
   project: string;
+  canWrite: boolean;
 }) {
   const { t } = useLang();
   const spaces = useResource<{ items: MemorySpace[]; next: string | null }>(
@@ -1145,6 +1302,7 @@ export function Memory({
           key={`${tenant}:${selected.id}`}
           tenant={tenant}
           space={selected}
+          canWrite={canWrite}
         />
       ) : (
         <section className="panel">
