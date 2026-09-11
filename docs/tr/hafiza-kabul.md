@@ -6,11 +6,11 @@ sözleşmeleri kendi normatif yerlerinde kalır (`docs/adr/`, modül rehberleri)
 burada yalnız "neyi, hangi gerçek yolla, hangi kanıtla doğruladık?" sorusunun
 cevabı tutulur.
 
-> Durum (11.09.2026): M01 (#34) bu doğrulama dalına henüz birleşmedi. Bağımsız
-> kabul koşusu (`test/memory-acceptance-independent.test.ts`) bu yüzden
-> **gerekçeli olarak atlanıyor**; sert kapı `MEMORY_REQUIRE_M01=1` ile
-> açılır. Benchmark iskeleti ve veri kümesi kendi birim testleriyle yeşildir.
-> Hiçbir ölçüm sonucu henüz üretilmemiştir.
+> Durum (11.09.2026): M01 (#34) bu dala birleşti. Bağımsız kabul koşusu
+> SQLite'ta 13/13, PostgreSQL'de (geçici veritabanı başına) 21/21 yeşildir;
+> sert kapı `MEMORY_REQUIRE_M01=1` ile her koşumda açılır. Benchmark iskeleti
+> ve veri kümesi kendi birim testleriyle yeşildir. Kalite/token/latency
+> ölçümü henüz **üretilmemiştir**; eşikler ölçüm öncesi donmuş hedeflerdir.
 
 ## 1. Ortak kanıt sözleşmesi
 
@@ -134,49 +134,70 @@ Koşum komutu (iskelet):
 
 ```bash
 bun test test/benchmarks/                    # metrik ve sözleşme testleri
+MEMORY_REQUIRE_M01=1 \
 FORGE_TEST_POSTGRES_URL=postgres://postgres:forge-ci-only@127.0.0.1:55433/forge_mem_verify \
   bun test test/memory-acceptance-independent.test.ts
 ```
+
+PostgreSQL hücresi her koşum için kendi **geçici veritabanını** açar ve
+sonunda düşürür; paylaşılan `forge_mem_verify`/`forge_test` düşürülmez.
 
 ## 4. M01 bağımsız kabul matrisi (#34)
 
 Test dosyası: `test/memory-acceptance-independent.test.ts` (çekirdek ajanın
-dosya adlarıyla çakışmaz). Public API sözleşmesi: `JobScope`, `accept(scope)`
-veya eski `projectId`, `Run.project_id/scope_kind/scope_key`, `MemoryService`
-(`ensureSpace`, `authorizeSpace`, `recordEvent`, `reconcile`) ve
-`src/domain/memory.ts` parse/serialize/hash davranışları.
+dosya adlarıyla çakışmaz). Doğrulanan public sözleşme:
 
-| #   | Senaryo                                                            | Test                         | Şimdi   |
-| --- | ------------------------------------------------------------------ | ---------------------------- | ------- |
-| 1   | memory kind tanımları `skillProfile:false`                         | yüzey çözümü                 | atlandı |
-| 2   | Kişisel/proje/organizasyon accept + Run alanları                   | kapsam matrisi (SQLite + PG) | atlandı |
-| 3   | Aynı anahtar aynı hash duplicate, farklı hash 409                  | idempotency                  | atlandı |
-| 4   | Evolution kapalı: hafıza geçer, skill kapısı korunur               | evolution kapalı             | atlandı |
-| 5   | Gerçek worker + handler + audit + idempotent receipt               | worker zinciri               | atlandı |
-| 6   | `ensureSpace` kararlılığı, `authorizeSpace` redleri, `recordEvent` | MemoryService sözleşmesi     | atlandı |
-| 7   | Yetki sahteciliği ve tenant izolasyonu                             | negatifler                   | atlandı |
-| 8   | Round-trip + revision-dışı hash                                    | domain sözleşmesi            | atlandı |
-| 9   | Gelecek format reddi                                               | domain sözleşmesi            | atlandı |
-| 10  | Supersession döngüsü reddi                                         | domain sözleşmesi            | atlandı |
-| 11  | Wikilink belirsizliği rastgele çözülmez                            | domain sözleşmesi            | atlandı |
+- `src/memory/service.ts`: `new MemoryService(db, identities?)`;
+  `ensureSpace(identity, {type:"personal"|"project",projectId})`;
+  organizasyon alanı `createOrganizationSpace(identity, name)` ile açılır ve
+  `ensureSpace({type:"organization"})` 422 `invalid_scope` verir;
+  `authorizeSpace(identity, spaceId, "read"|"write")`;
+  `recordEvent(identity, {spaceId,sourceEventKey,sourceKind,contentHash,observedAt?})`
+  → `{status:"recorded"|"duplicate", event}` (aynı anahtar+farklı hash 409);
+  `reconcile(identity, {spaceId?,limit?})` → sayaç raporu.
+- `src/memory/job-kinds.ts`: `memoryJobKinds`/`productionJobKinds`;
+  iki kind da `skillProfile:false`, `scope:"memory"`; payload alan adları
+  yukarıdakiyle aynı ve strict'tir.
+- `src/memory/worker.ts`: `memoryJobHandlers(service)` gerçek handler'lar.
+- Queue: `accept(identity, {kind,key,payload,scope})` veya eski `projectId`;
+  `Run.project_id: string|null`, `scope_kind`, `scope_key` (proje: projectId,
+  personal: userId, organization: `"organization"`); memory işleri bağımsız
+  `memoryEnabled` bayrağıyla kapılanır.
+- `src/domain/memory.ts`: `parseMemoryDocument` (durum döndürür),
+  `serializeMemoryDocument`, `memoryRecordHash` (revision hariç),
+  `detectSupersessionCycle`, `resolveWikilink`.
 
-Komutlar ve beklenen:
+| #   | Senaryo                                                                 | Test                     | SQLite | PG    |
+| --- | ----------------------------------------------------------------------- | ------------------------ | ------ | ----- |
+| 1   | memory kind tanımları `skillProfile:false`, handler fabrikası           | yüzey çözümü             | geçti  | geçti |
+| 2   | Kişisel/proje/organizasyon accept + Run alanları                        | kapsam matrisi           | geçti  | geçti |
+| 3   | Aynı anahtar aynı hash duplicate, farklı hash 409                       | idempotency              | geçti  | geçti |
+| 4   | Evolution kapalı: hafıza geçer; memory kapalı ve skill kapıları korunur | bayraklar                | geçti  | geçti |
+| 5   | Lease fencing (fence 2, eski worker 409) ve cancel                      | fencing                  | geçti  | geçti |
+| 6   | Gerçek worker + handler + audit + idempotent event + yabancı uzay reddi | worker zinciri           | geçti  | geçti |
+| 7   | `ensureSpace`/`recordEvent`/accept yarışta tek sonuç                    | yarış güvenliği          | geçti  | geçti |
+| 8   | ACL red matrisi: kişisel/proje/organizasyon, reader/non-member/tenant   | MemoryService sözleşmesi | geçti  | geçti |
+| 9   | Yetki sahteciliği ve tenant izolasyonu negatifleri                      | negatifler               | geçti  | geçti |
+| 10  | Round-trip + revision-dışı hash + bilinmeyen frontmatter                | domain sözleşmesi        | geçti  | —     |
+| 11  | Gelecek format reddi (durum, mutasyon yok)                              | domain sözleşmesi        | geçti  | —     |
+| 12  | Supersession döngüsü tespiti                                            | domain sözleşmesi        | geçti  | —     |
+| 13  | Wikilink resolved/ambiguous/missing                                     | domain sözleşmesi        | geçti  | —     |
+
+Komutlar ve gözlemler (11.09.2026, kararlılık için üçer koşum):
 
 ```bash
-# Bu dalda (M01 yok): 0 pass, 12 skip, 0 fail; her skip gerekçeli.
-bun test test/memory-acceptance-independent.test.ts
-
-# M01 birleştikten sonra CI'da zorunlu sert kapı: eksik yüzey = kırmızı.
+# SQLite: her koşum 13 pass, 0 fail.
 MEMORY_REQUIRE_M01=1 bun test test/memory-acceptance-independent.test.ts
 
-# PostgreSQL hücresi paylaşılan doğrulama sunucusunda (konteyner durdurulmaz):
+# SQLite + PostgreSQL: her koşum 21 pass, 0 fail (PG kendi geçici DB'sini açar).
+MEMORY_REQUIRE_M01=1 \
 FORGE_TEST_POSTGRES_URL=postgres://postgres:forge-ci-only@127.0.0.1:55433/forge_mem_verify \
   bun test test/memory-acceptance-independent.test.ts
 ```
 
-**Şu an çalıştırılamayanlar:** 2–11 arası gerçek koşum (M01 modülleri yok); PG
-hücresi de aynı nedenle atlanır. Bu maddeler kanıtlanmış sayılmaz.
-`MEMORY_REQUIRE_M01=1` koşusunun kırmızı olması beklenir ve doğru davranıştır.
+Bu maddelerin tamamı gerçek modüllerle koşulmuştur; hiçbiri "çalıştırılmadı"
+değildir. HTTP/MCP/Native-müşteri sınıfları bu matrisin dışındadır (M01'de bu
+yüzeyler yoktur); M03+ ile ayrıca kanıtlanır.
 
 ## 5. #34 için bağımsız inceleme adımları
 
@@ -192,17 +213,22 @@ hücresi de aynı nedenle atlanır. Bu maddeler kanıtlanmış sayılmaz.
    dışı uzay okuma/yazma reddedilmeli.
 5. **Domain doğrula:** Round-trip, revision-dışı hash, gelecek format reddi,
    supersession döngüsü reddi, wikilink belirsizliği.
-6. **Eski regresyonu doğrula:** `bun test test/jobs-contract.test.ts`
+6. **Kapsam-hedef tutarlılığını doğrula:** Bildirilen `scope` ile payload
+   `spaceId` aynı alanı göstermelidir ve hedef alanın etkin `memoryEnabled`
+   değeri commit anında yeniden kontrol edilmelidir. M01'de kabul anındaki
+   bildirilen kapsamın dışındaki bir hedefe yazım engellenmez (bağımsız
+   inceleme probe'u, 11.09.2026; ayrıntı koordinatör raporunda).
+7. **Eski regresyonu doğrula:** `bun test test/jobs-contract.test.ts`
    `skill_evolve` zorunlu proje, idempotency, fencing ve audit davranışını
    korumalı; `bun test test/job-kinds-contract.test.ts` yeşil kalmalı.
-7. **Kanıtı topla:** Aşağıdaki alanlarla `docs/evidence/memory/` şemasına uyan
+8. **Kanıtı topla:** Aşağıdaki alanlarla `docs/evidence/memory/` şemasına uyan
    bir JSON üret; üretilen raporu commit etme, artifact yolunu ve SHA-256'sını
    kaydet.
 
 | Alan              | #34 için beklenen                                                        |
 | ----------------- | ------------------------------------------------------------------------ |
-| Gerçek giriş yolu | `JobQueue.accept` → `ForgeWorker` → memory handler (HTTP/MCP değil)      |
-| Komut             | Bölüm 4'teki üç komut + `bun test test/benchmarks/`                      |
+| Gerçek giriş yolu | `JobQueue.accept` → `ForgeWorker` → `memoryJobHandlers` (HTTP/MCP değil) |
+| Komut             | Bölüm 4'teki iki komut + `bun test test/benchmarks/`                     |
 | Fixture           | `test/fixtures/memory-benchmark/*` (benchmark) ve test içi sentetik veri |
 | Commit SHA        | Koşulan HEAD                                                             |
 | CI run            | Workflow run kimliği veya "yerel"                                        |
