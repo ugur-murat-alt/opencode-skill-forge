@@ -1805,3 +1805,12 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
 - Doğrulanan HEAD `2bfb868`: push ve PR CI koşuları (34559715401, 34559718246)
   beş işte de yeşil; yerel tarayıcı kabulü 101/101; linux-contracts tam takımı
   temiz DB ile geçti. PR draft olarak açık; birleştirme kullanıcı onayında.
+
+#### PR #42 birleştirildi (2026-09-11)
+- PR #42 "ready" işaretlenip `--merge` ile birleştirildi; main merge commit'i
+  **`4c7d2c3`** (head `f874bf9`). Issue **#34 ve #35 `completed`** olarak
+  kapandı (PR gövdesindeki Closes anahtarları). Kampanya dalı
+  `feat/memory-second-brain` silinmedi; M03–M08 için taban olarak duruyor.
+- Birleşme öncesi doğrulama: push ve PR CI koşuları doğrulanan HEAD'de beş
+  işte yeşil; yerel tam takım 691 test / 679 pass / 12 ortamsal; bağımsız
+  M01/M02 kapıları yeşil; tarayıcı kabulü 101/101.
