@@ -95,11 +95,45 @@ insan metnini ezemez.
 - `GET /api/memory/curator/status` — mod, hazırlık, sürümler.
 - `PUT /api/memory/curator/profile` — bağımsız model profili (CAS `base_revision`).
 - `POST /api/memory/curator/run` — elle kuyruklama (idempotency anahtarı ile).
-- `GET /api/memory/curator/proposals?space_id=…` — salt-okunur aday listesi.
+- `GET /api/memory/curator/proposals?space_id=…` — aday listesi (durum filtresi).
+- `POST /api/memory/curator/proposals/:id/approve` — insan onayı; not
+  revizyonu üretir (`expected_revision` ile CAS).
+- `POST /api/memory/curator/proposals/:id/reject` — insan reddi; yalnız karar
+  kaydı, nota dokunmaz (isteğe bağlı gerekçe).
 
-## Faz B (henüz yok)
+## İnceleme ve onay akışı (Faz B)
 
-- Aday/çelişki inceleme arayüzü ve `propose_*` onay akışı (M04-B).
+İnceleme kutusu adayları durum, risk, iddia sınıfı, hedef not/revision ve
+kaynak referanslarıyla gösterir; bilgi yalnız renkle anlatılmaz.
+
+- **Onay** yalnız `proposed` adaylarda çalışır ve M02'nin tek commit yolunu
+  kullanır: `curator:<change_id>` olayı + CAS. Başarılı onay not revizyonunu
+  ilerletir, `applied_revision` yazılır ve
+  `memory.curator.proposal.approved` audit kaydı düşer. Aynı olayın tekrarı
+  yeni revizyon üretmez (replay'de kalıcı olaydan tamamlanır).
+- **Reddet** yalnız kararı saklar (`memory.curator.proposal.rejected`); not
+  içeriği, revision veya graph değişmez. Ret gerekçesi isteğe bağlıdır.
+- **`stale`** aday onaylanamaz; temel sürüm değişmiştir ve nedeni
+  (`base_revision_conflict`) görünür. CAS çatışmasında HTTP 409 ile
+  `current_revision` ve `base_revision` döner; liste tazelenir. Daha yeni
+  insan metni hiçbir durumda ezilmez.
+- **`shadow`** adaylar değerlendirme kaydıdır; onay/ret düğmesi yoktur.
+  **`applied`** adaylar zaten kalıcıdır; otomatik yazılmışsa "otomatik
+  uygulandı" rozetiyle salt okunur gösterilir.
+- **Yetki:** karar alanın `write` iznini gerektirir; başka tenant'ın adayı
+  ayırt edilemez 404 döner. Onay/ret model çağırmaz, toplu purge yapmaz.
+
+Kullanıcı kararı sınırları değişmez: kalıcı toplu silme, kapsam genişletme,
+insan metnini değiştiren belirsiz birleştirme ve çözülemeyen çatışma onay
+ister; sıradan kayıtlar için onay kuyruğu kurulmaz. `supersede` adayının
+onayı içeriği yeni bir revision olarak yazar ve not yaşam döngüsünü sessizce
+`superseded` yapmaz; hedefli emeklilik ayrı ve açık bir karardır (sözleşme
+netleşene kadar muhafazakâr davranış).
+
+## Faz B (kalan)
+
 - TR/EN değerlendirme kümesinde yanlış otomatik yazım ölçümü ve otomasyon
   kalite eşiği (#41); "confidence yüksek" tek başına auto-write açmaz.
 - Canlı model kalitesi, gerçek maliyet ve gecikme ölçümü.
+- İnceleme kutusunun tarayıcı kabulü onay/ret/çatışma/stale/otomatik rozet
+  senaryolarıyla koşulur; canlı model ölçümü hâlâ yapılmadı.

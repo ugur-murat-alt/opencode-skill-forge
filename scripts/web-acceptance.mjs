@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import { zipSync } from "fflate";
+import Database from "better-sqlite3";
 
 const exec = promisify(execFile);
 const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
@@ -676,7 +677,16 @@ async function main() {
         viewport: { width: 1440, height: 1000 },
       });
       activePage = page;
-      page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 2000)));
+      page.on("pageerror", (e) => {
+        pageErrors.push(String(e).slice(0, 2000));
+        debug(
+          "pageerror:",
+          String(e?.stack ?? e)
+            .split("\n")
+            .slice(0, 4)
+            .join(" | "),
+        );
+      });
       await page.goto(`${base}/`, { waitUntil: "networkidle" });
       await page.locator("#code").fill(code);
       await page.getByRole("button", { name: "Giriş yap" }).click();
@@ -3563,6 +3573,466 @@ async function main() {
           headers: { ...ownerHeaders, "content-type": "application/json" },
           body: JSON.stringify({ space_id: memorySpaceId }),
         });
+      });
+
+      // Issue #39 (M06) phase B: actionable curator review. No live model is
+      // available locally, so proposal rows are seeded as fixtures into the
+      // operational DB (WAL, separate short transaction); the decision path
+      // itself always runs through the real approve/reject endpoints.
+      let reviewUpdateTitle = "";
+      let reviewCreateTitle = "";
+      let reviewStaleId = "";
+      await safe("memory-review-seed", async () => {
+        const stamp = Date.now();
+        reviewUpdateTitle = `Onay guncellemesi ${stamp}`;
+        reviewCreateTitle = `Ret adayi ${stamp}`;
+        const reviewKey = `review-seed-${stamp}`;
+        const staleKey = `review-stale-${stamp}`;
+        const reviewNote = await memoryIngest(
+          memorySpaceId,
+          "ui-review-note",
+          `UI inceleme hedefi ${stamp}`,
+          "Inceleme hedefi govdesi.",
+          reviewKey,
+        );
+        check("memory-review-seed-note", reviewNote.ok, reviewNote.status);
+        check(
+          "memory-review-seed-note-committed",
+          (await memoryReceiptWait(memorySpaceId, reviewKey)).state ===
+            "committed",
+        );
+        const staleNote = await memoryIngest(
+          memorySpaceId,
+          "ui-review-stale-note",
+          `UI bayat hedef ${stamp}`,
+          "Bayat hedef govdesi.",
+          staleKey,
+        );
+        check("memory-review-seed-stale", staleNote.ok, staleNote.status);
+        check(
+          "memory-review-seed-stale-committed",
+          (await memoryReceiptWait(memorySpaceId, staleKey)).state ===
+            "committed",
+        );
+        const now = Date.now();
+        const sourceRefs = JSON.stringify([
+          {
+            source_id: "ui-review-source",
+            path: "notlar/karar.md",
+            section: "Karar",
+            hash: "a".repeat(64),
+          },
+        ]);
+        const rows = [
+          {
+            id: "acc-review-update",
+            operation: "update",
+            mode: "proposal",
+            note_id: "ui-review-note",
+            base_revision: 1,
+            kind: "fact",
+            title: reviewUpdateTitle,
+            body_md: "Incelenen guncelleme govdesi.",
+            rationale: "Kaynakta acik kullanici beyani var.",
+            claim_class: "user_declaration",
+            risk: "low",
+            state: "proposed",
+          },
+          {
+            id: "acc-review-create",
+            operation: "create",
+            mode: "proposal",
+            note_id: null,
+            base_revision: null,
+            kind: "preference",
+            title: reviewCreateTitle,
+            body_md: "Reddedilecek aday govdesi.",
+            rationale: "Model tahmini; kullanici karari gerekir.",
+            claim_class: "prediction",
+            risk: "medium",
+            state: "proposed",
+          },
+          {
+            id: "acc-review-stale",
+            operation: "update",
+            mode: "proposal",
+            note_id: "ui-review-stale-note",
+            base_revision: 0,
+            kind: "fact",
+            title: `Bayat aday ${stamp}`,
+            body_md: "Bayat aday govdesi.",
+            rationale: "Eski temel surume dayaniyor.",
+            claim_class: "user_declaration",
+            risk: "low",
+            state: "proposed",
+          },
+          {
+            id: "acc-review-prestale",
+            operation: "update",
+            mode: "proposal",
+            note_id: "ui-review-stale-note",
+            base_revision: 0,
+            kind: "fact",
+            title: `Onceden bayat ${stamp}`,
+            body_md: "Onceden bayat govde.",
+            rationale: "Temel surum degisti.",
+            claim_class: "user_declaration",
+            risk: "low",
+            state: "stale",
+            reason: "base_revision_conflict",
+          },
+          {
+            id: "acc-review-auto",
+            operation: "create",
+            mode: "auto",
+            note_id: null,
+            base_revision: null,
+            kind: "preference",
+            title: `Otomatik tercih ${stamp}`,
+            body_md: "Otomatik yazilmis tercih.",
+            rationale: "Dusuk riskli kullanici beyani.",
+            claim_class: "user_declaration",
+            risk: "low",
+            state: "applied",
+            applied_revision: 1,
+          },
+          {
+            id: "acc-review-shadow",
+            operation: "create",
+            mode: "shadow",
+            note_id: null,
+            base_revision: null,
+            kind: "context",
+            title: `Golge aday ${stamp}`,
+            body_md: "Golge modda kayit.",
+            rationale: "Degerlendirme kaydi.",
+            claim_class: "prediction",
+            risk: "medium",
+            state: "shadow",
+          },
+        ];
+        const db = new Database(join(tmp, "local.sqlite"));
+        try {
+          const insert = db.prepare(
+            `insert into memory_curator_changes
+             (id, tenant_id, space_id, extraction_id, run_id, mode, operation,
+              note_id, base_revision, kind, title, summary, body_md, rationale,
+              source_refs_json, claim_class, relation, target_note_id,
+              confidence_micros, risk, state, applied_revision, reason,
+              created_at, updated_at)
+             values (?, 'local', ?, null, 'acc-review', ?, ?, ?, ?, ?, ?, null,
+              ?, ?, ?, ?, null, null, null, ?, ?, ?, ?, ?, ?)`,
+          );
+          for (const row of rows)
+            insert.run(
+              row.id,
+              memorySpaceId,
+              row.mode,
+              row.operation,
+              row.note_id,
+              row.base_revision,
+              row.kind,
+              row.title,
+              row.body_md,
+              row.rationale,
+              sourceRefs,
+              row.claim_class,
+              row.risk,
+              row.state,
+              row.applied_revision ?? null,
+              row.reason ?? null,
+              now,
+              now,
+            );
+          reviewStaleId = "acc-review-stale";
+          check("memory-review-fixtures", true, `${rows.length} rows`);
+        } finally {
+          db.close();
+        }
+      });
+
+      await safe("memory-review-approve", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await page.reload({ waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await page.locator('[data-testid="memory-tab-review"]').click();
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("proposed");
+        await page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: reviewUpdateTitle })
+          .waitFor({ timeout: 10000 });
+        const row = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: reviewUpdateTitle });
+        await row.locator('[data-testid="memory-proposal-approve"]').click();
+        await page.locator(".memory-notice").waitFor({ timeout: 15000 });
+        // The durable decision advanced the note revision.
+        const note = await (
+          await fetch(
+            `${base}/api/memory/notes/ui-review-note?space_id=${encodeURIComponent(memorySpaceId)}`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        check(
+          "memory-review-approve",
+          note.revision?.revision === 2,
+          `rev=${note.revision?.revision}`,
+        );
+        check(
+          "memory-review-approve-title",
+          note.revision?.title === reviewUpdateTitle,
+          note.revision?.title ?? "",
+        );
+        // The panel refreshed: the row left the proposed list.
+        await page.waitForFunction(
+          (title) =>
+            ![
+              ...document.querySelectorAll('[data-testid="memory-proposal"]'),
+            ].some((item) => item.textContent?.includes(title)),
+          reviewUpdateTitle,
+          { timeout: 10000 },
+        );
+        check("memory-review-approve-panel", true, "row left proposed list");
+        const audit = await (
+          await fetch(
+            `${base}/api/memory/curator/proposals?space_id=${encodeURIComponent(memorySpaceId)}&state=applied&limit=50`,
+            {
+              headers: ownerHeaders,
+            },
+          )
+        ).json();
+        check(
+          "memory-review-approve-applied",
+          audit.items?.some(
+            (item) =>
+              item.id === "acc-review-update" && item.applied_revision === 2,
+          ),
+          JSON.stringify(audit.items?.length ?? 0),
+        );
+      });
+
+      await safe("memory-review-reject", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await page.reload({ waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await page.locator('[data-testid="memory-tab-review"]').click();
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("proposed");
+        const row = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: reviewCreateTitle });
+        await row.waitFor({ timeout: 10000 });
+        // The ambiguous class is marked as a user decision, not color-only.
+        check(
+          "memory-review-user-decision",
+          (await row
+            .locator('[data-testid="memory-proposal-user-decision"]')
+            .count()) > 0,
+        );
+        await row.locator('[data-testid="memory-proposal-reject"]').click();
+        await row
+          .locator('[data-testid="memory-proposal-reason"]')
+          .fill("kapsam dışı");
+        await row
+          .locator('[data-testid="memory-proposal-reject-confirm"]')
+          .click();
+        await page.locator(".memory-notice").waitFor({ timeout: 15000 });
+        const rejected = await (
+          await fetch(
+            `${base}/api/memory/curator/proposals?space_id=${encodeURIComponent(memorySpaceId)}&state=rejected&limit=50`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        const stored = rejected.items?.find(
+          (item) => item.id === "acc-review-create",
+        );
+        check(
+          "memory-review-reject",
+          stored?.state === "rejected" && stored?.reason === "kapsam dışı",
+          `${stored?.state}/${stored?.reason}`,
+        );
+        // Rejection never writes a note.
+        const notes = await (
+          await fetch(
+            `${base}/api/memory/notes?space_id=${encodeURIComponent(memorySpaceId)}&limit=100`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        check(
+          "memory-review-reject-no-write",
+          !(notes.items ?? []).some((item) => item.title === reviewCreateTitle),
+          String((notes.items ?? []).length),
+        );
+      });
+
+      await safe("memory-review-stale-conflict", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await page.reload({ waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await page.locator('[data-testid="memory-tab-review"]').click();
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("proposed");
+        const row = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: "Bayat aday" });
+        await row.waitFor({ timeout: 10000 });
+        await row.locator('[data-testid="memory-proposal-approve"]').click();
+        await page
+          .locator('[data-testid="memory-review-conflict"]')
+          .waitFor({ timeout: 15000 });
+        const conflictText = await page
+          .locator('[data-testid="memory-review-conflict"]')
+          .innerText();
+        check(
+          "memory-review-stale-conflict",
+          conflictText.includes("temel sürüm 0") &&
+            conflictText.includes("artık 1"),
+          conflictText.slice(0, 140),
+        );
+        // The server marked the proposal stale and the note is untouched.
+        const stale = await (
+          await fetch(
+            `${base}/api/memory/curator/proposals?space_id=${encodeURIComponent(memorySpaceId)}&state=stale&limit=50`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        const stored = stale.items?.find(
+          (item) => item.id === "acc-review-stale",
+        );
+        check(
+          "memory-review-stale-row",
+          stored?.state === "stale" &&
+            stored?.reason === "base_revision_conflict",
+          `${stored?.state}/${stored?.reason}`,
+        );
+        const note = await (
+          await fetch(
+            `${base}/api/memory/notes/ui-review-stale-note?space_id=${encodeURIComponent(memorySpaceId)}`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        check(
+          "memory-review-stale-no-write",
+          note.revision?.revision === 1,
+          `rev=${note.revision?.revision}`,
+        );
+        // A previously stale row cannot be approved and shows its reason.
+        const staleRow = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: "Onceden bayat" });
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("stale");
+        await staleRow.waitFor({ timeout: 10000 });
+        check(
+          "memory-review-stale-disabled",
+          await staleRow
+            .locator('[data-testid="memory-proposal-approve"]')
+            .isDisabled(),
+        );
+        check(
+          "memory-review-stale-reason",
+          (await staleRow
+            .locator('[data-testid="memory-proposal-stale"]')
+            .count()) > 0,
+        );
+      });
+
+      await safe("memory-review-readonly-rows", async () => {
+        await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+        await page.reload({ waitUntil: "networkidle" });
+        await selectMemorySpace(page, "Kişisel");
+        await page.locator('[data-testid="memory-tab-review"]').click();
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("applied");
+        const autoRow = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: "Otomatik tercih" });
+        await autoRow.waitFor({ timeout: 10000 });
+        const badge = await autoRow
+          .locator('[data-testid="memory-proposal-applied-badge"]')
+          .innerText();
+        check(
+          "memory-review-auto-badge",
+          badge.length > 0 &&
+            (await autoRow
+              .locator('[data-testid="memory-proposal-approve"]')
+              .count()) === 0,
+          badge.slice(0, 60),
+        );
+        await page
+          .locator('[data-testid="memory-review-state"]')
+          .selectOption("shadow");
+        const shadowRow = page
+          .locator('[data-testid="memory-proposal"]')
+          .filter({ hasText: "Golge aday" });
+        await shadowRow.waitFor({ timeout: 10000 });
+        check(
+          "memory-review-shadow-readonly",
+          (await shadowRow
+            .locator('[data-testid="memory-proposal-shadow"]')
+            .count()) > 0 &&
+            (await shadowRow
+              .locator('[data-testid="memory-proposal-approve"]')
+              .count()) === 0,
+        );
+      });
+
+      await safe("memory-review-unauthorized", async () => {
+        // A space the identity cannot see is an indistinguishable 404.
+        const unknown = await fetch(
+          `${base}/api/memory/curator/proposals/${reviewStaleId}/approve`,
+          {
+            method: "POST",
+            headers: { ...ownerHeaders, "content-type": "application/json" },
+            body: JSON.stringify({
+              space_id: "00000000-0000-0000-0000-000000000000",
+            }),
+          },
+        );
+        check(
+          "memory-review-unauthorized",
+          unknown.status === 404,
+          `unknown/${unknown.status}`,
+        );
+        // A different tenant's authenticated session cannot read or decide
+        // this space's proposals (no name/count leak in the response).
+        const kabulTenant = await tenantOptionValue(page, "Kabul Org");
+        if (kabulTenant) {
+          await chooseTenant(page, "Kabul Org");
+          const probe = await page.evaluate(async (spaceId) => {
+            const response = await fetch(
+              `/api/memory/curator/proposals?space_id=${encodeURIComponent(spaceId)}`,
+            );
+            return response.status;
+          }, memorySpaceId);
+          check("memory-review-tenant-isolation", probe === 404, String(probe));
+          await chooseTenant(page, "Kişisel çalışma alanı");
+        } else {
+          check(
+            "memory-review-tenant-isolation",
+            true,
+            "Kabul Org option unavailable",
+          );
+        }
+        const stored = await (
+          await fetch(
+            `${base}/api/memory/curator/proposals?space_id=${encodeURIComponent(memorySpaceId)}&state=stale&limit=50`,
+            { headers: ownerHeaders },
+          )
+        ).json();
+        check(
+          "memory-review-unauthorized-no-change",
+          stored.items?.some(
+            (item) => item.id === "acc-review-stale" && item.state === "stale",
+          ),
+          JSON.stringify(stored.items?.length ?? 0),
+        );
       });
 
       check(
