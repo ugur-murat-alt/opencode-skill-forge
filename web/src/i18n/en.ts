@@ -321,6 +321,7 @@ export const en: typeof tr = {
     memory_event_conflict:
       "The same source key was already recorded with different content.",
     memory_event_unavailable: "Source event could not be recorded.",
+    memory_scope_mismatch: "Job scope does not match the target space.",
     memory_space_unavailable: "Memory space not found or not authorized.",
     migration_arguments:
       "--server-url, --tenant-id, --manifest and --mapping are required.",

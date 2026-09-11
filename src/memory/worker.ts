@@ -22,6 +22,9 @@ export function memoryIngestHandler(service: MemoryService): JobHandler {
       tenantId: run.tenant_id,
       userId: run.user_id,
     };
+    // B1: the persisted run scope must match the concrete target space; the
+    // regular space ACL is re-checked inside `recordEvent` as well.
+    await service.authorizeRunSpace(run, payload.spaceId, "write");
     const outcome = await service.recordEvent(identity, payload);
     throwIfAborted(signal);
     return {
@@ -41,6 +44,10 @@ export function memoryReconcileHandler(service: MemoryService): JobHandler {
       tenantId: run.tenant_id,
       userId: run.user_id,
     };
+    // Explicit target spaces are checked against the run scope; the global
+    // pass already limits itself to spaces the actor may read.
+    if (payload.spaceId)
+      await service.authorizeRunSpace(run, payload.spaceId, "read");
     const report = await service.reconcile(identity, payload);
     throwIfAborted(signal);
     return { state: "completed", result: report };

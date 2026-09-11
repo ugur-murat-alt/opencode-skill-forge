@@ -3,6 +3,7 @@ import type { Kysely } from "kysely";
 import type { DB, MemoryEvent, MemorySpace } from "../storage/schema.js";
 import { IdentityService, type Identity } from "../application/identity.js";
 import { ForgeError } from "../domain/errors.js";
+import type { RunScopeKind } from "../domain/job-kinds.js";
 import type { MemorySpaceScope } from "../domain/memory.js";
 
 /**
@@ -41,6 +42,19 @@ export interface ReconcileReport {
 }
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * Issue #34 (B1): the persisted run scope a memory job was accepted with.
+ * `Run` satisfies this shape structurally; the service stays free of the
+ * queue implementation.
+ */
+export interface MemoryRunScope {
+  readonly tenant_id: string;
+  readonly user_id: string;
+  readonly scope_kind: RunScopeKind;
+  readonly scope_key: string;
+  readonly project_id: string | null;
+}
 
 export class MemoryService {
   constructor(
@@ -222,6 +236,48 @@ export class MemoryService {
       return space;
     }
     await this.identities.authorize(identity, access);
+    return space;
+  }
+
+  /**
+   * Issue #34 (B1): a memory job may only touch a space that matches the
+   * scope it was accepted with. The regular space ACL runs first, so a
+   * foreign tenant stays an indistinguishable 404; a same-tenant target of
+   * the wrong kind/owner/project is a `memory_scope_mismatch`. The declared
+   * scope is never upgraded by the payload, and the concrete target check is
+   * repeated at every later commit step through this same method.
+   */
+  async authorizeRunSpace(
+    run: MemoryRunScope,
+    spaceId: string,
+    access: MemoryAccess,
+  ): Promise<MemorySpace> {
+    const identity: Identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id,
+    };
+    const space = await this.authorizeSpace(identity, spaceId, access);
+    const mismatch = () =>
+      new ForgeError(
+        "memory_scope_mismatch",
+        "İş kapsamı ile hedef alan uyuşmuyor.",
+        422,
+      );
+    if (run.scope_kind === "personal") {
+      if (space.kind !== "personal" || space.owner_user_id !== run.user_id)
+        throw mismatch();
+    } else if (run.scope_kind === "project") {
+      if (
+        space.kind !== "project" ||
+        !run.project_id ||
+        space.project_id !== run.project_id
+      )
+        throw mismatch();
+    } else if (run.scope_kind === "organization") {
+      if (space.kind !== "organization") throw mismatch();
+    } else {
+      throw mismatch();
+    }
     return space;
   }
 

@@ -51,6 +51,23 @@ değildir. Bu yüzden:
   yeniden doğrulanır. `JobQueue.get`/`cancel`/`assertLease` de kalıcı
   kapsamı yeniden yetkilendirir (proje → proje `read`/`run`, diğerleri →
   kiracı düzeyi).
+- **Kapsam ↔ hedef alan eşleşmesi execution anında zorunludur**
+  (`MemoryService.authorizeRunSpace`): kişisel iş yalnız iş sahibinin
+  kişisel alanına, proje işi yalnız aynı `project_id`nin alanına,
+  organizasyon işi yalnız organizasyon alanına yazabilir. Payload'daki
+  `spaceId` işin bildirdiği kapsamı **yükseltemez**; uyuşmazlık
+  `memory_scope_mismatch` (422) ile reddedilir ve hiçbir olay yazılmaz.
+  Başka kiracının alanı bu kapıdan önce 404 ile aynı kalır (sızıntısız).
+- `memoryEnabled` kabul anında **işin kendi bildirdiği kapsam** için
+  değerlendirilip `config_json` anlık görüntüsüne yazılır; hedef alanın
+  kendi kapsam/ACL politikası execution anında ayrıca ve yeniden
+  doğrulanır. Böylece örneğin proje politikasında hafıza kapalıyken bir
+  kişisel iş kabul edilse bile o iş proje alanına yazamaz.
+- Retryable olmayan bir handler hatasında sistem, aktörün yetkisi bu arada
+  düşürülmüş olsa bile çalışan işi **gerçek hata koduyla** terminalize eder
+  (`JobQueue.fail` → fence-only `finish`); terminalizasyon için aktör
+  yetkisi yeniden istenmez, fencing/CAS ve yalnız mevcut lease sahibi
+  koşulu korunur.
 
 ## İş kapsamı genişletmesi
 

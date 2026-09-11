@@ -314,6 +314,7 @@ export const tr = {
     memory_event_conflict:
       "Aynı kaynak anahtarı farklı içerikle daha önce kaydedildi.",
     memory_event_unavailable: "Kaynak olayı kaydedilemedi.",
+    memory_scope_mismatch: "İş kapsamı ile hedef alan uyuşmuyor.",
     memory_space_unavailable: "Hafıza alanı bulunamadı veya yetkiniz yok.",
     migration_arguments:
       "--server-url, --tenant-id, --manifest ve --mapping gerekiyor.",

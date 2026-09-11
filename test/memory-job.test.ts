@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Client as PgClient } from "pg";
 import { openDatabase, type DatabaseHandle } from "../src/storage/database.js";
 import { IdentityService } from "../src/application/identity.js";
-import { JobQueue } from "../src/jobs/queue.js";
+import { JobQueue, terminalStates } from "../src/jobs/queue.js";
 import { ForgeWorker, type JobHandler } from "../src/jobs/worker.js";
 import { MemoryService } from "../src/memory/service.js";
 import { memoryJobHandlers } from "../src/memory/worker.js";
@@ -47,6 +47,46 @@ async function auditDetails(
     .where("kind", "=", kind)
     .execute();
   return rows.map((row) => JSON.parse(row.detail) as Record<string, unknown>);
+}
+
+/**
+ * Own throwaway database per backend for the focused B1/B3 cases; nothing is
+ * left behind in the shared PostgreSQL instance.
+ */
+async function openMemoryTestEnv(backend: "sqlite" | "postgres") {
+  const root = await mkdtemp(join(tmpdir(), "forge-memory-focus-"));
+  let postgresUrl: string | undefined;
+  let admin: PgClient | undefined;
+  const databaseName = `forge_mem_focus_${crypto.randomUUID().replaceAll("-", "")}`;
+  if (backend === "postgres") {
+    admin = new PgClient({
+      connectionString: process.env.FORGE_TEST_POSTGRES_URL,
+    });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    const url = new URL(process.env.FORGE_TEST_POSTGRES_URL!);
+    url.pathname = `/${databaseName}`;
+    postgresUrl = url.toString();
+  }
+  const storage = await openDatabase({
+    dataDir: root,
+    ...(postgresUrl ? { postgresUrl } : {}),
+  });
+  return {
+    storage,
+    postgresUrl,
+    cleanup: async () => {
+      await storage.close();
+      if (admin) {
+        try {
+          await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+        } finally {
+          await admin.end();
+        }
+      }
+      await rm(root, { recursive: true, force: true });
+    },
+  };
 }
 
 for (const backend of [
@@ -370,6 +410,267 @@ for (const backend of [
         }
       }
       await rm(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  test(`#34 B1 declared run scope must match the target space (${backend})`, async () => {
+    const env = await openMemoryTestEnv(backend);
+    let worker: ForgeWorker<ProductionJobKind> | undefined;
+    try {
+      const identities = new IdentityService(env.storage.db);
+      const owner = await identities.bootstrapLocal();
+      const projectA = await identities.createProject(owner, "Kapsam A");
+      const projectB = await identities.createProject(owner, "Kapsam B");
+      const service = new MemoryService(env.storage.db);
+      const personal = await service.ensureSpace(owner, { type: "personal" });
+      const projectSpaceA = await service.ensureSpace(owner, {
+        type: "project",
+        projectId: projectA.id,
+      });
+      const projectSpaceB = await service.ensureSpace(owner, {
+        type: "project",
+        projectId: projectB.id,
+      });
+      await service.createOrganizationSpace(owner, "Kapsam organizasyonu");
+      const queue = new JobQueue<ProductionJobKind>(
+        env.storage,
+        { evolutionEnabled: false, memoryEnabled: true },
+        productionJobKinds,
+      );
+      worker = new ForgeWorker(
+        queue,
+        async () => {
+          throw new Error("skill handler çalışmamalı");
+        },
+        {
+          ...(env.postgresUrl ? { postgresUrl: env.postgresUrl } : {}),
+          pollMs: 20,
+          handlers: memoryJobHandlers(service),
+        },
+      );
+      await worker.start();
+
+      const acceptCase = (
+        tag: string,
+        scope: { type: string; projectId?: string },
+        spaceId: string,
+      ) =>
+        queue.accept(owner, {
+          scope: scope as never,
+          kind: "memory_ingest",
+          key: `b1-${tag}`,
+          payload: {
+            spaceId,
+            sourceEventKey: `b1:${tag}`,
+            sourceKind: "manual",
+            contentHash: "a".repeat(64),
+          },
+        });
+      const waitTerminal = async (runId: string) => {
+        const settled = await until(
+          async () =>
+            terminalStates.includes((await queue.get(owner, runId)).state),
+          20_000,
+        );
+        expect(settled, runId).toBe(true);
+        return queue.get(owner, runId);
+      };
+
+      // Bildirilen kapsam ile hedef alan eşleşmiyorsa iş başarısız olur ve
+      // hiçbir olay yazılmaz.
+      const mismatches: {
+        tag: string;
+        scope: { type: string; projectId?: string };
+        spaceId: string;
+      }[] = [
+        {
+          tag: "personal-to-project",
+          scope: { type: "personal" },
+          spaceId: projectSpaceA.id,
+        },
+        {
+          tag: "project-to-personal",
+          scope: { type: "project", projectId: projectA.id },
+          spaceId: personal.id,
+        },
+        {
+          tag: "project-to-other",
+          scope: { type: "project", projectId: projectA.id },
+          spaceId: projectSpaceB.id,
+        },
+        {
+          tag: "org-to-personal",
+          scope: { type: "organization" },
+          spaceId: personal.id,
+        },
+        {
+          tag: "org-to-project",
+          scope: { type: "organization" },
+          spaceId: projectSpaceA.id,
+        },
+      ];
+      const mismatchRunIds: string[] = [];
+      for (const item of mismatches) {
+        const accepted = await acceptCase(item.tag, item.scope, item.spaceId);
+        mismatchRunIds.push(accepted.run.id);
+        const run = await waitTerminal(accepted.run.id);
+        expect(run.state, item.tag).toBe("failed");
+        expect(run.error_code, item.tag).toBe("memory_scope_mismatch");
+      }
+
+      // Doğru eşleşmeler geçer; yalnız onlar kalıcı olay üretir.
+      const okPersonal = await acceptCase(
+        "personal-ok",
+        { type: "personal" },
+        personal.id,
+      );
+      const okProject = await acceptCase(
+        "project-ok",
+        { type: "project", projectId: projectA.id },
+        projectSpaceA.id,
+      );
+      for (const item of [okPersonal, okProject]) {
+        const run = await waitTerminal(item.run.id);
+        expect(run.state).toBe("completed");
+        expect(JSON.parse(run.result_json!)).toMatchObject({
+          status: "recorded",
+        });
+      }
+      const events = await env.storage.db
+        .selectFrom("memory_events")
+        .select(["space_id"])
+        .where("tenant_id", "=", owner.tenantId)
+        .execute();
+      expect(events.map((event) => event.space_id).sort()).toEqual(
+        [personal.id, projectSpaceA.id].sort(),
+      );
+      const finished = await auditDetails(
+        env.storage,
+        owner.tenantId,
+        "job.finished",
+      );
+      for (const runId of mismatchRunIds)
+        expect(
+          finished.find((detail) => detail.run_id === runId),
+        ).toMatchObject({
+          kind: "memory_ingest",
+          state: "failed",
+          error_code: "memory_scope_mismatch",
+        });
+    } finally {
+      await worker?.stop();
+      await env.cleanup();
+    }
+  }, 40_000);
+
+  test(`#34 B3 revoked permission still terminalizes with the real error code (${backend})`, async () => {
+    const env = await openMemoryTestEnv(backend);
+    let worker: ForgeWorker<ProductionJobKind> | undefined;
+    try {
+      const identities = new IdentityService(env.storage.db);
+      const owner = await identities.bootstrapLocal();
+      const service = new MemoryService(env.storage.db);
+      const personal = await service.ensureSpace(owner, { type: "personal" });
+      const queue = new JobQueue<ProductionJobKind>(
+        env.storage,
+        { evolutionEnabled: false, memoryEnabled: true },
+        productionJobKinds,
+      );
+      const realHandlers = memoryJobHandlers(service);
+      // Handler, test yetkiyi düşürene kadar bekler; sonra gerçek memory
+      // ingest yolu çalışır ve artık `forbidden` ile reddedilir.
+      let revoked = false;
+      const gatedIngest: JobHandler = async (run, signal) => {
+        while (!revoked)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        return realHandlers.memory_ingest!(run, signal);
+      };
+      worker = new ForgeWorker(
+        queue,
+        async () => {
+          throw new Error("skill handler çalışmamalı");
+        },
+        {
+          ...(env.postgresUrl ? { postgresUrl: env.postgresUrl } : {}),
+          pollMs: 20,
+          handlers: { memory_ingest: gatedIngest },
+        },
+      );
+      await worker.start();
+      const accepted = await queue.accept(owner, {
+        scope: { type: "personal" },
+        kind: "memory_ingest",
+        key: crypto.randomUUID(),
+        payload: {
+          spaceId: personal.id,
+          sourceEventKey: "b3:1",
+          sourceKind: "manual",
+          contentHash: "b".repeat(64),
+        },
+      });
+      let running = await queue.get(owner, accepted.run.id);
+      const claimed = await until(async () => {
+        running = await queue.get(owner, accepted.run.id);
+        return running.state === "running";
+      }, 20_000);
+      expect(claimed).toBe(true);
+      const fence = running.fence;
+      // Run sürerken yazma yetkisi düşürülür (founder → reader).
+      await env.storage.db
+        .updateTable("memberships")
+        .set({ role: "reader" })
+        .where("tenant_id", "=", owner.tenantId)
+        .where("user_id", "=", owner.userId)
+        .execute();
+      revoked = true;
+      const settled = await until(
+        async () =>
+          terminalStates.includes(
+            (await queue.get(owner, accepted.run.id)).state,
+          ),
+        20_000,
+      );
+      expect(settled).toBe(true);
+      const failed = await queue.get(owner, accepted.run.id);
+      expect(failed.state).toBe("failed");
+      expect(failed.error_code).toBe("forbidden");
+      expect(failed.error_code).not.toBe("deadline_or_attempt_limit");
+      // Fencing/CAS korunur: lease sahibi ve fence değişmez.
+      expect(failed.fence).toBe(fence);
+      // Olay yazılmadı.
+      expect(
+        await env.storage.db
+          .selectFrom("memory_events")
+          .select(["id"])
+          .where("tenant_id", "=", owner.tenantId)
+          .execute(),
+      ).toHaveLength(0);
+      const attempts = await queue.attempts(owner, accepted.run.id);
+      expect(attempts.items).toHaveLength(1);
+      expect(attempts.items[0]!.result).toBe("failed");
+      const finished = await auditDetails(
+        env.storage,
+        owner.tenantId,
+        "job.finished",
+      );
+      expect(
+        finished.find((detail) => detail.run_id === accepted.run.id),
+      ).toMatchObject({
+        kind: "memory_ingest",
+        state: "failed",
+        error_code: "forbidden",
+      });
+      // Eski/başka sahip terminalizasyon yazamaz.
+      await expect(
+        queue.finish(
+          { ...failed, state: "running" as never, worker_id: "ghost-worker" },
+          "completed",
+          {},
+        ),
+      ).rejects.toMatchObject({ code: "stale_worker" });
+    } finally {
+      await worker?.stop();
+      await env.cleanup();
     }
   }, 40_000);
 }

@@ -493,7 +493,13 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
       .executeTakeFirst();
     return Number(result.numUpdatedRows) === 1;
   }
-  async assertLease(db: Kysely<DB>, run: Run) {
+  /**
+   * Issue #34 (B3): fencing/CAS ownership check only. System terminalization
+   * must be able to close a running job even when the actor's permission was
+   * revoked mid-run; the fence still guarantees that only the current lease
+   * owner can write.
+   */
+  async assertLeaseFence(db: Kysely<DB>, run: Run) {
     const now = await this.now(db);
     const current = await db
       .updateTable("runs")
@@ -512,6 +518,9 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         "İşin lease sahipliği değişti.",
         409,
       );
+  }
+  async assertLease(db: Kysely<DB>, run: Run) {
+    await this.assertLeaseFence(db, run);
     await this.authorizeRun(
       db,
       { userId: run.user_id, tenantId: run.tenant_id },
@@ -545,6 +554,7 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
     state: RunState,
     result: unknown,
     errorCode: string | null = null,
+    options: { requireAuthorization?: boolean } = {},
   ) {
     if (!terminalStates.includes(state))
       throw new ForgeError(
@@ -552,7 +562,11 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         "Terminal iş durumu gerekiyor.",
       );
     return this.storage.db.transaction().execute(async (tx) => {
-      await this.assertLease(tx, run);
+      // B3: system failure terminalization accepts the fence as the only
+      // gate; success completion still re-authorizes the actor.
+      if (options.requireAuthorization === false)
+        await this.assertLeaseFence(tx, run);
+      else await this.assertLease(tx, run);
       const now = await this.now(tx);
       await tx
         .updateTable("runs")
@@ -591,7 +605,11 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
   async fail(run: Run, code: string, retryable: boolean) {
     const now = await this.storage.now();
     if (!retryable || run.attempt >= run.max_attempts || run.deadline_at <= now)
-      return this.finish(run, "failed", null, code);
+      // B3: a revoked actor must not block closing the run; the real error
+      // code is preserved and only system/fence authority is required.
+      return this.finish(run, "failed", null, code, {
+        requireAuthorization: false,
+      });
     await this.storage.db.transaction().execute(async (tx) => {
       await this.assertLease(tx, run);
       await tx
