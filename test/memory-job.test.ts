@@ -188,34 +188,12 @@ for (const backend of [
         }),
       ).rejects.toMatchObject({ code: "idempotency_conflict", status: 409 });
 
-      // 5. Organizasyon kapsamlı uzlaştırma işi: scope_key sabit "organization".
-      const reconcileRun = await queue.accept(owner, {
-        scope: { type: "organization" },
-        kind: "memory_reconcile",
-        key: crypto.randomUUID(),
-        payload: {},
-      });
-      expect(reconcileRun.run.project_id).toBeNull();
-      expect(reconcileRun.run.scope_kind).toBe("organization");
-      expect(reconcileRun.run.scope_key).toBe("organization");
-      expect(JSON.parse(reconcileRun.run.input_json)).toEqual({ limit: 20 });
-
-      // 6. Aynı kaynağın yeniden teslimi yeni iş kimliğiyle duplicate döner;
-      // farklı hash aynı anahtarla çakışma olarak başarısız biter.
-      const redelivery = await queue.accept(owner, {
-        scope: { type: "personal" },
-        kind: "memory_ingest",
-        key: crypto.randomUUID(),
-        payload: ingestPayload,
-      });
-      const conflicting = await queue.accept(owner, {
-        scope: { type: "personal" },
-        kind: "memory_ingest",
-        key: crypto.randomUUID(),
-        payload: { ...ingestPayload, contentHash: "c".repeat(64) },
-      });
-
-      // 7. Gerçek zincir: worker memory handler'ları seçer ve sonucu yazar.
+      // 5. Gerçek zincir deterministik sırayla: worker önce açılır, orijinal
+      // teslim tamamlanınca yeniden teslim ve çakışma işleri kabul edilir.
+      // Aynı milisaniyede kabul edilen işlerin claim sırası UUID tie-break'e
+      // bağlı olduğundan "hangi iş önce işlenir" bir sözleşme değildir.
+      // Sözleşme şudur: tam olarak bir kayıt + bir duplicate, aynı event id,
+      // tek event satırı; farklı hash ise çakışma olarak başarısız biter.
       const skillCalls: string[] = [];
       const skillHandler: JobHandler = async (run) => {
         skillCalls.push(run.id);
@@ -227,22 +205,12 @@ for (const backend of [
         handlers: memoryJobHandlers(service),
       });
       await worker.start();
-      const settled = await until(async () => {
-        const [ingest, reconcile, replay, conflict] = await Promise.all([
-          queue.get(owner, accepted.run.id),
-          queue.get(owner, reconcileRun.run.id),
-          queue.get(owner, redelivery.run.id),
-          queue.get(owner, conflicting.run.id),
-        ]);
-        return (
-          ingest.state === "completed" &&
-          reconcile.state === "completed" &&
-          replay.state === "completed" &&
-          conflict.state === "failed"
-        );
-      }, 25_000);
-      expect(settled).toBe(true);
-
+      const ingestSettled = await until(
+        async () =>
+          (await queue.get(owner, accepted.run.id)).state === "completed",
+        25_000,
+      );
+      expect(ingestSettled).toBe(true);
       const events = await storage.db
         .selectFrom("memory_events")
         .selectAll()
@@ -253,9 +221,73 @@ for (const backend of [
       expect(
         JSON.parse((await queue.get(owner, accepted.run.id)).result_json!),
       ).toEqual({ status: "recorded", eventId: events[0]!.id });
+
+      // 6. Aynı kaynağın yeniden teslimi yeni iş kimliğiyle duplicate döner;
+      // farklı hash aynı anahtarla çakışma olarak başarısız biter.
+      const redelivery = await queue.accept(owner, {
+        scope: { type: "personal" },
+        kind: "memory_ingest",
+        key: crypto.randomUUID(),
+        payload: ingestPayload,
+      });
+      const replaySettled = await until(
+        async () =>
+          (await queue.get(owner, redelivery.run.id)).state === "completed",
+        25_000,
+      );
+      expect(replaySettled).toBe(true);
       expect(
         JSON.parse((await queue.get(owner, redelivery.run.id)).result_json!),
       ).toEqual({ status: "duplicate", eventId: events[0]!.id });
+      expect(
+        await storage.db
+          .selectFrom("memory_events")
+          .selectAll()
+          .where("tenant_id", "=", owner.tenantId)
+          .execute(),
+      ).toHaveLength(1);
+
+      const conflicting = await queue.accept(owner, {
+        scope: { type: "personal" },
+        kind: "memory_ingest",
+        key: crypto.randomUUID(),
+        payload: { ...ingestPayload, contentHash: "c".repeat(64) },
+      });
+      const conflictSettled = await until(
+        async () =>
+          (await queue.get(owner, conflicting.run.id)).state === "failed",
+        25_000,
+      );
+      expect(conflictSettled).toBe(true);
+      const conflictRun = await queue.get(owner, conflicting.run.id);
+      expect(conflictRun.state).toBe("failed");
+      expect(conflictRun.error_code).toBe("memory_event_conflict");
+      expect(
+        await storage.db
+          .selectFrom("memory_events")
+          .selectAll()
+          .where("tenant_id", "=", owner.tenantId)
+          .execute(),
+      ).toHaveLength(1);
+
+      // 7. Organizasyon kapsamlı uzlaştırma işi kayıttan sonra kabul edilir;
+      // böylece rapor sayıları da iş sırasına bağlı olmaz.
+      const reconcileRun = await queue.accept(owner, {
+        scope: { type: "organization" },
+        kind: "memory_reconcile",
+        key: crypto.randomUUID(),
+        payload: {},
+      });
+      expect(reconcileRun.run.project_id).toBeNull();
+      expect(reconcileRun.run.scope_kind).toBe("organization");
+      expect(reconcileRun.run.scope_key).toBe("organization");
+      expect(JSON.parse(reconcileRun.run.input_json)).toEqual({ limit: 20 });
+      const reconcileSettled = await until(
+        async () =>
+          (await queue.get(owner, reconcileRun.run.id)).state === "completed",
+        25_000,
+      );
+      expect(reconcileSettled).toBe(true);
       expect(
         JSON.parse((await queue.get(owner, reconcileRun.run.id)).result_json!),
       ).toEqual({
@@ -274,9 +306,6 @@ for (const backend of [
           .where("space_id", "=", organization.id)
           .execute(),
       ).toHaveLength(0);
-      const conflictRun = await queue.get(owner, conflicting.run.id);
-      expect(conflictRun.state).toBe("failed");
-      expect(conflictRun.error_code).toBe("memory_event_conflict");
       // Duplicate kabul ikinci bir run/attempt üretmedi.
       const attempts = await queue.attempts(owner, accepted.run.id);
       expect(attempts.items).toHaveLength(1);
