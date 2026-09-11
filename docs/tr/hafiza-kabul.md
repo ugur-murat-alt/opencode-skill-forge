@@ -238,11 +238,81 @@ yüzeyler yoktur); M03+ ile ayrıca kanıtlanır.
 tam), **kısmi** (hangi hücre neden koşmadı yazılı), **kaldı** (sözleşme
 uyuşmazlığı; örnek dosya satırı düzeltilmeden kabul yok).
 
-## 6. Sonraki M'ler için doğrulama başlıkları
+## 6. M02 bağımsız kabul matrisi (#35)
 
-- **M02 (#35) dayanıklı kayıt:** ACK öncesi/sonrası ve dosya-DB-indeks arası
-  süreç öldürme; spool teslimi; watcher kaçıran turda bounded tarama; tombstone
-  replay; CAS yarışı. Kanıt: gerçek crash child + yeniden başlatma logu.
+Test dosyaları: `test/memory-pipeline-independent.test.ts`,
+`test/memory-writer-lock-independent.test.ts`,
+`test/memory-scan-independent.test.ts`, `test/memory-http-independent.test.ts`,
+`test/memory-files-independent.test.ts`,
+`test/memory-pipeline-migration-independent.test.ts`; gerçek çocuk süreçler
+`test/fixtures/memory/commit-crash-child.ts` ve `writer-lock-child.ts`.
+
+Doğrulanan public sözleşme:
+
+- `MemoryCommitService.commit({identity, run?, spaceId, eventId, sourceKind,
+content, noteId?, baseRevision?, kind?})` → `{status, noteId, revision,
+recordHash, fileHash, filePath, byteSize, redacted, indexed}`. `afterPublish`
+  ve `afterCommitBeforeIndex` yalnızca test kesinti enjeksiyonudur.
+- Sıra: boyut + ACL → olay/hash doğrulama → redaksiyon → yazıcı kilidi →
+  geçici dosya + fsync → immutable revision → çalışma kopyası → DB (revision +
+  head CAS + event committed + receipt) → indeks işareti.
+- `MemorySourceService.registerSource/scan/listCandidates`; `ScanReport`
+  sayaçları (scanned/read/unchanged/candidates/conflicts/skipped/errors/
+  missing/done/cursor); tombstone `deleted_at`; açık
+  `archiveNote`/`restoreNote`.
+- HTTP: GET uçları salt okunur; yazma uçları ACL + audit; receipt ayrı GET.
+
+| #   | Senaryo                                                                 | Test                          | SQLite | PG    |
+| --- | ----------------------------------------------------------------------- | ----------------------------- | ------ | ----- |
+| 1   | create/edit/read, replay tek receipt+revision, farklı hash 409          | pipeline test 1               | geçti  | geçti |
+| 2   | Gerçek SIGKILL (b) dosya benimseme, (c) indeks tamamlama                | pipeline test 3 (çocuk süreç) | geçti  | geçti |
+| 3   | CAS: kaybeden yalnız kendi adayını siler; iki yazıcı yarışı temiz hata  | pipeline test 2               | geçti  | geçti |
+| 4   | SIGSTOP canlı yazıcı force ile bloke; ölü pid devralınır; foreign force | writer-lock testleri          | geçti  | —     |
+| 5   | Bounded tarama 1005 dosya (PG 61), cursor ortası, tüm sınıflar          | scan testleri                 | geçti  | geçti |
+| 6   | Tombstone dirilmez; açık restore sonrası dış değişiklik aday olur       | pipeline test 4 + scan test 4 | geçti  | geçti |
+| 7   | HTTP GET salt okunur, mutasyon audit+ACL, kiracı izolasyonu, hata kodu  | http testleri                 | geçti  | geçti |
+| 8   | 032→033 migration veri korur, yeni kolonlar varsayılanlı                | migration testi               | geçti  | geçti |
+| 9   | Dosya katmanı: atomik yazım, ezme reddi, safeJoin; symlink (bekleyen)   | files testi                   | kısmi  | —     |
+
+```bash
+# Bağımsız M02 paketi (SQLite + scratch PostgreSQL):
+MEMORY_REQUIRE_M01=1 \
+FORGE_TEST_POSTGRES_URL=postgres://postgres:forge-ci-only@127.0.0.1:55433/forge_mem_verify \
+  bun test test/memory-pipeline-independent.test.ts \
+    test/memory-writer-lock-independent.test.ts \
+    test/memory-scan-independent.test.ts \
+    test/memory-http-independent.test.ts \
+    test/memory-files-independent.test.ts \
+    test/memory-pipeline-migration-independent.test.ts
+```
+
+Bekleyen uçlar (bağımsız inceleme, 11.09.2026; her biri `test.failing`):
+
+- `src/memory/writer.ts:166` — bozuk/okunamayan kilit `throw` edilmediği için
+  force olmadan devralınıyor (bilinen; çekirdek düzeltmesi bekleniyor).
+- `src/memory/sources.ts:736` — silinen kaynak kökü `scan`'i ham `ENOENT` ile
+  düşürüyor; kaynak durumu raporlanmalı.
+- `src/memory/commit.ts:378-387` — çalışma kopyası yazıldıktan sonra DB
+  öncesi kesintide replay kendi yazdığı kopyayı dış değişiklik sanıp hayalet
+  `working_copy_changed` çatışması üretiyor.
+- `src/memory/commit.ts:646-679` — `receipt_json` yokken `reconstructReceipt`
+  revizyonu yalnız `(space, revision)` ile aradığından aynı alandaki başka
+  notun dosyasını döndürebiliyor.
+- `src/memory/files.ts:245` — `gcTempFiles` üretimde çağrılmıyor; çökmüş
+  geçici dosyalar hiç temizlenmiyor (grep + probe kanıtı).
+- `src/memory/files.ts` `publishRevisionFile`/`atomicWriteFile` — vault
+  içindeki bir ara dizin symlink'e çevrilirse dosya vault kökünün dışına
+  yazılıyor; yazma yolu symlink ara dizinleri doğrulamıyor (probe + test).
+- `src/memory/service.ts` `listNotes` — `display_path` türü sırasız revizyon
+  kümesinden seçiliyor (yalnız sunum; bilgi).
+
+Çekirdek düzeltmesi gelince ilgili test yeşile döner; `.failing` işareti
+kaldırılmalıdır (Bun aksi halde "failing ama geçti" diye kırmızı verir).
+
+## 7. Sonraki M'ler için doğrulama başlıkları
+
+M01 (#34) ve M02 (#35) bağımsız kapıları yukarıda; kalan başlıklar:
+
 - **M03 (#36) retrieval/context:** 1.000/10.000 ölçekte son %2 eşleşmesi;
   kapsam sızıntısı; token zarfı ve continuation; compaction/resume delta;
   HTTP–MCP eşdeğerliği. Kanıt: benchmark raporu + gerçek HTTP/MCP çağrısı.
@@ -258,7 +328,7 @@ uyuşmazlığı; örnek dosya satırı düzeltilmeden kabul yok).
   tanılama ekranı/doctor; public health'te not/tenant adı yok; kademeli açılış
   matrisi.
 
-## 7. Artifact şeması ve placeholder
+## 8. Artifact şeması ve placeholder
 
 - `docs/evidence/memory/report.schema.json` — rapor JSON şeması.
 - `docs/evidence/memory/example.report.json` — **placeholder**; gerçek koşum
