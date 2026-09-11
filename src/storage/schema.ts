@@ -371,6 +371,9 @@ export interface DB {
   memory_curator_profiles: MemoryCuratorProfile;
   memory_curator_extractions: MemoryCuratorExtraction;
   memory_curator_changes: MemoryCuratorChange;
+  memory_purges: MemoryPurge;
+  memory_retention_runs: MemoryRetentionRun;
+  memory_restore_receipts: MemoryRestoreReceipt;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -670,6 +673,30 @@ export interface MemoryCuratorChange {
   reason: string | null;
   created_at: number;
   updated_at: number;
+}
+/** Issue #41 (M08): durable forget receipt; survives backup/restore. */
+export interface MemoryPurge {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  purged_at: number;
+  reason: string;
+  source: string;
+}
+export interface MemoryRetentionRun {
+  id: string;
+  started_at: number;
+  finished_at: number;
+  report_json: string;
+}
+export interface MemoryRestoreReceipt {
+  id: string;
+  backend: string;
+  manifest_created_at: string | null;
+  purges_included: number;
+  purges_applied: number;
+  reconciled_at: number | null;
+  created_at: number;
 }
 export type MemoryCandidateState =
   "candidate" | "conflict" | "applied" | "rejected" | "quarantined";

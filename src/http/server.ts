@@ -36,6 +36,7 @@ import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
 import { sha256Hex } from "../memory/files.js";
 import { vaultRoot } from "../memory/paths.js";
 import { MEMORY_KINDS } from "../domain/memory.js";
+import { defaultSettings } from "../domain/settings.js";
 import {
   MEMORY_LIFECYCLES,
   MEMORY_RELATIONS,
@@ -48,6 +49,10 @@ import {
   curatorSourceRefSchema,
 } from "../domain/curator.js";
 import { MemoryCuratorProfileRepository } from "../memory/curator/profile.js";
+import {
+  MemoryRetentionService,
+  retentionWindows,
+} from "../memory/retention.js";
 import { resolveCuratorModel } from "../runner/curator-model.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
@@ -879,12 +884,19 @@ export async function createHttpServer(config: LocalConfig) {
     (actor, project) => packageManager(actor, project || undefined).store,
   );
   const telemetry = new TelemetryService(storage, config.policy);
+  const memoryRetention = new MemoryRetentionService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    settings: { ...defaultSettings, ...config.policy },
+  });
   let retentionTimer: ReturnType<typeof setInterval> | undefined;
   let retentionWork: Promise<void> | undefined;
   const retain = () => {
     if (!retentionWork)
       retentionWork = telemetry
         .sweep()
+        .then(() => memoryRetention.run())
+        .then(() => undefined)
         .catch(() => {
           process.stderr.write("Saklama taraması yeniden denenecek\n");
         })
@@ -2132,6 +2144,24 @@ export async function createHttpServer(config: LocalConfig) {
       .orderBy("updated_at", "desc")
       .limit(1)
       .executeTakeFirst();
+    const effective = await settings.effective(
+      identity,
+      space.kind === "project" ? (space.project_id ?? undefined) : undefined,
+      {},
+    );
+    const purgesRow = await storage.db
+      .selectFrom("memory_purges")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .executeTakeFirstOrThrow();
+    const lastRetentionRun = await storage.db
+      .selectFrom("memory_retention_runs")
+      .select(["finished_at"])
+      .orderBy("finished_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    const restoreStatus = await memoryRetention.restoreStatus();
     return {
       space: { id: space.id, kind: space.kind },
       index: {
@@ -2156,6 +2186,12 @@ export async function createHttpServer(config: LocalConfig) {
           : null,
       },
       spool: null,
+      retention: {
+        windows: retentionWindows(effective.values),
+        purges: Number(purgesRow.n),
+        last_run_at: lastRetentionRun?.finished_at ?? null,
+        restore_reconciliation_required: restoreStatus.reconciliation_required,
+      },
       week: memoryWeekWindow(Date.now()),
     };
   });

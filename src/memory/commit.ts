@@ -16,6 +16,7 @@ import {
   MemoryService,
   type MemoryRunScope,
 } from "./service.js";
+import { assertCommitTarget } from "./invalidation.js";
 import { SpaceSerialQueue, VaultWriter, defaultIsPidAlive } from "./writer.js";
 import type { MemoryIndexService } from "./index.js";
 import {
@@ -137,6 +138,13 @@ export class MemoryCommitService {
       await this.service.authorizeRunSpace(input.run, input.spaceId, "write");
     else
       await this.service.authorizeSpace(input.identity, input.spaceId, "write");
+    // Issue #41: a purged or tombstoned note is never revived by replay.
+    if (input.noteId)
+      await assertCommitTarget(this.db, {
+        tenantId: input.identity.tenantId,
+        spaceId: input.spaceId,
+        noteId: input.noteId,
+      });
 
     const clientHash = sha256Hex(input.content);
     const event = await this.loadEvent(input);

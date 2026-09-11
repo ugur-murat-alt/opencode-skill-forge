@@ -13,6 +13,7 @@ import type { JobScope, RunScopeKind } from "../domain/job-kinds.js";
 import type { MemorySpaceScope } from "../domain/memory.js";
 import { readTextIfExists } from "./files.js";
 import { noteDisplayPath, resolveVaultRelative } from "./paths.js";
+import { invalidateDerivedForNote } from "./invalidation.js";
 
 /**
  * Issue #34 (M01): the single owner of memory application behavior. Spaces
@@ -755,6 +756,13 @@ export class MemoryService {
       .executeTakeFirst();
     if (Number(updated.numUpdatedRows) !== 1)
       throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    // Issue #41: derived index rows are invalidated in the same operation so
+    // search/graph/health never expose a tombstoned note as fresh.
+    await invalidateDerivedForNote(this.db, {
+      tenant_id: identity.tenantId,
+      space_id: input.spaceId,
+      note_id: input.noteId,
+    });
     return { noteId: input.noteId, deleted_at: now, lifecycle: "archived" };
   }
 

@@ -33,6 +33,11 @@ export const settingsSchema = z
       .array(z.enum(CURATOR_AUTO_WRITE_KINDS))
       .max(CURATOR_AUTO_WRITE_KINDS.length)
       .optional(),
+    memoryHistoryRetentionDays: z.number().int().min(30).max(3650).optional(),
+    memoryCaptureRetentionDays: z.number().int().min(1).max(3650).optional(),
+    memoryDeliveryRetentionDays: z.number().int().min(1).max(3650).optional(),
+    memoryDiagnosticRetentionDays: z.number().int().min(1).max(3650).optional(),
+    memoryBackupRetentionDays: z.number().int().min(1).max(3650).optional(),
     retentionDays: z.number().int().min(1).max(3650).optional(),
     searchMinScore: z.number().min(0).max(1).optional(),
     searchMaxResults: z.number().int().min(1).max(20).optional(),
@@ -61,6 +66,11 @@ export const defaultSettings: Required<Settings> = {
   curatorMaxProposals: CURATOR_HARD_LIMITS.maxProposals,
   curatorMaxSourceBytes: 32768,
   curatorAutoWriteKinds: [],
+  memoryHistoryRetentionDays: 365,
+  memoryCaptureRetentionDays: 30,
+  memoryDeliveryRetentionDays: 30,
+  memoryDiagnosticRetentionDays: 30,
+  memoryBackupRetentionDays: 30,
   retentionDays: 30,
   searchMinScore: 0,
   searchMaxResults: 20,
@@ -102,6 +112,11 @@ export function resolveSettings(
           "curatorMaxCalls",
           "curatorMaxProposals",
           "curatorMaxSourceBytes",
+          "memoryHistoryRetentionDays",
+          "memoryCaptureRetentionDays",
+          "memoryDeliveryRetentionDays",
+          "memoryDiagnosticRetentionDays",
+          "memoryBackupRetentionDays",
         ].includes(key)
       )
         next = Math.min(result.values[key] as number, incoming as number);

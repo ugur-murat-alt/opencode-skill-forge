@@ -17,6 +17,7 @@ import {
   limit,
   type Manifest,
 } from "./sqlite.js";
+import { memoryBackupSummary, reconcileRestoredMemory } from "./memory.js";
 const exec = promisify(execFile);
 async function connect(url: string) {
   const client = new Client({
@@ -103,6 +104,9 @@ export async function backupPostgres(
       source,
       async (sql) => (await db.query(sql)).rows,
     );
+    const memorySummary = await memoryBackupSummary(
+      async (sql) => (await db.query(sql)).rows,
+    );
     await fresh(destination, source);
     created = true;
     await command("pg_dump", url, [
@@ -126,6 +130,7 @@ export async function backupPostgres(
       product: PRODUCT_VERSION,
       created_at: new Date().toISOString(),
       files,
+      memory: memorySummary,
     };
     await save(
       destination,
@@ -258,6 +263,13 @@ export async function restorePostgres(
       Buffer.from(randomBytes(32).toString("hex")),
     );
     await rm(join(destination, "postgres.dump"));
+    const memory = await reconcileRestoredMemory({
+      dataDir: destination,
+      postgresUrl: target.toString(),
+      backend: "postgres",
+      manifestCreatedAt: manifest.created_at ?? null,
+      memory: manifest.memory ?? null,
+    });
     completed = true;
     return {
       status: "restored",
@@ -265,6 +277,7 @@ export async function restorePostgres(
       database: databaseName,
       destination,
       sessions_revoked: true,
+      memory,
     };
   } finally {
     try {

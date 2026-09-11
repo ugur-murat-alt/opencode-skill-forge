@@ -7,6 +7,12 @@ import { SecretVault } from "../storage/secrets.js";
 import { PRODUCT_VERSION } from "../cli/config.js";
 import { ForgeError } from "../domain/errors.js";
 import type { PackageManifest } from "../skills/validate.js";
+import {
+  memoryBackupSummary,
+  memoryReferences,
+  reconcileRestoredMemory,
+  type MemoryBackupSummary,
+} from "./memory.js";
 export const hash = (data: Buffer) =>
   createHash("sha256").update(data).digest("hex");
 export interface Entry {
@@ -20,6 +26,8 @@ export interface Manifest {
   backend: "sqlite" | "postgres";
   created_at: string;
   files: Entry[];
+  /** Issue #41: accepted Markdown head/revision map and purge receipts. */
+  memory?: MemoryBackupSummary | null;
 }
 export const limit = 128 * 1024 * 1024;
 export function fail(message: string): never {
@@ -104,6 +112,8 @@ export async function references(
       files.set(path, { bytes: result.result_bytes });
     }
   }
+  for (const [path, expected] of await memoryReferences(query))
+    files.set(path, expected);
   return files;
 }
 export async function fresh(path: string, source: string) {
@@ -140,6 +150,7 @@ export async function backupSqlite(source: string, destination: string) {
     await chmod(join(destination, "local.sqlite"), 0o600);
     const snapshot = await native(join(destination, "local.sqlite"));
     const files: Entry[] = [];
+    let memorySummary: MemoryBackupSummary | null = null;
     try {
       const revisions = snapshot
         .prepare(
@@ -170,6 +181,9 @@ export async function backupSqlite(source: string, destination: string) {
         })();
       const refs = await sqliteReferences(source, snapshot);
       files.push(...(await copyReferences(source, destination, refs)));
+      memorySummary = await memoryBackupSummary(async (sql) =>
+        snapshot.prepare(sql).all(),
+      );
     } finally {
       snapshot.close();
     }
@@ -193,6 +207,7 @@ export async function backupSqlite(source: string, destination: string) {
       backend: "sqlite",
       created_at: new Date().toISOString(),
       files,
+      memory: memorySummary,
     };
     await save(
       destination,
@@ -225,6 +240,8 @@ export async function restoreSqlite(source: string, destination: string) {
     manifest.files.length > 100000
   )
     fail("Yedek formatı veya ürün sürümü uyumsuz.");
+  if (manifest.memory != null && typeof manifest.memory !== "object")
+    fail("Yedek hafıza bölümü geçersiz.");
   let created = false;
   try {
     await fresh(destination, source);
@@ -270,7 +287,18 @@ export async function restoreSqlite(source: string, destination: string) {
       "owner-token",
       Buffer.from(randomBytes(32).toString("hex")),
     );
-    return { status: "restored", destination, sessions_revoked: true };
+    const memory = await reconcileRestoredMemory({
+      dataDir: destination,
+      backend: "sqlite",
+      manifestCreatedAt: manifest.created_at ?? null,
+      memory: manifest.memory ?? null,
+    });
+    return {
+      status: "restored",
+      destination,
+      sessions_revoked: true,
+      memory,
+    };
   } catch (error) {
     if (created) await rm(destination, { recursive: true, force: true });
     throw error;
