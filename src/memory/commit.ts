@@ -16,7 +16,9 @@ import {
   MemoryService,
   type MemoryRunScope,
 } from "./service.js";
+import { assertCommitTarget } from "./invalidation.js";
 import { SpaceSerialQueue, VaultWriter, defaultIsPidAlive } from "./writer.js";
+import type { MemoryIndexService } from "./index.js";
 import {
   atomicWriteFile,
   byteSize,
@@ -57,7 +59,7 @@ import {
 
 export const MEMORY_CONTENT_MAX_BYTES = 48 * 1024;
 /** Source kinds whose text is user-authored and never silently rewritten. */
-const TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui"]);
+const TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui", "migration"]);
 
 export interface MemoryCommitHooks {
   /** Test-only crash injection: after file publication, before DB. */
@@ -99,6 +101,8 @@ export interface MemoryCommitDeps {
   vaultRoot: string;
   writer?: VaultWriter;
   service?: MemoryService;
+  /** Issue #36: derived index writer; absent in M01/M02-only compositions. */
+  index?: MemoryIndexService;
   hooks?: MemoryCommitHooks;
 }
 
@@ -134,6 +138,13 @@ export class MemoryCommitService {
       await this.service.authorizeRunSpace(input.run, input.spaceId, "write");
     else
       await this.service.authorizeSpace(input.identity, input.spaceId, "write");
+    // Issue #41: a purged or tombstoned note is never revived by replay.
+    if (input.noteId)
+      await assertCommitTarget(this.db, {
+        tenantId: input.identity.tenantId,
+        spaceId: input.spaceId,
+        noteId: input.noteId,
+      });
 
     const clientHash = sha256Hex(input.content);
     const event = await this.loadEvent(input);
@@ -280,7 +291,6 @@ export class MemoryCommitService {
     const current = await this.loadEvent(input);
     if (!current)
       throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
-    if (current.state === "committed") return this.completeReplay(current);
     if (current.state === "rejected")
       throw new ForgeError("memory_event_rejected", "Olay reddedilmiş.", 409);
 
@@ -291,12 +301,17 @@ export class MemoryCommitService {
       .where("space_id", "=", input.spaceId)
       .where("id", "=", noteId)
       .executeTakeFirst();
+    // Tombstone kontrolü replay'den ÖNCE: arşivlenmiş/silinmiş not committed
+    // olayın yeniden oynatılmasında bile sessiz başarı üretmez ve otomatik
+    // diriltilmez; açık restore yolu ayrıdır.
     if (note?.deleted_at)
       throw new ForgeError(
         "memory_note_deleted",
         "Not arşivlenmiş/silinmiş; önce açık restore gerekir.",
         409,
       );
+    if (current.state === "committed") return this.completeReplay(current);
+
     let expected: number | null;
     if (note) {
       if (input.baseRevision === undefined || input.baseRevision === null)
@@ -459,6 +474,11 @@ export class MemoryCommitService {
               title: finalRecord.title,
               summary: finalRecord.summary,
               format_version: finalRecord.formatVersion,
+              // M04 phase B: the canonical note head mirrors the accepted
+              // record axes; otherwise tasks/pins/supersession go stale.
+              lifecycle: finalRecord.lifecycle,
+              pinned: finalRecord.pinned ? 1 : 0,
+              task_status: finalRecord.taskStatus,
               updated_at: now,
             })
             .where("tenant_id", "=", input.identity.tenantId)
@@ -514,6 +534,23 @@ export class MemoryCommitService {
               record_hash: recordHash,
               client_hash: event.content_hash,
               redacted,
+              record: {
+                kind: finalRecord.kind,
+                title: finalRecord.title,
+                summary: finalRecord.summary,
+                lifecycle: finalRecord.lifecycle,
+                pinned: finalRecord.pinned,
+                task_status: finalRecord.taskStatus,
+                verification: finalRecord.verification,
+                stale: finalRecord.stale,
+                sources: finalRecord.sources,
+                edges: finalRecord.edges,
+                created_at: finalRecord.createdAt,
+                observed_at: finalRecord.observedAt,
+                valid_from: finalRecord.validFrom,
+                valid_until: finalRecord.validUntil,
+                unknown: finalRecord.unknown,
+              },
             }),
             sources_json: JSON.stringify(finalRecord.sources),
             base_revision: expected,
@@ -596,10 +633,45 @@ export class MemoryCommitService {
 
     await this.hooks?.afterCommitBeforeIndex?.();
     let indexed = true;
-    try {
-      await this.markIndexed(input, now);
-    } catch {
-      indexed = false;
+    if (this.deps.index) {
+      try {
+        await this.deps.index.indexRevision({
+          tenantId: input.identity.tenantId,
+          spaceId: input.spaceId,
+          noteId,
+          revision: newRevision,
+          contentHash: fileHash,
+          record: {
+            recordHash,
+            kind: finalRecord.kind,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            lifecycle: finalRecord.lifecycle,
+            pinned: finalRecord.pinned,
+            taskStatus: finalRecord.taskStatus,
+            verification: finalRecord.verification,
+            sources: finalRecord.sources,
+            edges: finalRecord.edges.map((edge) => ({
+              relation: edge.relation,
+              target: edge.target,
+            })),
+            body: finalRecord.body,
+            validFrom: finalRecord.validFrom,
+            validUntil: finalRecord.validUntil,
+          },
+        });
+      } catch {
+        // Commit kalıcıdır; indeks gecikmesi raporlanır ve backfill ile
+        // onarılır (indexed_at yazılmaz).
+        indexed = false;
+      }
+    }
+    if (indexed) {
+      try {
+        await this.markIndexed(input, now);
+      } catch {
+        indexed = false;
+      }
     }
     await this.cleanupOrphanRevisions(input, noteId).catch(() => {
       // Commit başarısı temizliğe bağlı değildir (bir sonraki commit
@@ -647,19 +719,33 @@ export class MemoryCommitService {
       );
     let indexed = event.indexed_at !== null;
     if (!indexed) {
-      const now = Date.now();
-      try {
-        await this.db
-          .updateTable("memory_events")
-          .set({ indexed_at: now, updated_at: now })
-          .where("tenant_id", "=", event.tenant_id)
-          .where("space_id", "=", event.space_id)
-          .where("id", "=", event.id)
-          .where("indexed_at", "is", null)
-          .execute();
-        indexed = true;
-      } catch {
-        indexed = false;
+      let canMark = true;
+      if (this.deps.index) {
+        try {
+          canMark = await this.deps.index.indexNote(
+            event.tenant_id,
+            event.space_id,
+            receipt.noteId,
+          );
+        } catch {
+          canMark = false;
+        }
+      }
+      if (canMark) {
+        const now = Date.now();
+        try {
+          await this.db
+            .updateTable("memory_events")
+            .set({ indexed_at: now, updated_at: now })
+            .where("tenant_id", "=", event.tenant_id)
+            .where("space_id", "=", event.space_id)
+            .where("id", "=", event.id)
+            .where("indexed_at", "is", null)
+            .execute();
+          indexed = true;
+        } catch {
+          indexed = false;
+        }
       }
     }
     return { ...receipt, status: "duplicate", indexed };
@@ -778,8 +864,34 @@ export class MemoryCommitService {
       .where("space_id", "=", spaceId)
       .where("source_event_key", "=", sourceEventKey)
       .executeTakeFirst();
-    if (!event)
+    // Issue #37 (M04): a failed commit leaves the durable event pending, so
+    // the run row is the authoritative failure source. The idempotency key
+    // is the same stable binding the accept path persisted.
+    const run = await this.db
+      .selectFrom("runs")
+      .select(["state", "error_code"])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("kind", "=", "memory_ingest")
+      .where(
+        "idempotency_key",
+        "=",
+        sha256Hex(`${spaceId}\u0000${sourceEventKey}`),
+      )
+      .executeTakeFirst();
+    if (!event) {
+      if (run?.state === "failed")
+        return {
+          event_id: "",
+          state: "rejected" as const,
+          indexed: false,
+          committed_revision: null,
+          error_code: run.error_code,
+          run_state: run.state,
+          run_error_code: run.error_code,
+          receipt: null,
+        };
       throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    }
     const payload = event.receipt_json
       ? (JSON.parse(event.receipt_json) as MemoryCommitReceipt)
       : null;
@@ -801,12 +913,22 @@ export class MemoryCommitService {
           409,
         );
     }
+    const failedRun = run?.state === "failed";
     return {
       event_id: event.id,
-      state: event.state,
+      // A committed event always wins; a failed run reports the rejection so
+      // the UI can show the conflict without a second endpoint.
+      state:
+        event.state === "committed"
+          ? ("committed" as const)
+          : failedRun
+            ? ("rejected" as const)
+            : event.state,
       indexed: event.indexed_at !== null,
       committed_revision: event.committed_revision,
-      error_code: event.error_code,
+      error_code: event.error_code ?? (failedRun ? run.error_code : null),
+      run_state: run?.state ?? null,
+      run_error_code: run?.error_code ?? null,
       receipt: payload,
     };
   }

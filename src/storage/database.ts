@@ -31,6 +31,12 @@ import { jobMigration } from "./job-migration.js";
 import { memoryMigration } from "./memory-migration.js";
 import { memoryPipelineMigration } from "./memory-pipeline-migration.js";
 import { memoryEventNoteMigration } from "./memory-event-note-migration.js";
+import { memoryIndexMigration } from "./memory-index-migration.js";
+import { memorySpoolMigration } from "./memory-spool-migration.js";
+import { memoryValidityMigration } from "./memory-validity-migration.js";
+import { curatorMigration } from "./curator-migration.js";
+import { retentionMigration } from "./retention-migration.js";
+import { retentionBigintMigration } from "./retention-bigint-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
   Kysely,
@@ -84,6 +90,12 @@ export function migrationsFor(backend: Backend): Record<string, Migration> {
     "032_memory": memoryMigration(backend),
     "033_memory_pipeline": memoryPipelineMigration,
     "034_memory_event_note": memoryEventNoteMigration,
+    "035_memory_index": memoryIndexMigration,
+    "036_memory_spool": memorySpoolMigration,
+    "037_memory_validity": memoryValidityMigration,
+    "038_memory_curator": curatorMigration,
+    "039_memory_retention": retentionMigration,
+    "040_memory_retention_bigint": retentionBigintMigration(backend),
     "001_identity": {
       up: async (database) => {
         await database.schema

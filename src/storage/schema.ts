@@ -362,6 +362,18 @@ export interface DB {
   memory_events: MemoryEvent;
   memory_sources: MemorySource;
   memory_change_candidates: MemoryChangeCandidate;
+  memory_index_terms: MemoryIndexTerm;
+  memory_index_heads: MemoryIndexHead;
+  memory_index_edges: MemoryIndexEdge;
+  memory_spool: MemorySpoolRow;
+  memory_turn_flags: MemoryTurnFlag;
+  memory_spool_counters: MemorySpoolCounter;
+  memory_curator_profiles: MemoryCuratorProfile;
+  memory_curator_extractions: MemoryCuratorExtraction;
+  memory_curator_changes: MemoryCuratorChange;
+  memory_purges: MemoryPurge;
+  memory_retention_runs: MemoryRetentionRun;
+  memory_restore_receipts: MemoryRestoreReceipt;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -561,6 +573,136 @@ export interface MemorySource {
   created_at: number;
   updated_at: number;
 }
+/**
+ * Issue #38 (M05): local hook spool rows. This is a delivery buffer, not a
+ * primary record; `state` never claims a durable memory commit by itself.
+ */
+export type MemorySpoolState =
+  "pending" | "delivered" | "rejected" | "conflict";
+export interface MemorySpoolRow {
+  id: string;
+  installation_id: string;
+  project_ref: string;
+  client: string;
+  event: string;
+  session_id: string;
+  turn_ref: string | null;
+  worktree_key: string | null;
+  event_id: string;
+  source_kind: string;
+  kind: string;
+  content: string;
+  content_hash: string;
+  content_bytes: number;
+  state: MemorySpoolState;
+  attempts: number;
+  next_attempt_at: number;
+  run_id: string | null;
+  last_error: string | null;
+  observed_at: number;
+  created_at: number;
+  updated_at: number;
+}
+/** Whole-turn `[memory:off]` state; Stop consumes the flag. */
+export interface MemoryTurnFlag {
+  installation_id: string;
+  session_id: string;
+  turn_ref: string | null;
+  memory_off: number;
+  created_at: number;
+  expires_at: number;
+}
+/** Visible diagnostics counters; no user content is stored here. */
+export interface MemorySpoolCounter {
+  key: string;
+  value: number;
+  updated_at: number;
+}
+/** Issue #39 (M06): independent model binding for memory work. */
+export interface MemoryCuratorProfile {
+  tenant_id: string;
+  user_id: string;
+  id: string;
+  revision: number;
+  profile_json: string;
+  secret_ref: string | null;
+  created_at: number;
+}
+export type MemoryCuratorExtractionStatus =
+  "ready" | "not_ready" | "no_op" | "failed";
+export interface MemoryCuratorExtraction {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  run_id: string;
+  mode: string;
+  extractor_version: string;
+  policy_version: string;
+  source_fingerprint: string;
+  status: MemoryCuratorExtractionStatus;
+  result_json: string | null;
+  usage_json: string | null;
+  error_code: string | null;
+  created_at: number;
+}
+export type MemoryCuratorChangeState =
+  "proposed" | "shadow" | "applied" | "rejected" | "stale";
+export interface MemoryCuratorChange {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  extraction_id: string | null;
+  run_id: string;
+  mode: string;
+  operation: "create" | "update" | "supersede" | "link";
+  note_id: string | null;
+  base_revision: number | null;
+  kind: string | null;
+  title: string | null;
+  summary: string | null;
+  body_md: string | null;
+  rationale: string;
+  source_refs_json: string;
+  claim_class: string | null;
+  relation: string | null;
+  target_note_id: string | null;
+  confidence_micros: number | null;
+  risk: "low" | "medium" | "high";
+  state: MemoryCuratorChangeState;
+  applied_revision: number | null;
+  reason: string | null;
+  created_at: number;
+  updated_at: number;
+}
+/** Issue #41 (M08): durable forget receipt; survives backup/restore. */
+export interface MemoryPurge {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  purged_at: number;
+  reason: string;
+  source: string;
+  /** Issue #41 follow-up: durable, retryable revision-file cleanup. */
+  file_paths_json: string | null;
+  cleanup_pending: number;
+  cleanup_attempts: number;
+  cleanup_next_at: number;
+}
+export interface MemoryRetentionRun {
+  id: string;
+  started_at: number;
+  finished_at: number;
+  report_json: string;
+}
+export interface MemoryRestoreReceipt {
+  id: string;
+  backend: string;
+  manifest_created_at: string | null;
+  purges_included: number;
+  purges_applied: number;
+  reconciled_at: number | null;
+  created_at: number;
+}
 export type MemoryCandidateState =
   "candidate" | "conflict" | "applied" | "rejected" | "quarantined";
 export interface MemoryChangeCandidate {
@@ -577,4 +719,49 @@ export interface MemoryChangeCandidate {
   reason: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/** Issue #36 (M03): derived lexical index rows (one per term/field). */
+export interface MemoryIndexTerm {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  revision: number;
+  content_hash: string;
+  term: string;
+  field: "title" | "body" | "kind";
+  frequency: number;
+}
+/** One derived head per note, bound to the indexed revision/hash. */
+export interface MemoryIndexHead {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  revision: number;
+  content_hash: string;
+  record_hash: string;
+  kind: string;
+  title: string;
+  summary: string | null;
+  lifecycle: string;
+  pinned: number;
+  task_status: string | null;
+  verification: string;
+  sources_json: string;
+  edges_json: string;
+  /** Issue #36 temporal validity of the indexed revision (epoch ms). */
+  valid_from: number | null;
+  valid_until: number | null;
+  indexed_at: number;
+}
+/** Derived typed relations from accepted revision metadata. */
+export interface MemoryIndexEdge {
+  tenant_id: string;
+  space_id: string;
+  source_note_id: string;
+  source_revision: number;
+  relation: string;
+  target_note_id: string;
+  target_revision: number | null;
+  created_at: number;
 }

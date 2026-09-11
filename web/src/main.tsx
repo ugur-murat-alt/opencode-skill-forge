@@ -21,6 +21,7 @@ import { Login } from "./Login";
 import { Projects } from "./Projects";
 import { Overview } from "./Overview";
 import { Library } from "./Library";
+import { Memory } from "./Memory";
 import { Jobs } from "./Jobs";
 import { Organizations } from "./Organizations";
 import { Roles } from "./Roles";
@@ -281,6 +282,13 @@ function App() {
   const pages: Record<string, React.ReactNode> = {
     overview: <Overview project={project} />,
     library: <Library project={project} tenant={account.identity.tenantId} />,
+    memory: (
+      <Memory
+        tenant={account.identity.tenantId}
+        project={project}
+        canWrite={["founder", "admin", "writer"].includes(account.role)}
+      />
+    ),
     jobs: <Jobs project={project} />,
     organizations: (
       <Organizations

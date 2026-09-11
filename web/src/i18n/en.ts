@@ -13,6 +13,7 @@ import { installsEn } from "./parts/installs";
 import { membersEn } from "./parts/members";
 import { execEn } from "./parts/exec";
 import { pkgdetailEn } from "./parts/pkgdetail";
+import { memoryEn } from "./parts/memory";
 export const en: typeof tr = {
   invites: invitesEn,
   prompts: promptsEn,
@@ -27,6 +28,7 @@ export const en: typeof tr = {
   members: membersEn,
   exec: execEn,
   pkgdetail: pkgdetailEn,
+  memory: memoryEn,
   nav: {
     overview: "Overview",
     library: "Skill library",
@@ -41,6 +43,7 @@ export const en: typeof tr = {
     models: "Models & usage",
     logs: "Logs & diagnostics",
     members: "Members",
+    memory: "Memory",
   },
   common: {
     refresh: "Refresh",
@@ -161,9 +164,45 @@ export const en: typeof tr = {
     unknown: "Unknown",
     configured: "Configured",
     unconfigured: "Not configured",
+    active: "Active",
+    archived: "Archived",
+    planned: "Planned",
+    doing: "Doing",
+    blocked: "Blocked",
+    done: "Done",
+    declared: "Declared",
+    verified: "Verified",
+    proposed: "Proposed",
+    pending: "Pending",
+    committed: "Committed",
+    indexed: "Indexed",
+    present: "Present",
+    missing: "Missing",
+    conflict: "Conflict",
+    candidate: "Candidate",
+    applied: "Applied",
+    quarantined: "Quarantined",
+    read_only: "Read-only",
+    managed: "Managed",
+    off: "Off",
+    manual: "Manual",
+    shadow: "Shadow",
+    proposal: "Proposal mode",
+    auto: "Automatic",
   },
   errors: {
     aborted: "The job was aborted.",
+    agz_hostile_note_id:
+      "The source note identity does not match the safe pattern; it was not imported.",
+    agz_manifest_blocked:
+      "An AGZ manifest with blocking issues cannot be applied.",
+    agz_receipt_invalid: "The AGZ import receipt record is corrupt.",
+    agz_receipt_missing: "No import receipt was found for AGZ rollback.",
+    agz_stage_conflict: "The AGZ stage belongs to another manifest.",
+    agz_stage_integrity: "The AGZ stage package is corrupt or incomplete.",
+    agz_stage_missing: "The AGZ stage package was not found.",
+    agz_target_mismatch:
+      "The AGZ target space does not match the manifest mapping.",
     already_member: "This account is already an organization member.",
     archive_busy: "Package extraction capacity is full; retry.",
     archive_limit: "ZIP size is invalid.",
@@ -256,6 +295,8 @@ export const en: typeof tr = {
     installation_unavailable: "Installation belongs to another scope.",
     instruction_conflict: "Managed instruction block is missing its closing.",
     insufficient_scope: "Token does not carry the forge scope.",
+    invalid_agz_manifest: "The AGZ import manifest is invalid.",
+    invalid_agz_mapping: "The AGZ project mapping is invalid.",
     invalid_archive: "ZIP directory was not found.",
     invalid_artifact: "Artifact identity is invalid.",
     invalid_bearer: "Bearer identity could not be verified.",
@@ -278,12 +319,15 @@ export const en: typeof tr = {
     invalid_manifest: "forge.json entry contract is invalid.",
     invalid_mapping:
       "Mapping does not match the expected package selection schema.",
+    invalid_memory_checkpoint: "Memory checkpoint is invalid.",
     invalid_memory_document: "Memory document frontmatter is invalid.",
     invalid_memory_event: "Source event contract is invalid.",
+    invalid_memory_link: "Memory link edit is invalid.",
     invalid_memory_path: "Memory path is invalid.",
     invalid_memory_reconcile: "Reconcile limit must be between 1 and 100.",
     invalid_memory_source: "Source definition is invalid.",
     invalid_memory_space: "Space name must be 1–200 characters.",
+    invalid_memory_update: "Memory update is invalid.",
     invalid_organization: "Organization name must be 1–200 characters.",
     invalid_origin: "Origin was rejected.",
     invalid_package_root: "Source package root must be a single directory.",
@@ -335,15 +379,24 @@ export const en: typeof tr = {
     memory_file_too_large: "Source file exceeds the size limit.",
     memory_format_unsupported: "Unsupported memory format version.",
     memory_note_deleted: "Note is archived; an explicit restore is required.",
+    memory_note_purged:
+      "The note was permanently purged and cannot be restored.",
     memory_note_id_mismatch: "Document note_id does not match the target.",
     memory_note_unavailable: "Note not found.",
     memory_path_escape: "The write path escapes the vault root.",
+    memory_proposal_stale:
+      "The proposal is stale; the note has a newer revision.",
+    memory_proposal_state: "The proposal cannot be applied in this state.",
+    memory_proposal_unavailable: "Proposal not found.",
     memory_receipt_unavailable: "The accepted receipt cannot be reconstructed.",
     memory_revision_conflict: "The note has advanced with another change.",
     memory_revision_file_conflict:
       "Revision path already holds different content.",
     memory_revision_file_missing: "Accepted revision file is missing.",
     memory_revision_required: "base_revision is required for updates.",
+    memory_revision_metadata_missing:
+      "Revision does not carry semantic metadata.",
+    memory_revision_unavailable: "Revision not found.",
     memory_scope_mismatch: "Job scope does not match the target space.",
     memory_source_unavailable: "Source not found.",
     memory_space_mismatch: "Document does not match the target space.",
@@ -439,6 +492,8 @@ export const en: typeof tr = {
     skill_referenced: "Skill is used by another record.",
     skill_unavailable: "Skill not found or no permission.",
     source_changed: "Source checksum changed; new discovery is required.",
+    source_changed_during_scan:
+      "The source snapshot changed during the scan; the old dry-run cannot be applied.",
     source_collision: "Source name collision must be resolved.",
     source_mapping_invalid: "Source root/identity mapping is invalid.",
     source_write_denied: "Cannot write to the manifest source data area.",
@@ -476,6 +531,7 @@ export const en: typeof tr = {
     unsafe_package_path: "Package path is outside the data store.",
     unsafe_path: "Deletion path does not belong to the tenant package root.",
     unsupported_lockfile: "Node dependencies require package-lock.json.",
+    unsupported_manifest: "Unsupported AGZ import manifest version.",
     unsupported_schema_feature:
       "Script schema must not contain reference/regex/format execution.",
     client_inventory_required: "Load the file inventory first.",

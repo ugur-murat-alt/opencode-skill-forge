@@ -962,3 +962,411 @@ details pre {
     max-width: 140px;
   }
 }
+
+/* M04 memory workspace (issue #37 phase A): list, editor, source panel. */
+.memory-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+.memory-heading h2 {
+  margin: 0;
+}
+.memory-spaces .toolbar {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.memory-layout {
+  display: grid;
+  grid-template-columns:
+    minmax(220px, 260px) minmax(0, 1fr)
+    minmax(240px, 300px);
+  gap: var(--space-4);
+  align-items: start;
+}
+.memory-list,
+.memory-detail,
+.memory-source {
+  min-width: 0;
+}
+.memory-notes,
+.memory-recent,
+.memory-source-list,
+.memory-conflict-list,
+.memory-history {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.memory-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+.memory-note.active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.memory-note-title {
+  font-weight: 600;
+}
+.memory-note-meta {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+.memory-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+.memory-detail-head h2 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+.memory-back {
+  display: none;
+}
+.memory-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(140px, 1fr);
+  gap: var(--space-3);
+}
+.memory-summary-field {
+  grid-column: 1 / -1;
+}
+.memory-fields input,
+.memory-fields textarea,
+.memory-fields select {
+  width: 100%;
+}
+.memory-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--space-3) 0 var(--space-1);
+}
+.memory-editor {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+}
+.memory-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
+  max-height: 560px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.memory-preview-paragraph,
+.memory-preview-quote,
+.memory-preview-list {
+  color: var(--text);
+}
+.memory-preview-heading {
+  margin: var(--space-3) 0 var(--space-1);
+}
+.memory-preview-code {
+  background: var(--surface);
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  overflow: auto;
+}
+.memory-preview-list {
+  padding-left: var(--space-5, 20px);
+}
+.memory-preview-empty,
+.memory-preview-truncated,
+.memory-blocked-inline,
+.muted {
+  color: var(--muted);
+}
+.memory-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px var(--space-2);
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.memory-chip-dirty {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.memory-chip-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.memory-banner {
+  border: 1px solid var(--warn);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text);
+}
+.memory-notice {
+  color: var(--success);
+}
+.memory-conflict {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: var(--space-3) 0;
+  background: var(--surface-2);
+}
+.memory-conflict-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.memory-conflict-grid pre {
+  max-height: 220px;
+  overflow: auto;
+  background: var(--surface);
+  padding: var(--space-2);
+  border-radius: var(--radius);
+}
+.memory-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0;
+}
+.memory-facts div {
+  min-width: 0;
+}
+.memory-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.memory-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.memory-history li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+.memory-source h2 {
+  margin-bottom: var(--space-2);
+}
+.memory-source h3 {
+  font-size: 14px;
+  margin: var(--space-3) 0 var(--space-1);
+}
+.memory-source-kind {
+  font-weight: 600;
+}
+@media (max-width: 1200px) {
+  .memory-layout {
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  }
+  .memory-source {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 900px) {
+  .memory-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .memory-layout:not(.detail-open) .memory-detail,
+  .memory-layout:not(.detail-open) .memory-source,
+  .memory-layout.detail-open .memory-list {
+    display: none;
+  }
+  .memory-back {
+    display: inline-flex;
+  }
+  .memory-fields,
+  .memory-conflict-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* M04 phase B (issue #37): search, context, graph, tasks, review, health. */
+.memory-tabs {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  margin: 0 0 var(--space-3);
+}
+.memory-main-view {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+.memory-detail-tabs {
+  margin-top: var(--space-1);
+}
+.memory-graph-canvas {
+  width: 100%;
+  height: 320px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.memory-graph-edge {
+  stroke: var(--border);
+  stroke-width: 0.35;
+}
+.memory-graph-edge-label {
+  fill: var(--muted);
+  font-size: 2.1px;
+}
+.memory-graph-node circle {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 0.4;
+}
+.memory-graph-node:focus-visible circle {
+  stroke: var(--accent-strong);
+  stroke-width: 0.9;
+}
+.memory-graph-node {
+  cursor: pointer;
+}
+.memory-graph-node-title {
+  fill: var(--text);
+  font-size: 2.4px;
+  font-weight: 600;
+}
+.memory-graph-node-kind {
+  fill: var(--muted);
+  font-size: 1.9px;
+}
+.memory-graph-origin circle {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+  stroke-width: 0.4;
+}
+.memory-relations {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.memory-relations li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.memory-cards {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.memory-cards > li {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+}
+.memory-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.memory-card-snippet {
+  color: var(--text);
+  margin: var(--space-1) 0;
+  overflow-wrap: anywhere;
+}
+.memory-search-toolbar input[type="datetime-local"] {
+  max-width: 190px;
+}
+.memory-task-list {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.memory-task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+}
+.memory-checkpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.memory-checkpoint label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.memory-context-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.memory-context-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+@media (max-width: 900px) {
+  .memory-main-view {
+    grid-column: 1 / -1;
+  }
+  .memory-checkpoint,
+  .memory-context-sections {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* M06 phase B (issue #39): actionable curator proposal review. */
+.memory-review-actions {
+  margin-top: var(--space-2);
+}
+.memory-reject-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.memory-reject-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}

@@ -4,7 +4,17 @@ import { readFile, mkdir, lstat, open, rename, unlink } from "node:fs/promises";
 import { join, dirname, resolve, relative } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { ForgeError } from "../domain/errors.js";
-export type ClientName = "codex" | "claude";
+import {
+  hookCapability,
+  hookCapabilityReport,
+  installableHookEvents,
+  type ClientName,
+} from "./hook-contract.js";
+import {
+  removeInstallationBinding,
+  writeInstallationBinding,
+} from "./hook-binding.js";
+export type { ClientName };
 interface Change {
   path: string;
   before: string;
@@ -209,7 +219,7 @@ export async function installClient(input: {
     String(input.port),
   ];
   const command = hookCommand(entry, hookArgs);
-  for (const event of ["UserPromptSubmit", "Stop"]) {
+  for (const event of installableHookEvents(input.client)) {
     const doc = json(hookAfter),
       groups = doc.hooks?.[event] ?? [];
     if (!Array.isArray(groups))
@@ -222,7 +232,18 @@ export async function installClient(input: {
       hookAfter = edit(
         hookAfter,
         ["hooks", event],
-        [...groups, { hooks: [{ type: "command", command, timeout: 20 }] }],
+        [
+          ...groups,
+          {
+            hooks: [
+              {
+                type: "command",
+                command,
+                timeout: hookCapability(input.client, event).timeoutSeconds,
+              },
+            ],
+          },
+        ],
       );
   }
   add(hookPath, hookBefore, hookAfter);
@@ -252,6 +273,12 @@ export async function installClient(input: {
       project_ref: input.projectRef,
       hook_trust: "client_review_required",
       manifest: manifestPath,
+      binding: await writeInstallationBinding(input.dataDir, {
+        client: input.client,
+        projectRef: input.projectRef,
+        projectRoot: project,
+      }),
+      events: hookCapabilityReport(input.client),
     };
   await mkdir(privateDir, { recursive: true, mode: 0o700 });
   const lockPath = `${manifestPath}.lock`;
@@ -300,6 +327,12 @@ export async function installClient(input: {
       files: changes.map((change) => change.path),
       hook_trust: "client_review_required",
       manifest: manifestPath,
+      binding: await writeInstallationBinding(input.dataDir, {
+        client: input.client,
+        projectRef: input.projectRef,
+        projectRoot: project,
+      }),
+      events: hookCapabilityReport(input.client),
     };
   } finally {
     await lock.close();
@@ -383,7 +416,7 @@ export async function uninstallClient(
           next = current;
           const previous = json(file.before),
             expected = json(file.after);
-          for (const event of ["UserPromptSubmit", "Stop"]) {
+          for (const event of installableHookEvents(client)) {
             const oldHandlers = new Set(
               (previous.hooks?.[event] ?? []).flatMap((g: any) =>
                 (g.hooks ?? []).map((h: any) => JSON.stringify(h)),
@@ -418,8 +451,12 @@ export async function uninstallClient(
       } else conflicts.push(file.path);
     }
   }
-  if (!conflicts.length) await unlink(path);
-  else {
+  if (!conflicts.length) {
+    await unlink(path);
+    // The durable project binding is removed only on a clean uninstall; a
+    // preserved user change leaves the binding intact.
+    await removeInstallationBinding(dataDir, client, project);
+  } else {
     manifest.files = manifest.files.filter((file) =>
       conflicts.includes(file.path),
     );
@@ -429,6 +466,7 @@ export async function uninstallClient(
     status: conflicts.length ? "user_changes_preserved" : "uninstalled",
     removed,
     conflicts,
+    events: hookCapabilityReport(client),
   };
 }
 export function installationFingerprint(value: unknown) {

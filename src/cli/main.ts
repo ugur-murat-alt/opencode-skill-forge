@@ -22,6 +22,7 @@ import { ForgeWorker } from "../jobs/worker.js";
 import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
 import { MemoryCommitService } from "../memory/commit.js";
+import { MemoryIndexService } from "../memory/index.js";
 import { vaultRoot } from "../memory/paths.js";
 import { memoryJobHandlers } from "../memory/worker.js";
 import { productionJobKinds } from "../memory/job-kinds.js";
@@ -421,10 +422,16 @@ async function main() {
       const vault = await SecretVault.open(config.dataDir);
       const memoryRoot = vaultRoot(config.dataDir);
       const memory = new MemoryService(storage.db, undefined, memoryRoot);
+      const memoryIndex = new MemoryIndexService(
+        storage.db,
+        memoryRoot,
+        memory,
+      );
       const memoryCommits = new MemoryCommitService({
         db: storage.db,
         vaultRoot: memoryRoot,
         service: memory,
+        index: memoryIndex,
       });
       const worker = new ForgeWorker(
         new JobQueue(storage, config.policy, productionJobKinds),

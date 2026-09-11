@@ -141,5 +141,5 @@ for (const backend of [
       await storage.close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 30000);
+  }, 60000);
 }

@@ -11,7 +11,7 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 export interface RunnerInput {
-  profile: "skill_evolve";
+  profile: "skill_evolve" | "memory_curate";
   sessionId: string;
   model: Model<Api>;
   systemPrompt: string;

@@ -690,6 +690,7 @@ export class MemorySourceService {
     input: {
       spaceId?: string;
       sourceId?: string;
+      noteId?: string;
       state?: string;
       limit?: number;
       after?: string;
@@ -717,6 +718,7 @@ export class MemorySourceService {
       .where("c.tenant_id", "=", identity.tenantId)
       .where("s.space_id", "in", spaceIds);
     if (input.sourceId) query = query.where("c.source_id", "=", input.sourceId);
+    if (input.noteId) query = query.where("c.note_id", "=", input.noteId);
     if (input.state) query = query.where("c.state", "=", input.state as never);
     if (input.after) query = query.where("c.id", ">", input.after);
     const rows = await query

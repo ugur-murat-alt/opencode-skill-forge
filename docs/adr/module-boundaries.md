@@ -74,6 +74,67 @@ araacıdır — gerekçesi ve liveness sözleşmesi `docs/adr/pg-boss-liveness.m
 - Kapsam/yetki kararları ve gerekçeleri `docs/adr/memory-ownership.md`,
   format referansı `docs/tr/hafiza-format.md` içindedir.
 
+## Arama, bağlam ve MCP sınırı (issue #36)
+
+- `src/memory/index.ts` türetilmiş lexical/graph indeksini yazar
+  (`memory_index_*`); her satır kabul edilmiş `note_id`/`revision`/
+  `content_hash`e bağlıdır ve yalnız `memory_note_revisions` + revision
+  dosyalarından yeniden üretilebilir. Rebuild notları/ACL'i/kuyruk geçmişini
+  değiştirmez. Backend'e özgü FTS/tsvector yerine taşınabilir terim tablosu
+  seçildi (SQLite ve PostgreSQL'de aynı skorlama; gerekçe: deterministik
+  testler ve migration maliyeti).
+- `src/memory/search.ts` global aday keşfi yapar; kapsam filtresi aday
+  seçimi, top-k, her graf adımı ve cache öncesinde uygulanır. Yenilenmemiş
+  indeks head'i güncel `memory_notes.current_revision` ile doğrulanır; stale
+  sonuç döndürülmez ve gecikme raporlanır.
+- `src/memory/context.ts` bütçeli bağlam derleyicisidir; `offered` ile
+  teslim ayrıdır, token boyutu açıkça `bytes/2.5` **tahminidir**.
+- `src/memory/writes.ts` tipli update/link/checkpoint mutasyonlarını
+  sürümlü commit hattına bağlar; audit uygulama katmanındadır, böylece HTTP
+  ve MCP aynı kaydı üretir. `src/mcp/**` yalnız şema/kayıt adaptörüdür;
+  bağımsız graf yazıcısı veya ikinci derleyici yoktur.
+- Yazma idempotency'si M02 olay hattındadır: aynı `event_key` + aynı içerik
+  pending olayı tamamlar veya kabul edilmiş receipt'i replay eder (timeout/
+  crash sonrası tekrar deneme); aynı anahtar farklı içerikle 409
+  `memory_event_conflict`'tir. Kayıpsız düzenleme: tipli patch yalnız açıkça
+  değiştirilen alanları değiştirir; `sources`, bilinmeyen frontmatter,
+  `created_at` ve geçerlilik penceresi yeni revizyona taşınır.
+- SUPERSEDES sözleşmesi: A `--SUPERSEDES-->` B ise **B** superseded olur,
+  A aktif kalır. Yaşam döngüsü operasyonel not durumudur
+  (`memory_notes.lifecycle` + türetilmiş indeks head'i), kabul edilmiş
+  revision dosyasını değiştirmez ve rebuild bu satırdan beslenir. Kaynağı
+  ayrıca arşivlemek isteyen açık `lifecycle`/`archive` işlemini kullanır.
+
+## Bağlam, araç yüzeyi ve benchmark (issue #36)
+
+- `memory_context` aynı yetkili snapshot'tan aktif görev/engel/son karar/pin
+  ve kaynaklı devam adımını derler; her kart
+  `note_id + revision + kind + snippet + match_reason + sources` taşır.
+  Bütçe **bytes/2.5 tahminidir** (gerçek tokenizer yok; karakter token
+  sayılmaz) ve sert bayt sınırı **tüm pakete** (zarf + kartlar + bölümler +
+  offered) uygulanır: önce kartlar, sonra düşük öncelikli bölümler kırpılır;
+  aktif görev/engel/devam adımı korunur ve değişmez kural
+  `used_tokens_estimate <= max_tokens`'tır. Zarfın zorunlu alanları
+  (package_hash, bütçe) nedeniyle etkin en düşük bütçe 192 tahmini tokendır;
+  daha küçük istek bu tabana yükseltilir ve yanıtta etkin `max_tokens` döner.
+  Sığmayan öğe `truncated` + `continuation_note` ile bildirilir. Yetersiz
+  kanıtta boş sonuç döner, bütçe ilgisiz notlarla doldurulmaz.
+- Offered ≠ delivered: yalnız sunulan sürümler `offered`da listelenir; teslim
+  istemcinin `known_revisions` beyanıdır ve değişmeyen sürümler tekrar
+  enjekte edilmez. Compaction/resume'da beyan yoksa başlangıç paketi yeniden
+  sunulur; eski içerik fiziksel olarak silinmiş sayılmaz, düzeltme yeni
+  revision/supersession olarak gelir.
+- Geçerlilik: indeks head'i `valid_from`/`valid_until` taşır; `asOf` verilen
+  sorguda penceresi kapanmış kayıt stale sayılır ve güncel diye sunulmaz.
+- Araç kataloğu: altı `memory_*` aracı yalnız `memoryEnabled` ve yetki
+  varken görünür; mevcut beş `forge_*` değişmez. Mutasyon audit'i uygulama
+  katmanındadır (HTTP ve MCP aynı). Kalıcı toplu purge genel yazma aracında
+  yoktur; ayrı yetkili yönetim akışıdır. Otomatik yazım M03'te kapalıdır;
+  benchmark bu nedenle auto-write recall'ı ölçmez (not-measured).
+- Benchmark: `test/fixtures/memory-benchmark` tuning + held-out acceptance
+  bölümleri ve ölçüm öncesi donmuş `thresholds.json`; eşikler sonuç
+  görüldükten sonra düşürülemez.
+
 ## Use-case pilotu (issue #32)
 
 `src/application/run-reports.ts` içindeki `RunReports`, run raporu okuma

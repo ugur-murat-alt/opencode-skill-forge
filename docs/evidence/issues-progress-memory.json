@@ -1,0 +1,129 @@
+{
+ "campaign": "Markdown hafıza / ikinci beyin modülü (epic #33; #34–#41)",
+ "base_main": "1bda764",
+ "branch": "feat/memory-m03-m08",
+ "verified_head": "171b3ed",
+ "phase1": {
+  "issues": [
+   "34",
+   "35"
+  ],
+  "merged_via": "PR #42",
+  "merge_commit": "4c7d2c3",
+  "note": "#34 ve #35 completed olarak kapandı"
+ },
+ "issues": {
+  "36": {
+   "commits": [
+    "ef36ac5",
+    "c79e481",
+    "8964444",
+    "478a8ff"
+   ],
+   "evidence": "test/memory-search, memory-http-recall, memory-context, memory-benchmark, memory-http-writes, memory-writes-fixes; 10k korpus; donmuş eşikler"
+  },
+  "37": {
+   "commits": [
+    "ee6b6c0",
+    "61c7a52",
+    "d0daee3",
+    "e0d4f80",
+    "284d1dd",
+    "41e2af6",
+    "d1472f1",
+    "8f16109"
+   ],
+   "evidence": "207 gerçek tarayıcı kontrolü; graf/bağlam/görev/inceleme/sağlık; taslak+çatışma; XSS negatifleri"
+  },
+  "38": {
+   "commits": [
+    "b3b3685",
+    "845546b",
+    "5e73c43",
+    "1f9f3c6",
+    "2b179c4",
+    "ee6bde3",
+    "bf552ac"
+   ],
+   "evidence": "hook sözleşmesi + spool + binding + installer + bağlam enjeksiyonu; fixture/gerçek M03; native istemci kabulü YAPILMADI"
+  },
+  "39": {
+   "commits": [
+    "8f21d47",
+    "b2b4bca",
+    "dce2aa8",
+    "9bd4be0",
+    "8f16109",
+    "d1472f1"
+   ],
+   "evidence": "curator e2e/negatif/politika/onay-ret; sahte stream; auto-write ölçümü sample-limited"
+  },
+  "40": {
+   "commits": [
+    "309422f",
+    "24d29c8",
+    "905b958",
+    "1690c94",
+    "509f92c",
+    "622d560",
+    "1004bab"
+   ],
+   "evidence": "schema-11 fixture; dry-run/stage/apply/rollback/shadow; idempotent; crash-resume; kaynak dokunulmazlığı"
+  },
+  "41": {
+   "commits": [
+    "b075526",
+    "f609744",
+    "9eca61c",
+    "cba5143",
+    "d996dc8",
+    "2e17ef7",
+    "a4a9f73",
+    "171b3ed"
+   ],
+   "evidence": "retention/purge/backup/restore/reconcile + işletim dokümanları + final bağımsız kabul/ölçüm; native/canlı/PG-restore açık"
+  }
+ },
+ "gates": {
+  "typecheck": "pass",
+  "lint": "0 uyari / 0 hata",
+  "prettier": "izlenen dosyalar temiz",
+  "full_suite_fresh_pg": "923 test / 911 pass / 12 ortamsal (Docker sandbox + pg_dump); islevsel kirmizi yok",
+  "independent_packages_pg": "76/76",
+  "core_memory_suite_pg": "165/165",
+  "browser_acceptance": "207/207 + --verify; kasitli hata kapisi kirmizi + failure gorseli",
+  "npm_pack": "49 dosya / 937.8 kB"
+ },
+ "benchmark": {
+  "recall_at_8": 0.964,
+  "source_hit_at_8": 1.0,
+  "stale_claim": "0/4",
+  "scope_leak": "0/2",
+  "abstention": 1.0,
+  "task_success": "2/2",
+  "poison_follow": "0/2",
+  "startup_tokens_estimate": 978,
+  "recall_tokens_estimate": 694,
+  "token_note": "bytes/2.5 tahmini; gercek tokenizer yok",
+  "p95_ms": 60,
+  "p95_samples": 16,
+  "p95_status": "not-measured (<30 ornek)"
+ },
+ "auto_write_measurement": {
+  "eligible_applied": "2/2",
+  "ineligible_written": "0/6",
+  "allowlist_violations": 0,
+  "source_support": "2/2",
+  "note": "sample-limited (uygun aday n=2); sahte stream"
+ },
+ "gaps": [
+  "Native Codex/Claude kabul matrisi: istemci CLI'leri bu ortamda yok",
+  "Canli model kalitesi/maliyeti/gecikmesi olculmedi (sahte stream)",
+  "Gercek PostgreSQL backup/restore prova kosumu yapilmadi (SQLite provasi yapildi)",
+  "#37 10.000 kayitli UI render/bellek olcumu yapilmadi (liste bounded ve gezinme testli)",
+  "Retention otomatik silme yurutucusu politika olarak tanimli; silme acik yetkili islem"
+ ],
+ "ci": {
+  "status": "PR acilisinda kosacak; sonuclar PR kontrollerinde"
+ }
+}

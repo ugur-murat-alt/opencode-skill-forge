@@ -62,6 +62,7 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly detail?: unknown,
   ) {
     super(message);
   }
@@ -110,6 +111,7 @@ export async function api<T>(
       value.error?.message ?? value.error?.code ?? "unknown",
       response.status,
       value.error?.code,
+      value.error?.detail,
     );
   if (value.csrf) csrf = value.csrf;
   return value as T;

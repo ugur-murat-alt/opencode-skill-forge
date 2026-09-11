@@ -26,6 +26,8 @@ import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
 import { jobScopeForSpace } from "../memory/service.js";
 import { MemoryCommitService } from "../memory/commit.js";
+import { MemoryIndexService } from "../memory/index.js";
+import { MemoryOperations } from "../memory/operations.js";
 import { MemorySourceService } from "../memory/sources.js";
 import { MEMORY_SCAN_DEFAULT_LIMIT } from "../memory/sources.js";
 import { memoryJobHandlers } from "../memory/worker.js";
@@ -34,6 +36,25 @@ import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
 import { sha256Hex } from "../memory/files.js";
 import { vaultRoot } from "../memory/paths.js";
 import { MEMORY_KINDS } from "../domain/memory.js";
+import { defaultSettings } from "../domain/settings.js";
+import {
+  MEMORY_LIFECYCLES,
+  MEMORY_RELATIONS,
+  TASK_STATUSES,
+} from "../domain/memory.js";
+import {
+  CURATOR_EXTRACTOR_VERSION,
+  CURATOR_POLICY_VERSION,
+  MEMORY_CURATOR_MODES,
+  curatorSourceRefSchema,
+} from "../domain/curator.js";
+import { MemoryCuratorProfileRepository } from "../memory/curator/profile.js";
+import {
+  MemoryRetentionService,
+  retentionWindows,
+} from "../memory/retention.js";
+import { CuratorReview } from "../memory/curator/review.js";
+import { resolveCuratorModel } from "../runner/curator-model.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -65,6 +86,30 @@ export function requestIdentity(request: FastifyRequest) {
     throw new ForgeError("unauthorized", "Kimlik doğrulaması gerekiyor.", 401);
   return identity;
 }
+/**
+ * M04 phase B: the derived task/week views use one server-owned week window
+ * (Monday 00:00 in the server's local timezone). The UI displays the returned
+ * boundaries and never recomputes them.
+ */
+export function memoryWeekWindow(now: number) {
+  const date = new Date(now);
+  const mondayOffset = (date.getDay() + 6) % 7;
+  const start = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate() - mondayOffset,
+  );
+  const end = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    start.getDate() + 7,
+  );
+  return {
+    week_start: start.getTime(),
+    week_end: end.getTime(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+  };
+}
 export function tokenMatches(
   value: string | undefined,
   expected: string,
@@ -91,15 +136,24 @@ export async function createHttpServer(config: LocalConfig) {
   );
   const memoryRoot = vaultRoot(config.dataDir);
   const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryIndex = new MemoryIndexService(storage.db, memoryRoot, memory);
   const memoryCommits = new MemoryCommitService({
     db: storage.db,
     vaultRoot: memoryRoot,
     service: memory,
+    index: memoryIndex,
   });
   const memorySources = new MemorySourceService({
     db: storage.db,
     vaultRoot: memoryRoot,
     service: memory,
+  });
+  // M06 phase B: human approval/rejection for staged curator proposals. The
+  // write itself still goes through the M02 event + commit path.
+  const curatorReview = new CuratorReview({
+    db: storage.db,
+    service: memory,
+    commits: memoryCommits,
   });
   const memoryAudit = async (
     identity: Identity,
@@ -121,6 +175,13 @@ export async function createHttpServer(config: LocalConfig) {
       .execute();
   };
   const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
+  const memoryOperations = new MemoryOperations({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+    commits: memoryCommits,
+    queue: memoryQueue,
+  });
   const worker = new ForgeWorker(
     memoryQueue,
     productionHandler(
@@ -831,12 +892,19 @@ export async function createHttpServer(config: LocalConfig) {
     (actor, project) => packageManager(actor, project || undefined).store,
   );
   const telemetry = new TelemetryService(storage, config.policy);
+  const memoryRetention = new MemoryRetentionService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    settings: { ...defaultSettings, ...config.policy },
+  });
   let retentionTimer: ReturnType<typeof setInterval> | undefined;
   let retentionWork: Promise<void> | undefined;
   const retain = () => {
     if (!retentionWork)
       retentionWork = telemetry
         .sweep()
+        .then(() => memoryRetention.run())
+        .then(() => undefined)
         .catch(() => {
           process.stderr.write("Saklama taraması yeniden denenecek\n");
         })
@@ -1131,7 +1199,17 @@ export async function createHttpServer(config: LocalConfig) {
           version: z.string().max(100).nullable().default(null),
           directory: z.string().max(2000),
           event: z
-            .enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"])
+            .enum([
+              "installed",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionStart",
+              "SessionEnd",
+              "Interrupt",
+              "PreCompact",
+              "PostCompact",
+              "mcp_connected",
+            ])
             .default("installed"),
         })
         .strict()
@@ -1440,6 +1518,54 @@ export async function createHttpServer(config: LocalConfig) {
       limit: query.limit ? Number(query.limit) : undefined,
     });
   });
+  // M04 UI: kişisel/proje alanı ilk kullanımda açılır; organizasyon alanı
+  // açık adla oluşturulur. Mutasyon sınırında ACL MemoryService içindedir.
+  app.post("/api/memory/spaces", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        kind: z.enum(["personal", "project", "organization"]),
+        project_id: z.string().min(1).max(200).optional(),
+        name: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    let space;
+    if (body.kind === "personal") {
+      space = await memory.ensureSpace(identity, { type: "personal" });
+    } else if (body.kind === "project") {
+      if (!body.project_id)
+        throw new ForgeError(
+          "invalid_memory_space",
+          "Proje alanı için project_id gerekli.",
+          422,
+        );
+      space = await memory.ensureSpace(identity, {
+        type: "project",
+        projectId: body.project_id,
+      });
+    } else {
+      if (!body.name)
+        throw new ForgeError(
+          "invalid_memory_space",
+          "Alan adı 1–200 karakter olmalıdır.",
+          422,
+        );
+      space = await memory.createOrganizationSpace(identity, body.name);
+    }
+    await memoryAudit(
+      identity,
+      "memory.space.ensured",
+      {
+        space_id: space.id,
+        kind: space.kind,
+        name: space.name,
+        project_id: space.project_id,
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
+    return space;
+  });
   app.get("/api/memory/notes", async (request) => {
     const query = z
       .object({
@@ -1463,6 +1589,41 @@ export async function createHttpServer(config: LocalConfig) {
     return memory.readNote(requestIdentity(request), {
       spaceId: query.space_id,
       noteId: (request.params as { id: string }).id,
+    });
+  });
+  // M04 UI: salt-okunur sürüm geçmişi; list metadata, tek sürüm içerik.
+  app.get("/api/memory/notes/:id/revisions", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().regex(/^\d+$/).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listRevisions(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: (request.params as { id: string }).id,
+      after: query.after ? Number(query.after) : undefined,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes/:id/revisions/:revision", async (request) => {
+    const params = request.params as { id: string; revision: string };
+    if (!/^\d+$/.test(params.revision))
+      throw new ForgeError(
+        "memory_revision_unavailable",
+        "Sürüm bulunamadı.",
+        404,
+      );
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    return memory.readRevision(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: params.id,
+      revision: Number(params.revision),
     });
   });
   app.get("/api/memory/events", async (request) => {
@@ -1592,6 +1753,7 @@ export async function createHttpServer(config: LocalConfig) {
       .object({
         space_id: z.string().min(1).max(200).optional(),
         source_id: z.string().min(1).max(200).optional(),
+        note_id: z.string().min(1).max(200).optional(),
         state: z
           .enum(["candidate", "conflict", "applied", "rejected", "quarantined"])
           .optional(),
@@ -1603,6 +1765,7 @@ export async function createHttpServer(config: LocalConfig) {
     return memorySources.listCandidates(requestIdentity(request), {
       spaceId: query.space_id,
       sourceId: query.source_id,
+      noteId: query.note_id,
       state: query.state,
       after: query.after,
       limit: query.limit ? Number(query.limit) : undefined,
@@ -1640,6 +1803,562 @@ export async function createHttpServer(config: LocalConfig) {
     });
     return result;
   });
+  // --- Hafıza küratörü (issue #39): bağımsız model bağı, elle kuyruklama ve
+  // salt-okunur öneri listesi. Otomatik yazım yalnız finalize + politika
+  // içinde, M02 commit yolundan yapılır; bu uçlar doğrudan yazmaz.
+  app.get("/api/memory/curator/status", async (request) => {
+    const identity = requestIdentity(request);
+    const repository = new MemoryCuratorProfileRepository(storage.db, vault);
+    const status = await repository.status(identity);
+    const effective = await settings.effective(identity, undefined, {});
+    const resolved = await resolveCuratorModel(repository, identity, {
+      local: config.profile !== "server",
+      allowedOrigins: effective.values.allowedOrigins,
+      allowPaid: effective.values.allowPaid,
+    });
+    return {
+      revision: status.revision,
+      profile: status.profile,
+      credential: status.credential,
+      model_ready: resolved !== null,
+      mode: effective.values.memoryCuratorMode,
+      memory_enabled: effective.values.memoryEnabled,
+      extractor_version: CURATOR_EXTRACTOR_VERSION,
+      policy_version: CURATOR_POLICY_VERSION,
+    };
+  });
+  app.put("/api/memory/curator/profile", async (request) =>
+    new MemoryCuratorProfileRepository(storage.db, vault).update(
+      requestIdentity(request),
+      request.body,
+    ),
+  );
+  app.post("/api/memory/curator/run", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        mode: z.enum(MEMORY_CURATOR_MODES).optional(),
+        source_refs: z.array(curatorSourceRefSchema).min(1).max(20),
+        note_refs: z.array(z.string().min(1).max(200)).max(20).optional(),
+        reason: z.string().min(1).max(500).optional(),
+        idempotency_key: z.string().min(1).max(200),
+      })
+      .strict()
+      .parse(request.body);
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const effective = await settings.effective(
+      identity,
+      space.kind === "project" ? (space.project_id ?? undefined) : undefined,
+      {},
+    );
+    if (!effective.values.memoryEnabled)
+      throw new ForgeError(
+        "memory_disabled",
+        "Hafıza bu kapsamda kapalı.",
+        422,
+      );
+    if (effective.values.memoryCuratorMode === "off")
+      throw new ForgeError(
+        "memory_disabled",
+        "Hafıza küratörü bu kapsamda kapalı.",
+        422,
+        undefined,
+        { reason: "curator_off" },
+      );
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_curate",
+      key: body.idempotency_key,
+      payload: {
+        space_id: body.space_id,
+        ...(body.mode ? { mode: body.mode } : {}),
+        source_refs: body.source_refs,
+        ...(body.note_refs ? { note_refs: body.note_refs } : {}),
+        ...(body.reason ? { reason: body.reason } : {}),
+      },
+    });
+    await memoryAudit(
+      identity,
+      "memory.curator.run.accepted",
+      {
+        space_id: body.space_id,
+        run_id: accepted.run.id,
+        duplicate: accepted.status === "duplicate",
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state,
+    };
+  });
+  app.get("/api/memory/curator/proposals", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        state: z
+          .enum(["proposed", "shadow", "applied", "rejected", "stale"])
+          .optional(),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    await memory.authorizeSpace(identity, query.space_id, "read");
+    const limit = Math.min(Math.max(Number(query.limit ?? 20), 1), 50);
+    let selected = storage.db
+      .selectFrom("memory_curator_changes")
+      .select([
+        "id",
+        "space_id",
+        "run_id",
+        "mode",
+        "operation",
+        "note_id",
+        "base_revision",
+        "kind",
+        "title",
+        "summary",
+        "rationale",
+        "source_refs_json",
+        "claim_class",
+        "relation",
+        "target_note_id",
+        "risk",
+        "state",
+        "applied_revision",
+        "reason",
+        "created_at",
+        "updated_at",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", query.space_id);
+    if (query.state) selected = selected.where("state", "=", query.state);
+    if (query.after) selected = selected.where("id", ">", query.after);
+    const rows = await selected
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    return {
+      items: rows.slice(0, limit),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
+  });
+  // M06 phase B: human decision on one staged proposal. Approval writes a new
+  // note revision through the M02 commit path (CAS + idempotent event key);
+  // rejection only records the decision. No model call, no bulk purge.
+  app.post("/api/memory/curator/proposals/:id/approve", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        expected_revision: z.number().int().min(0).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    return curatorReview.approve(identity, {
+      spaceId: body.space_id,
+      changeId: (request.params as { id: string }).id,
+      expectedRevision: body.expected_revision,
+    });
+  });
+  app.post("/api/memory/curator/proposals/:id/reject", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        reason: z.string().max(500).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    return curatorReview.reject(identity, {
+      spaceId: body.space_id,
+      changeId: (request.params as { id: string }).id,
+      reason: body.reason,
+    });
+  });
+  app.get("/api/memory/recall", async (request) => {
+    const query = z
+      .object({
+        query: z.string().min(1).max(200),
+        space_id: z.string().min(1).max(200).optional(),
+        kinds: z.string().max(200).optional(),
+        graph_depth: z.string().regex(/^\d+$/).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+        cursor: z.string().max(2048).optional(),
+        // M04 phase B: temporal validity instant; closed validity windows are
+        // reported as stale instead of silently presented as current.
+        as_of: z.string().min(1).max(40).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryOperations.recall(requestIdentity(request), {
+      query: query.query,
+      space_id: query.space_id,
+      kinds: query.kinds ? query.kinds.split(",") : undefined,
+      graph_depth:
+        query.graph_depth === undefined ? undefined : Number(query.graph_depth),
+      limit: query.limit === undefined ? undefined : Number(query.limit),
+      cursor: query.cursor,
+      as_of: query.as_of,
+    });
+  });
+  app.get("/api/memory/graph", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200),
+        depth: z.string().regex(/^\d+$/).optional(),
+        max_nodes: z.string().regex(/^\d+$/).optional(),
+        max_edges: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryOperations.graph(requestIdentity(request), {
+      space_id: query.space_id,
+      note_id: query.note_id,
+      depth: query.depth === undefined ? undefined : Number(query.depth),
+      max_nodes:
+        query.max_nodes === undefined ? undefined : Number(query.max_nodes),
+      max_edges:
+        query.max_edges === undefined ? undefined : Number(query.max_edges),
+    });
+  });
+  // M04 phase B: derived task view. Tasks are canonical notes with a
+  // task_status; the week window (Monday 00:00 server local time) and the
+  // timezone name come from the server, the UI never recomputes them.
+  app.get("/api/memory/tasks", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+        statuses: z.string().max(200).optional(),
+        week_only: z.enum(["0", "1"]).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    const space = await memory.authorizeSpace(identity, query.space_id, "read");
+    const limit = Math.min(Math.max(Number(query.limit ?? 50), 1), 100);
+    const week = memoryWeekWindow(Date.now());
+    let statuses: string[] | undefined;
+    if (query.statuses) {
+      statuses = query.statuses.split(",").map((value) => value.trim());
+      const invalid = statuses.filter(
+        (value) => !TASK_STATUSES.includes(value as never),
+      );
+      if (invalid.length > 0)
+        throw new ForgeError(
+          "invalid_filter",
+          "Bilinmeyen görev durumu.",
+          400,
+          undefined,
+          { invalid },
+        );
+    }
+    let selected = storage.db
+      .selectFrom("memory_notes")
+      .select([
+        "id",
+        "title",
+        "summary",
+        "task_status",
+        "pinned",
+        "lifecycle",
+        "current_revision",
+        "created_at",
+        "updated_at",
+        "source_id",
+        "source_state",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("task_status", "is not", null)
+      .where("deleted_at", "is", null);
+    if (statuses && statuses.length > 0)
+      selected = selected.where("task_status", "in", statuses as never[]);
+    if (query.week_only === "1")
+      selected = selected.where("updated_at", ">=", week.week_start);
+    if (query.after) selected = selected.where("id", ">", query.after);
+    const rows = await selected
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    return {
+      space: { id: space.id, kind: space.kind, name: space.name },
+      week,
+      items: rows.slice(0, limit).map((row) => ({
+        ...row,
+        pinned: Boolean(row.pinned),
+      })),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
+  });
+  // M04 phase B: space-scoped memory health. Counts and error codes only;
+  // no note titles, space names or foreign scope identifiers are returned.
+  app.get("/api/memory/health", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    const space = await memory.authorizeSpace(identity, query.space_id, "read");
+    const headsBase = () =>
+      storage.db
+        .selectFrom("memory_index_heads")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("space_id", "=", space.id);
+    const headCount = await headsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .executeTakeFirstOrThrow();
+    const lastIndexed = await headsBase()
+      .select((eb) => eb.fn.max("indexed_at").as("at"))
+      .executeTakeFirstOrThrow();
+    const staleRow = await storage.db
+      .selectFrom("memory_index_heads as h")
+      .leftJoin("memory_notes as n", (join) =>
+        join
+          .onRef("n.tenant_id", "=", "h.tenant_id")
+          .onRef("n.space_id", "=", "h.space_id")
+          .onRef("n.id", "=", "h.note_id"),
+      )
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("h.tenant_id", "=", identity.tenantId)
+      .where("h.space_id", "=", space.id)
+      .where((eb) =>
+        eb.or([
+          eb("n.id", "is", null),
+          eb("n.deleted_at", "is not", null),
+          eb("n.current_revision", "!=", eb.ref("h.revision")),
+        ]),
+      )
+      .executeTakeFirstOrThrow();
+    const eventCounts = await storage.db
+      .selectFrom("memory_events")
+      .select([
+        (eb) =>
+          eb.fn.count("id").filterWhere("state", "=", "pending").as("pending"),
+        (eb) =>
+          eb.fn
+            .count("id")
+            .filterWhere("state", "=", "rejected")
+            .as("rejected"),
+        (eb) =>
+          eb.fn
+            .min("created_at")
+            .filterWhere("state", "=", "pending")
+            .as("oldest_pending"),
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .executeTakeFirstOrThrow();
+    const scope = jobScopeForSpace(space);
+    const scopeKey =
+      scope.type === "project"
+        ? scope.projectId
+        : scope.type === "personal"
+          ? identity.userId
+          : "organization";
+    const memoryKinds = ["memory_ingest", "memory_reconcile", "memory_curate"];
+    const runsBase = () =>
+      storage.db
+        .selectFrom("runs")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("kind", "in", memoryKinds)
+        .where("scope_kind", "=", scope.type)
+        .where("scope_key", "=", scopeKey);
+    const activeRow = await runsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("state", "in", ["queued", "running", "retry_wait"])
+      .executeTakeFirstOrThrow();
+    const failedRow = await runsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("state", "=", "failed")
+      .where("updated_at", ">=", Date.now() - 24 * 60 * 60 * 1000)
+      .executeTakeFirstOrThrow();
+    const lastFailure = await runsBase()
+      .select(["error_code", "updated_at", "kind"])
+      .where("state", "=", "failed")
+      .orderBy("updated_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    const effective = await settings.effective(
+      identity,
+      space.kind === "project" ? (space.project_id ?? undefined) : undefined,
+      {},
+    );
+    const purgesRow = await storage.db
+      .selectFrom("memory_purges")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .executeTakeFirstOrThrow();
+    const purgesPendingRow = await storage.db
+      .selectFrom("memory_purges")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("cleanup_pending", "=", 1)
+      .executeTakeFirstOrThrow();
+    const lastRetentionRun = await storage.db
+      .selectFrom("memory_retention_runs")
+      .select(["finished_at"])
+      .orderBy("finished_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    const restoreStatus = await memoryRetention.restoreStatus();
+    return {
+      space: { id: space.id, kind: space.kind },
+      index: {
+        heads: Number(headCount.n),
+        stale: Number(staleRow.n),
+        last_indexed_at: lastIndexed.at ?? null,
+      },
+      events: {
+        pending: Number(eventCounts.pending),
+        rejected: Number(eventCounts.rejected),
+        oldest_pending_at: eventCounts.oldest_pending ?? null,
+      },
+      jobs: {
+        active: Number(activeRow.n),
+        failed_24h: Number(failedRow.n),
+        last_failure: lastFailure
+          ? {
+              error_code: lastFailure.error_code,
+              updated_at: lastFailure.updated_at,
+              kind: lastFailure.kind,
+            }
+          : null,
+      },
+      spool: null,
+      retention: {
+        windows: retentionWindows(effective.values),
+        purges: Number(purgesRow.n),
+        purges_pending_cleanup: Number(purgesPendingRow.n),
+        last_run_at: lastRetentionRun?.finished_at ?? null,
+        restore_reconciliation_required: restoreStatus.reconciliation_required,
+      },
+      week: memoryWeekWindow(Date.now()),
+    };
+  });
+  app.post("/api/memory/index/rebuild", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        after: z.string().min(1).max(200).optional(),
+        batch_size: z.number().int().min(1).max(500).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    const report = await memoryOperations.rebuild(identity, body);
+    await memoryAudit(identity, "memory.index.rebuilt", {
+      space_id: body.space_id ?? null,
+      indexed: report.indexed,
+      skipped: report.skipped,
+      next: report.next,
+    });
+    return report;
+  });
+  app.get("/api/memory/context", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        goal: z.string().min(1).max(2000).optional(),
+        session_key: z.string().min(1).max(200).optional(),
+        generation: z.string().regex(/^\d+$/).optional(),
+        branch: z.string().min(1).max(200).optional(),
+        worktree: z.string().min(1).max(500).optional(),
+        max_tokens: z.string().regex(/^\d+$/).optional(),
+        known: z.string().max(8000).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    const knownRevisions = query.known
+      ? query.known.split(",").flatMap((entry) => {
+          const [noteId, revision] = entry.split(":");
+          if (!noteId || !revision || !/^\d+$/.test(revision)) return [];
+          return [{ note_id: noteId, revision: Number(revision) }];
+        })
+      : undefined;
+    return memoryOperations.contextFor(requestIdentity(request), {
+      space_id: query.space_id,
+      goal: query.goal,
+      session_key: query.session_key,
+      generation:
+        query.generation === undefined ? undefined : Number(query.generation),
+      branch: query.branch,
+      worktree: query.worktree,
+      max_tokens:
+        query.max_tokens === undefined ? undefined : Number(query.max_tokens),
+      known_revisions: knownRevisions,
+    });
+  });
+  app.post("/api/memory/update", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200).optional(),
+        expected_revision: z.number().int().min(1).optional(),
+        kind: z.enum(MEMORY_KINDS).optional(),
+        title: z.string().min(1).max(500).optional(),
+        summary: z.string().max(8000).optional(),
+        body: z.string().max(49152).optional(),
+        lifecycle: z.enum(MEMORY_LIFECYCLES).optional(),
+        pinned: z.boolean().optional(),
+        task_status: z.enum(TASK_STATUSES).optional(),
+        verification: z.enum(["declared", "verified", "proposed"]).optional(),
+        archive: z.boolean().optional(),
+        restore: z.boolean().optional(),
+        supersede_target: z.string().min(1).max(200).optional(),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.update(identity, body);
+    return result;
+  });
+  app.post("/api/memory/link", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200),
+        relation: z.enum(MEMORY_RELATIONS),
+        target_note_id: z.string().min(1).max(200),
+        remove: z.boolean().optional(),
+        expected_revision: z.number().int().min(1),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.link(identity, body);
+    return result;
+  });
+  app.post("/api/memory/checkpoint", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200).optional(),
+        expected_revision: z.number().int().min(1).optional(),
+        goal: z.string().min(1).max(2000),
+        progress: z.string().max(8000).optional(),
+        blocker: z.string().max(4000).optional(),
+        next_step: z.string().max(4000).optional(),
+        status: z.enum(TASK_STATUSES).optional(),
+        event_key: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    const result = await memoryOperations.checkpoint(identity, body);
+    return result;
+  });
   app.route({
     method: ["GET", "POST", "DELETE"],
     url: "/mcp",
@@ -1653,6 +2372,40 @@ export async function createHttpServer(config: LocalConfig) {
         forge,
         requestIdentity(request),
         config.profile === "server",
+        {
+          enabled: async (identity) =>
+            (await settings.effective(identity)).values.memoryEnabled,
+          context: (identity, input) =>
+            memoryOperations.contextFor(
+              identity,
+              input as Record<string, unknown>,
+            ),
+          recall: (identity, input) =>
+            memoryOperations.recall(identity, input as Record<string, unknown>),
+          read: (identity, input) => {
+            const args = input as {
+              space_id: string;
+              note_id: string;
+              revision?: number;
+              neighbors?: number;
+            };
+            return memoryOperations.read(identity, {
+              spaceId: args.space_id,
+              noteId: args.note_id,
+              revision: args.revision,
+              neighbors: args.neighbors,
+            });
+          },
+          update: (identity, input) =>
+            memoryOperations.update(identity, input as Record<string, unknown>),
+          link: (identity, input) =>
+            memoryOperations.link(identity, input as Record<string, unknown>),
+          checkpoint: (identity, input) =>
+            memoryOperations.checkpoint(
+              identity,
+              input as Record<string, unknown>,
+            ),
+        },
       );
       await mcp.connect(transport);
       reply.hijack();

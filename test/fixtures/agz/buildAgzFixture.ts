@@ -86,6 +86,11 @@ export interface BuildAgzFixtureOptions {
   databaseId?: string;
   /** false: WAL günlük modunda bırakır (dondurulmamış kaynak testi). */
   freeze?: boolean;
+  /**
+   * "negative" (varsayılan): bozuk referans/hash/revision senaryoları dahil.
+   * "clean": yalnız sağlam not/edge/provenance — kayıpsız apply yolu testi.
+   */
+  profile?: "negative" | "clean";
 }
 
 export interface BuiltAgzFixture {
@@ -170,6 +175,7 @@ export async function buildAgzFixture(
   options: BuildAgzFixtureOptions = {},
 ): Promise<BuiltAgzFixture> {
   const variant = options.variant ?? "base";
+  const negative = (options.profile ?? "negative") === "negative";
   const databaseId =
     options.databaseId ??
     (variant === "twin"
@@ -203,9 +209,9 @@ export async function buildAgzFixture(
     );
 
     insertProjects(db, alpha);
-    insertNotes(db, alpha, alphaRuleSummary, alphaRuleContent);
-    insertProvenance(db, alpha);
-    insertEdges(db, alpha);
+    insertNotes(db, alpha, alphaRuleSummary, alphaRuleContent, negative);
+    insertProvenance(db, alpha, negative);
+    insertEdges(db, alpha, negative);
     insertBindingsAndCapture(db, alpha);
     insertOutbox(db, alpha);
 
@@ -362,6 +368,7 @@ function insertNotes(
   alpha: string,
   alphaRuleSummary: string,
   alphaRuleContent: string,
+  negative: boolean,
 ): void {
   const notes: NoteSpec[] = [
     {
@@ -509,6 +516,7 @@ function insertNotes(
   ];
 
   for (const note of notes) {
+    if (!negative && isNegativeNote(note.id)) continue;
     const contentHash =
       note.contentHash ??
       noteContentHash(note.kind, note.title, note.summary, note.content);
@@ -537,10 +545,20 @@ function insertNotes(
     );
   }
 
-  insertRevisions(db);
+  insertRevisions(db, negative);
 }
 
-function insertRevisions(db: WritableSqliteConnection): void {
+function isNegativeNote(noteId: string): boolean {
+  return (
+    noteId === AGZ_FIXTURE_IDS.noteOrphan ||
+    noteId === AGZ_FIXTURE_IDS.noteArchivedGap
+  );
+}
+
+function insertRevisions(
+  db: WritableSqliteConnection,
+  negative: boolean,
+): void {
   const notes = db.all<{
     id: string;
     project_id: string;
@@ -613,7 +631,9 @@ function insertRevisions(db: WritableSqliteConnection): void {
           : note.content;
       const kind = isHistoryNote ? "context" : note.kind;
       const contentHash = isCurrentProcedureOldRevision
-        ? "1".repeat(64)
+        ? negative
+          ? "1".repeat(64)
+          : noteContentHash(kind, title, summary, content)
         : noteContentHash(kind, title, summary, content);
       revisions.push({
         projectId: note.project_id,
@@ -661,7 +681,11 @@ function insertRevisions(db: WritableSqliteConnection): void {
   }
 }
 
-function insertProvenance(db: WritableSqliteConnection, alpha: string): void {
+function insertProvenance(
+  db: WritableSqliteConnection,
+  alpha: string,
+  negative: boolean,
+): void {
   const beta = AGZ_FIXTURE_IDS.projectBeta;
   const archive = AGZ_FIXTURE_IDS.projectArchive;
   const specs: ProvenanceSpec[] = [
@@ -850,6 +874,12 @@ function insertProvenance(db: WritableSqliteConnection, alpha: string): void {
   ];
 
   for (const spec of specs) {
+    if (
+      !negative &&
+      (isNegativeNote(spec.noteId) ||
+        spec.noteId === AGZ_FIXTURE_IDS.missingNote)
+    )
+      continue;
     db.run(
       `INSERT INTO note_provenance
          (id, project_id, note_id, source_type, capture_event_id, source_session_id,
@@ -875,7 +905,11 @@ function insertProvenance(db: WritableSqliteConnection, alpha: string): void {
   }
 }
 
-function insertEdges(db: WritableSqliteConnection, alpha: string): void {
+function insertEdges(
+  db: WritableSqliteConnection,
+  alpha: string,
+  negative: boolean,
+): void {
   const beta = AGZ_FIXTURE_IDS.projectBeta;
   const specs: EdgeSpec[] = [
     {
@@ -895,7 +929,9 @@ function insertEdges(db: WritableSqliteConnection, alpha: string): void {
     {
       id: AGZ_FIXTURE_EDGES.partOf,
       projectId: alpha,
-      sourceId: AGZ_FIXTURE_IDS.noteOrphan,
+      sourceId: negative
+        ? AGZ_FIXTURE_IDS.noteOrphan
+        : AGZ_FIXTURE_IDS.noteArchivedResearch,
       targetId: AGZ_FIXTURE_IDS.noteRule,
       predicate: "PART_OF",
     },
@@ -937,6 +973,17 @@ function insertEdges(db: WritableSqliteConnection, alpha: string): void {
   ];
 
   for (const spec of specs) {
+    if (
+      !negative &&
+      (isNegativeNote(spec.sourceId) || isNegativeNote(spec.targetId))
+    )
+      continue;
+    if (
+      !negative &&
+      (spec.id === AGZ_FIXTURE_EDGES.missingEndpoint ||
+        spec.id === AGZ_FIXTURE_EDGES.crossProject)
+    )
+      continue;
     db.run(
       `INSERT INTO note_edges (id, project_id, source_id, target_id, predicate, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,

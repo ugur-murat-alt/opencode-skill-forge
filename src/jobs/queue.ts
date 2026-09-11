@@ -631,6 +631,15 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         .where("tenant_id", "=", run.tenant_id)
         .where("run_id", "=", run.id)
         .execute();
+      // Retry görünürlüğü: deneme satırı açık kalmaz; sonucu retry_wait olur.
+      await tx
+        .updateTable("run_attempts")
+        .set({ ended_at: now, result: "retry_wait" })
+        .where("tenant_id", "=", run.tenant_id)
+        .where("run_id", "=", run.id)
+        .where("fence", "=", run.fence)
+        .where("ended_at", "is", null)
+        .execute();
       await this.audit(
         tx,
         run,
