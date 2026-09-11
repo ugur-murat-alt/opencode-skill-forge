@@ -168,7 +168,7 @@ export class CuratorReview {
         kind: (change.kind ?? current.record.kind) as MemoryKind,
         title: change.title ?? current.record.title,
         summary: change.summary ?? current.record.summary,
-        body: normalizeBody(change.body_md ?? current.record.body),
+        body: change.body_md ?? current.record.body,
       };
     }
 
@@ -318,7 +318,7 @@ export class CuratorReview {
     noteId: string,
   ): MemoryRecord {
     const now = Date.now();
-    const body = normalizeBody(change.body_md ?? "");
+    const body = change.body_md ?? "";
     return {
       formatVersion: 1,
       noteId,
@@ -538,10 +538,6 @@ export class CuratorReview {
       })
       .execute();
   }
-}
-
-function normalizeBody(body: string): string {
-  return body.endsWith("\n") ? body : `${body}\n`;
 }
 
 function parseSources(raw: string): MemorySource[] {

@@ -501,86 +501,82 @@ test("çift eşzamanlı onay: tek revizyon, diğeri 409", async () => {
   }
 }, 60000);
 
-test.failing(
-  "çift-kaynak riski: review.ts ve writes.ts aynı metadata alanlarını ve kanonik gövdeyi korur",
-  async () => {
-    const ctx = await bootstrapHttp();
-    const extras = [
-      'custom_field: "korunmalı"',
-      `sources: [{"id":"agz-1","kind":"agz","hash":"${"a".repeat(64)}"}]`,
-      "valid_from: 1000",
-      "valid_until: 2000",
-      "created_at: 500",
-      "observed_at: 600",
-    ];
-    try {
-      await seedNote(ctx, {
-        noteId: "drift-writes",
-        title: "Drift notu",
-        body: "v1",
-        frontmatterExtras: extras,
-      });
-      await seedNote(ctx, {
-        noteId: "drift-review",
-        title: "Drift notu",
-        body: "v1",
-        frontmatterExtras: extras,
-      });
-      // (a) MemoryWriteService patch'i.
-      const writes = new MemoryWriteService({
-        db: ctx.storage.db,
-        service: ctx.memory,
-        commits: ctx.commits,
-        vaultRoot: vaultRoot(ctx.root),
-      });
-      await writes.update(ctx.owner, {
-        space_id: ctx.spaceId,
-        note_id: "drift-writes",
-        expected_revision: 1,
-        body: "v2",
-      } as never);
-      // (b) CuratorReview onayı (update adayı).
-      const change = await insertChange(ctx, {
-        operation: "update",
-        note_id: "drift-review",
-        base_revision: 1,
-        body_md: "v2",
-      });
-      const approved = await ctx.review.approve(ctx.owner, {
+test("çift-kaynak riski: review.ts ve writes.ts aynı metadata alanlarını ve kanonik gövdeyi korur", async () => {
+  const ctx = await bootstrapHttp();
+  const extras = [
+    'custom_field: "korunmalı"',
+    `sources: [{"id":"agz-1","kind":"agz","hash":"${"a".repeat(64)}"}]`,
+    "valid_from: 1000",
+    "valid_until: 2000",
+    "created_at: 500",
+    "observed_at: 600",
+  ];
+  try {
+    await seedNote(ctx, {
+      noteId: "drift-writes",
+      title: "Drift notu",
+      body: "v1",
+      frontmatterExtras: extras,
+    });
+    await seedNote(ctx, {
+      noteId: "drift-review",
+      title: "Drift notu",
+      body: "v1",
+      frontmatterExtras: extras,
+    });
+    // (a) MemoryWriteService patch'i.
+    const writes = new MemoryWriteService({
+      db: ctx.storage.db,
+      service: ctx.memory,
+      commits: ctx.commits,
+      vaultRoot: vaultRoot(ctx.root),
+    });
+    await writes.update(ctx.owner, {
+      space_id: ctx.spaceId,
+      note_id: "drift-writes",
+      expected_revision: 1,
+      body: "v2",
+    } as never);
+    // (b) CuratorReview onayı (update adayı).
+    const change = await insertChange(ctx, {
+      operation: "update",
+      note_id: "drift-review",
+      base_revision: 1,
+      body_md: "v2",
+    });
+    const approved = await ctx.review.approve(ctx.owner, {
+      spaceId: ctx.spaceId,
+      changeId: String(change.id),
+    });
+    expect(approved.state).toBe("applied");
+    const readRecord = async (noteId: string) => {
+      const note = await ctx.memory.readNote(ctx.owner, {
         spaceId: ctx.spaceId,
-        changeId: String(change.id),
+        noteId,
       });
-      expect(approved.state).toBe("applied");
-      const readRecord = async (noteId: string) => {
-        const note = await ctx.memory.readNote(ctx.owner, {
-          spaceId: ctx.spaceId,
-          noteId,
-        });
-        const parsed = parseMemoryDocument(note.content!);
-        if (parsed.status !== "ok") throw new Error("parse");
-        return parsed.record;
-      };
-      const viaWrites = await readRecord("drift-writes");
-      const viaReview = await readRecord("drift-review");
-      // İki bağımsız yeniden-kurma deseni aynı alanları taşımalı; biri
-      // commit.ts metadata şemasından saparsa bu karşılaştırma kırılır.
-      expect(viaWrites.sources).toEqual(viaReview.sources);
-      expect(viaWrites.unknown).toEqual(viaReview.unknown);
-      expect(viaWrites.validFrom).toBe(viaReview.validFrom);
-      expect(viaWrites.validUntil).toBe(viaReview.validUntil);
-      expect(viaWrites.createdAt).toBe(viaReview.createdAt);
-      expect(viaWrites.observedAt).toBe(viaReview.observedAt);
-      expect(viaWrites.body).toBe(viaReview.body);
-      for (const record of [viaWrites, viaReview]) {
-        expect(record.sources).toHaveLength(1);
-        expect(record.unknown.custom_field).toBe("korunmalı");
-        expect(record.validFrom).toBe(1000);
-        expect(record.validUntil).toBe(2000);
-        expect(record.createdAt).toBe(500);
-      }
-    } finally {
-      await ctx.close();
+      const parsed = parseMemoryDocument(note.content!);
+      if (parsed.status !== "ok") throw new Error("parse");
+      return parsed.record;
+    };
+    const viaWrites = await readRecord("drift-writes");
+    const viaReview = await readRecord("drift-review");
+    // İki bağımsız yeniden-kurma deseni aynı alanları taşımalı; biri
+    // commit.ts metadata şemasından saparsa bu karşılaştırma kırılır.
+    expect(viaWrites.sources).toEqual(viaReview.sources);
+    expect(viaWrites.unknown).toEqual(viaReview.unknown);
+    expect(viaWrites.validFrom).toBe(viaReview.validFrom);
+    expect(viaWrites.validUntil).toBe(viaReview.validUntil);
+    expect(viaWrites.createdAt).toBe(viaReview.createdAt);
+    expect(viaWrites.observedAt).toBe(viaReview.observedAt);
+    expect(viaWrites.body).toBe(viaReview.body);
+    for (const record of [viaWrites, viaReview]) {
+      expect(record.sources).toHaveLength(1);
+      expect(record.unknown.custom_field).toBe("korunmalı");
+      expect(record.validFrom).toBe(1000);
+      expect(record.validUntil).toBe(2000);
+      expect(record.createdAt).toBe(500);
     }
-  },
-  90000,
-);
+  } finally {
+    await ctx.close();
+  }
+}, 90000);

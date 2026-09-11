@@ -521,43 +521,39 @@ test("arşiv türetilmiş indeksi geçersizleştirir; replay tombstone'u dirilte
   }
 }, 90000);
 
-test.failing(
-  "arşiv türetilmiş graph kenarlarını da geçersizleştirmeli (SQLite sızıntısı / PG 42703)",
-  async () => {
-    const env = await openEnv();
-    try {
-      await seedNote(env, { noteId: "inv-a", title: "A", body: "a" });
-      await seedNote(env, { noteId: "inv-b", title: "B", body: "b" });
-      await env.writes.link(env.owner, {
-        space_id: env.spaceId,
-        note_id: "inv-a",
-        relation: "SUPPORTS",
-        target_note_id: "inv-b",
-        expected_revision: 1,
-      } as never);
-      const before = await env.db
-        .selectFrom("memory_index_edges")
-        .select(["source_note_id"])
-        .where("source_note_id", "=", "inv-a")
-        .execute();
-      expect(before).toHaveLength(1);
-      // PostgreSQL'de bu çağrı 42703 ile düşer; SQLite'ta sessizce kenar kalır.
-      await env.memory.archiveNote(env.owner, {
-        spaceId: env.spaceId,
-        noteId: "inv-a",
-      });
-      const after = await env.db
-        .selectFrom("memory_index_edges")
-        .select(["source_note_id"])
-        .where("source_note_id", "=", "inv-a")
-        .execute();
-      expect(after).toHaveLength(0);
-    } finally {
-      await env.close();
-    }
-  },
-  90000,
-);
+test("arşiv türetilmiş graph kenarlarını da geçersizleştirmeli (SQLite sızıntısı / PG 42703)", async () => {
+  const env = await openEnv();
+  try {
+    await seedNote(env, { noteId: "inv-a", title: "A", body: "a" });
+    await seedNote(env, { noteId: "inv-b", title: "B", body: "b" });
+    await env.writes.link(env.owner, {
+      space_id: env.spaceId,
+      note_id: "inv-a",
+      relation: "SUPPORTS",
+      target_note_id: "inv-b",
+      expected_revision: 1,
+    } as never);
+    const before = await env.db
+      .selectFrom("memory_index_edges")
+      .select(["source_note_id"])
+      .where("source_note_id", "=", "inv-a")
+      .execute();
+    expect(before).toHaveLength(1);
+    // PostgreSQL'de bu çağrı 42703 ile düşer; SQLite'ta sessizce kenar kalır.
+    await env.memory.archiveNote(env.owner, {
+      spaceId: env.spaceId,
+      noteId: "inv-a",
+    });
+    const after = await env.db
+      .selectFrom("memory_index_edges")
+      .select(["source_note_id"])
+      .where("source_note_id", "=", "inv-a")
+      .execute();
+    expect(after).toHaveLength(0);
+  } finally {
+    await env.close();
+  }
+}, 90000);
 
 test("purge satır+dosya siler, makbuz kalır; replay memory_note_purged; idempotent", async () => {
   const env = await openEnv();
@@ -872,9 +868,7 @@ test("purge sırasında eksik revision dosyası (kesinti) işlemi tutarsız bır
   }
 }, 60000);
 
-const pgRetentionTest = process.env.FORGE_TEST_POSTGRES_URL
-  ? test.failing
-  : test.skip;
+const pgRetentionTest = process.env.FORGE_TEST_POSTGRES_URL ? test : test.skip;
 
 pgRetentionTest(
   "PostgreSQL: retention koşumu ve purge makbuzu int4 taşması olmadan kalıcı olmalı",

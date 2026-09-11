@@ -311,7 +311,11 @@ export class MemoryRetentionService {
     });
     // The purge is durable before any file is touched; a failed unlink stays
     // visible on the receipt and is retried with backoff.
-    await cleanupPendingPurgeFiles(this.db, this.deps.vaultRoot, purgedAt);
+    const cleanup = await cleanupPendingPurgeFiles(
+      this.db,
+      this.deps.vaultRoot,
+      purgedAt,
+    );
     const receipt = await this.db
       .selectFrom("memory_purges")
       .select(["cleanup_pending"])
@@ -323,7 +327,12 @@ export class MemoryRetentionService {
       status: "purged",
       note_id: input.noteId,
       purged_at: purgedAt,
-      files_deleted: receipt.cleanup_pending === 1 ? 0 : filePaths.length,
+      // Honest count: only files actually unlinked by this pass; an already
+      // missing file must not be reported as deleted.
+      files_deleted:
+        cleanup.unlinkedByNote.get(
+          `${purgeId.tenant_id}\u0000${purgeId.space_id}\u0000${purgeId.note_id}`,
+        ) ?? 0,
       cleanup_pending: receipt.cleanup_pending === 1,
     };
   }

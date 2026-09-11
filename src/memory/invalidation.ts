@@ -76,8 +76,8 @@ export async function assertCommitTarget(
     .executeTakeFirst();
   if (note && note.deleted_at !== null)
     throw new ForgeError(
-      "memory_note_unavailable",
-      "Not silinmiş durumda; önce açık restore gerekir.",
+      "memory_note_deleted",
+      "Not arşivlenmiş/silinmiş; önce açık restore gerekir.",
       409,
     );
 }
@@ -94,9 +94,20 @@ export async function cleanupPendingPurgeFiles(
   db: Kysely<DB>,
   vaultRoot: string | undefined,
   now: number,
-): Promise<{ cleaned: number; failed: number; pending: number }> {
+): Promise<{
+  cleaned: number;
+  failed: number;
+  pending: number;
+  /** Actually unlinked files per `${tenant}\u0000${space}\u0000${note}`. */
+  unlinkedByNote: Map<string, number>;
+}> {
   if (!vaultRoot)
-    return { cleaned: 0, failed: 0, pending: await pendingPurgeCount(db) };
+    return {
+      cleaned: 0,
+      failed: 0,
+      pending: await pendingPurgeCount(db),
+      unlinkedByNote: new Map(),
+    };
   const rows = await db
     .selectFrom("memory_purges")
     .select([
@@ -113,16 +124,23 @@ export async function cleanupPendingPurgeFiles(
     .execute();
   let cleaned = 0,
     failed = 0;
+  const unlinkedByNote = new Map<string, number>();
   for (const row of rows) {
     const paths = parseFilePaths(row.file_paths_json);
     let ok = true;
+    let unlinked = 0;
     for (const path of paths) {
       try {
         await unlink(resolveVaultRelative(vaultRoot, path));
+        unlinked += 1;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") ok = false;
       }
     }
+    unlinkedByNote.set(
+      `${row.tenant_id}\u0000${row.space_id}\u0000${row.note_id}`,
+      unlinked,
+    );
     if (ok) {
       await db
         .updateTable("memory_purges")
@@ -147,7 +165,12 @@ export async function cleanupPendingPurgeFiles(
       failed += 1;
     }
   }
-  return { cleaned, failed, pending: await pendingPurgeCount(db) };
+  return {
+    cleaned,
+    failed,
+    pending: await pendingPurgeCount(db),
+    unlinkedByNote,
+  };
 }
 
 export async function pendingPurgeCount(db: Kysely<DB>): Promise<number> {
