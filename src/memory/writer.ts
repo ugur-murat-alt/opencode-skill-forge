@@ -163,7 +163,7 @@ export class VaultWriter {
       const current = await this.readRecord();
       if (!current) {
         // Corrupt/unknown lock: never auto-steal without explicit recovery.
-        if (!input.force) this.busy(null, "unreadable_lock");
+        if (!input.force) throw this.busy(null, "unreadable_lock");
         await this.steal(null);
         continue;
       }

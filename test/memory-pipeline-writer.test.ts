@@ -1,9 +1,10 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { VaultWriter, SpaceSerialQueue } from "../src/memory/writer.js";
+import { writerLockPath } from "../src/memory/paths.js";
 
 /**
  * Issue #35 (M02): one filesystem writer per vault root. Same-host liveness is
@@ -159,6 +160,34 @@ test("#35 release is owner-scoped and heartbeat by a stranger is rejected", asyn
     await writer.release("stranger");
     expect(await writer.inspect()).not.toBeNull();
     await lease.release();
+    expect(await writer.inspect()).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("#35 a corrupt lock is never stolen without explicit recovery", async () => {
+  const root = await tmpRoot();
+  try {
+    const lockPath = writerLockPath(root);
+    await writeFile(lockPath, "{invalid json", { mode: 0o600 });
+    const writer = new VaultWriter(root, {
+      pid: 777,
+      host: "host-a",
+      isPidAlive: () => false,
+    });
+    // Bozuk kilit normal akışta çalınamaz ve dosya DEĞİŞMEZ.
+    await expect(writer.acquire()).rejects.toMatchObject({
+      code: "memory_writer_busy",
+      status: 409,
+    });
+    expect(await readFile(lockPath, "utf8")).toBe("{invalid json");
+    expect(await writer.inspect()).toBeNull();
+    // Açık kurtarma ile devralınır.
+    const forced = await writer.acquire({ force: true });
+    expect((await writer.inspect())?.pid).toBe(777);
+    expect(await readFile(lockPath, "utf8")).not.toBe("{invalid json");
+    await forced.release();
     expect(await writer.inspect()).toBeNull();
   } finally {
     await rm(root, { recursive: true, force: true });

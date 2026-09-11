@@ -583,7 +583,11 @@ export class MemoryCommitService {
     } catch {
       indexed = false;
     }
-    await this.cleanupOrphanRevisions(input, noteId).catch(() => undefined);
+    await this.cleanupOrphanRevisions(input, noteId).catch(() => {
+      // Commit başarısı temizliğe bağlı değildir (bir sonraki commit
+      // yeniden dener) ama hata sessizce yutulmaz.
+      process.stderr.write("Hafıza yetim revision temizliği ertelendi\n");
+    });
     return { ...receipt, status: "committed", indexed };
   }
 
