@@ -206,7 +206,12 @@ for (const backend of [
           indexed: boolean;
           receipt: { revision: number; fileHash: string } | null;
         };
-        return payload.state === "committed" ? payload : null;
+        // #35: `indexed` ayrı ve sonraki aşamadır; yalnız `committed` görüp
+        // hemen `indexed` okumak işaret yazımıyla yarışır (yük altında
+        // gözlendi). İkisini birlikte bekle.
+        return payload.state === "committed" && payload.indexed
+          ? payload
+          : null;
       });
       expect(receipt.receipt?.revision).toBe(1);
       expect(receipt.indexed).toBe(true);
