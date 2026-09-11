@@ -26,6 +26,8 @@ import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
 import { jobScopeForSpace } from "../memory/service.js";
 import { MemoryCommitService } from "../memory/commit.js";
+import { MemoryIndexService } from "../memory/index.js";
+import { MemoryOperations } from "../memory/operations.js";
 import { MemorySourceService } from "../memory/sources.js";
 import { MEMORY_SCAN_DEFAULT_LIMIT } from "../memory/sources.js";
 import { memoryJobHandlers } from "../memory/worker.js";
@@ -91,10 +93,12 @@ export async function createHttpServer(config: LocalConfig) {
   );
   const memoryRoot = vaultRoot(config.dataDir);
   const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryIndex = new MemoryIndexService(storage.db, memoryRoot, memory);
   const memoryCommits = new MemoryCommitService({
     db: storage.db,
     vaultRoot: memoryRoot,
     service: memory,
+    index: memoryIndex,
   });
   const memorySources = new MemorySourceService({
     db: storage.db,
@@ -121,6 +125,13 @@ export async function createHttpServer(config: LocalConfig) {
       .execute();
   };
   const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
+  const memoryOperations = new MemoryOperations({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+    commits: memoryCommits,
+    queue: memoryQueue,
+  });
   const worker = new ForgeWorker(
     memoryQueue,
     productionHandler(
@@ -1640,6 +1651,68 @@ export async function createHttpServer(config: LocalConfig) {
     });
     return result;
   });
+  app.get("/api/memory/recall", async (request) => {
+    const query = z
+      .object({
+        query: z.string().min(1).max(200),
+        space_id: z.string().min(1).max(200).optional(),
+        kinds: z.string().max(200).optional(),
+        graph_depth: z.string().regex(/^\d+$/).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+        cursor: z.string().max(2048).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryOperations.recall(requestIdentity(request), {
+      query: query.query,
+      space_id: query.space_id,
+      kinds: query.kinds ? query.kinds.split(",") : undefined,
+      graph_depth:
+        query.graph_depth === undefined ? undefined : Number(query.graph_depth),
+      limit: query.limit === undefined ? undefined : Number(query.limit),
+      cursor: query.cursor,
+    });
+  });
+  app.get("/api/memory/graph", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        note_id: z.string().min(1).max(200),
+        depth: z.string().regex(/^\d+$/).optional(),
+        max_nodes: z.string().regex(/^\d+$/).optional(),
+        max_edges: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryOperations.graph(requestIdentity(request), {
+      space_id: query.space_id,
+      note_id: query.note_id,
+      depth: query.depth === undefined ? undefined : Number(query.depth),
+      max_nodes:
+        query.max_nodes === undefined ? undefined : Number(query.max_nodes),
+      max_edges:
+        query.max_edges === undefined ? undefined : Number(query.max_edges),
+    });
+  });
+  app.post("/api/memory/index/rebuild", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        after: z.string().min(1).max(200).optional(),
+        batch_size: z.number().int().min(1).max(500).optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    const report = await memoryOperations.rebuild(identity, body);
+    await memoryAudit(identity, "memory.index.rebuilt", {
+      space_id: body.space_id ?? null,
+      indexed: report.indexed,
+      skipped: report.skipped,
+      next: report.next,
+    });
+    return report;
+  });
   app.route({
     method: ["GET", "POST", "DELETE"],
     url: "/mcp",
@@ -1653,6 +1726,26 @@ export async function createHttpServer(config: LocalConfig) {
         forge,
         requestIdentity(request),
         config.profile === "server",
+        {
+          enabled: async (identity) =>
+            (await settings.effective(identity)).values.memoryEnabled,
+          recall: (identity, input) =>
+            memoryOperations.recall(identity, input as Record<string, unknown>),
+          read: (identity, input) => {
+            const args = input as {
+              space_id: string;
+              note_id: string;
+              revision?: number;
+              neighbors?: number;
+            };
+            return memoryOperations.read(identity, {
+              spaceId: args.space_id,
+              noteId: args.note_id,
+              revision: args.revision,
+              neighbors: args.neighbors,
+            });
+          },
+        },
       );
       await mcp.connect(transport);
       reply.hijack();

@@ -17,6 +17,7 @@ import {
   type MemoryRunScope,
 } from "./service.js";
 import { SpaceSerialQueue, VaultWriter, defaultIsPidAlive } from "./writer.js";
+import type { MemoryIndexService } from "./index.js";
 import {
   atomicWriteFile,
   byteSize,
@@ -99,6 +100,8 @@ export interface MemoryCommitDeps {
   vaultRoot: string;
   writer?: VaultWriter;
   service?: MemoryService;
+  /** Issue #36: derived index writer; absent in M01/M02-only compositions. */
+  index?: MemoryIndexService;
   hooks?: MemoryCommitHooks;
 }
 
@@ -514,6 +517,17 @@ export class MemoryCommitService {
               record_hash: recordHash,
               client_hash: event.content_hash,
               redacted,
+              record: {
+                kind: finalRecord.kind,
+                title: finalRecord.title,
+                summary: finalRecord.summary,
+                lifecycle: finalRecord.lifecycle,
+                pinned: finalRecord.pinned,
+                task_status: finalRecord.taskStatus,
+                verification: finalRecord.verification,
+                sources: finalRecord.sources,
+                edges: finalRecord.edges,
+              },
             }),
             sources_json: JSON.stringify(finalRecord.sources),
             base_revision: expected,
@@ -596,10 +610,43 @@ export class MemoryCommitService {
 
     await this.hooks?.afterCommitBeforeIndex?.();
     let indexed = true;
-    try {
-      await this.markIndexed(input, now);
-    } catch {
-      indexed = false;
+    if (this.deps.index) {
+      try {
+        await this.deps.index.indexRevision({
+          tenantId: input.identity.tenantId,
+          spaceId: input.spaceId,
+          noteId,
+          revision: newRevision,
+          contentHash: fileHash,
+          record: {
+            recordHash,
+            kind: finalRecord.kind,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            lifecycle: finalRecord.lifecycle,
+            pinned: finalRecord.pinned,
+            taskStatus: finalRecord.taskStatus,
+            verification: finalRecord.verification,
+            sources: finalRecord.sources,
+            edges: finalRecord.edges.map((edge) => ({
+              relation: edge.relation,
+              target: edge.target,
+            })),
+            body: finalRecord.body,
+          },
+        });
+      } catch {
+        // Commit kalıcıdır; indeks gecikmesi raporlanır ve backfill ile
+        // onarılır (indexed_at yazılmaz).
+        indexed = false;
+      }
+    }
+    if (indexed) {
+      try {
+        await this.markIndexed(input, now);
+      } catch {
+        indexed = false;
+      }
     }
     await this.cleanupOrphanRevisions(input, noteId).catch(() => {
       // Commit başarısı temizliğe bağlı değildir (bir sonraki commit
@@ -647,19 +694,33 @@ export class MemoryCommitService {
       );
     let indexed = event.indexed_at !== null;
     if (!indexed) {
-      const now = Date.now();
-      try {
-        await this.db
-          .updateTable("memory_events")
-          .set({ indexed_at: now, updated_at: now })
-          .where("tenant_id", "=", event.tenant_id)
-          .where("space_id", "=", event.space_id)
-          .where("id", "=", event.id)
-          .where("indexed_at", "is", null)
-          .execute();
-        indexed = true;
-      } catch {
-        indexed = false;
+      let canMark = true;
+      if (this.deps.index) {
+        try {
+          canMark = await this.deps.index.indexNote(
+            event.tenant_id,
+            event.space_id,
+            receipt.noteId,
+          );
+        } catch {
+          canMark = false;
+        }
+      }
+      if (canMark) {
+        const now = Date.now();
+        try {
+          await this.db
+            .updateTable("memory_events")
+            .set({ indexed_at: now, updated_at: now })
+            .where("tenant_id", "=", event.tenant_id)
+            .where("space_id", "=", event.space_id)
+            .where("id", "=", event.id)
+            .where("indexed_at", "is", null)
+            .execute();
+          indexed = true;
+        } catch {
+          indexed = false;
+        }
       }
     }
     return { ...receipt, status: "duplicate", indexed };

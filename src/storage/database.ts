@@ -31,6 +31,7 @@ import { jobMigration } from "./job-migration.js";
 import { memoryMigration } from "./memory-migration.js";
 import { memoryPipelineMigration } from "./memory-pipeline-migration.js";
 import { memoryEventNoteMigration } from "./memory-event-note-migration.js";
+import { memoryIndexMigration } from "./memory-index-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
   Kysely,
@@ -84,6 +85,7 @@ export function migrationsFor(backend: Backend): Record<string, Migration> {
     "032_memory": memoryMigration(backend),
     "033_memory_pipeline": memoryPipelineMigration,
     "034_memory_event_note": memoryEventNoteMigration,
+    "035_memory_index": memoryIndexMigration,
     "001_identity": {
       up: async (database) => {
         await database.schema

@@ -362,6 +362,9 @@ export interface DB {
   memory_events: MemoryEvent;
   memory_sources: MemorySource;
   memory_change_candidates: MemoryChangeCandidate;
+  memory_index_terms: MemoryIndexTerm;
+  memory_index_heads: MemoryIndexHead;
+  memory_index_edges: MemoryIndexEdge;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -577,4 +580,46 @@ export interface MemoryChangeCandidate {
   reason: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/** Issue #36 (M03): derived lexical index rows (one per term/field). */
+export interface MemoryIndexTerm {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  revision: number;
+  content_hash: string;
+  term: string;
+  field: "title" | "body" | "kind";
+  frequency: number;
+}
+/** One derived head per note, bound to the indexed revision/hash. */
+export interface MemoryIndexHead {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  revision: number;
+  content_hash: string;
+  record_hash: string;
+  kind: string;
+  title: string;
+  summary: string | null;
+  lifecycle: string;
+  pinned: number;
+  task_status: string | null;
+  verification: string;
+  sources_json: string;
+  edges_json: string;
+  indexed_at: number;
+}
+/** Derived typed relations from accepted revision metadata. */
+export interface MemoryIndexEdge {
+  tenant_id: string;
+  space_id: string;
+  source_note_id: string;
+  source_revision: number;
+  relation: string;
+  target_note_id: string;
+  target_revision: number | null;
+  created_at: number;
 }
