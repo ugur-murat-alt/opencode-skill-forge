@@ -18,7 +18,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { noteContentHash } from "../../../src/memory/agz/hash.js";
 import { computeSchemaFingerprint } from "../../../src/memory/agz/schema-v11.js";
@@ -84,6 +84,8 @@ export interface BuildAgzFixtureOptions {
   /** "twin": aynı proje adı farklı UUID + aynı not UUID farklı içerik. */
   variant?: "base" | "twin";
   databaseId?: string;
+  /** false: WAL günlük modunda bırakır (dondurulmamış kaynak testi). */
+  freeze?: boolean;
 }
 
 export interface BuiltAgzFixture {
@@ -168,7 +170,11 @@ export async function buildAgzFixture(
   options: BuildAgzFixtureOptions = {},
 ): Promise<BuiltAgzFixture> {
   const variant = options.variant ?? "base";
-  const databaseId = options.databaseId ?? AGZ_FIXTURE_IDS.databaseId;
+  const databaseId =
+    options.databaseId ??
+    (variant === "twin"
+      ? AGZ_FIXTURE_IDS.twinDatabaseId
+      : AGZ_FIXTURE_IDS.databaseId);
   const alpha =
     variant === "twin"
       ? AGZ_FIXTURE_IDS.projectAlphaTwin
@@ -204,9 +210,19 @@ export async function buildAgzFixture(
     insertOutbox(db, alpha);
 
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    db.exec("PRAGMA journal_mode=DELETE");
+    if (options.freeze ?? true) {
+      db.exec("PRAGMA journal_mode=DELETE");
+    }
   } finally {
     db.close();
+  }
+
+  if (!(options.freeze ?? true)) {
+    // WAL başlığını korur ama yan dosyaları kaldırır: "WAL modunda
+    // kopyalanmış, günlüğü alınmamış dosya" senaryosu. Envanter bunu
+    // başlıktan yakalayıp açmadan reddetmelidir.
+    await rm(`${path}-wal`, { force: true });
+    await rm(`${path}-shm`, { force: true });
   }
 
   const snapshot = await fileSnapshot(path);
@@ -367,9 +383,9 @@ function insertNotes(
       projectId: alpha,
       kind: "fact",
       title: "Ünicode Başlık 🧠 — ğüşiöçİı",
-      summary: "Emoji ve Türkçe karakterler",
+      summary: "Emoji ve Türkçe",
       content:
-        "İçerik: İstanbul, çağrı, 🤝, e\u0301 (birleşen aksan) ve satır sonu.\nİkinci satır.",
+        "İçerik: \u0130stanbul, \u00e7ağrı, 🤝, e\u0301 (combining).",
       sizeClass: "inline",
       pinned: false,
       status: "active",
@@ -598,9 +614,7 @@ function insertRevisions(db: WritableSqliteConnection): void {
       const kind = isHistoryNote ? "context" : note.kind;
       const contentHash = isCurrentProcedureOldRevision
         ? "1".repeat(64)
-        : note.id === AGZ_FIXTURE_IDS.noteOrphan
-          ? noteContentHash(kind, title, summary, content)
-          : note.content_hash;
+        : noteContentHash(kind, title, summary, content);
       revisions.push({
         projectId: note.project_id,
         noteId: note.id,
@@ -994,8 +1008,8 @@ function insertOutbox(db: WritableSqliteConnection, alpha: string): void {
   const unicodeHash = noteContentHash(
     "fact",
     "Ünicode Başlık 🧠 — ğüşiöçİı",
-    "Emoji ve Türkçe karakterler",
-    "İçerik: İstanbul, çağrı, 🤝, e\u0301 (birleşen aksan) ve satır sonu.\nİkinci satır.",
+    "Emoji ve Türkçe",
+    "İçerik: \u0130stanbul, \u00e7ağrı, 🤝, e\u0301 (combining).",
   );
   db.run(
     `INSERT INTO index_outbox

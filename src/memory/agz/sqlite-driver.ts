@@ -107,9 +107,9 @@ function connection(
       sql: string,
       params?: readonly SqlValue[],
     ): Row | undefined {
-      return normalizeRow(native.prepare(sql).get(...normalizeParams(params))) as
-        | Row
-        | undefined;
+      return normalizeRow(
+        native.prepare(sql).get(...normalizeParams(params)),
+      ) as Row | undefined;
     },
     exec: (sql) => native.exec(sql),
     close: () => native.close(),

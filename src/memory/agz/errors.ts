@@ -12,6 +12,7 @@ export type AgzSourceErrorCode =
   | "source_integrity_failed"
   | "source_not_found"
   | "source_path_unsafe"
+  | "source_snapshot_not_frozen"
   | "source_changed_during_scan"
   | "invalid_cursor";
 

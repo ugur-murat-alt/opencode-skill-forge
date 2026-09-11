@@ -131,9 +131,9 @@ describe("AGZ schema 11 fixture", () => {
       expect(
         db.get("SELECT COUNT(*) AS count FROM notes WHERE pinned = 1"),
       ).toEqual({ count: 2 });
-      expect(
-        db.get("SELECT COUNT(*) AS count FROM note_revisions"),
-      ).toEqual({ count: 13 });
+      expect(db.get("SELECT COUNT(*) AS count FROM note_revisions")).toEqual({
+        count: 13,
+      });
       expect(
         db.all(
           "SELECT predicate, COUNT(*) AS count FROM note_edges GROUP BY predicate ORDER BY predicate",
@@ -146,15 +146,15 @@ describe("AGZ schema 11 fixture", () => {
         { predicate: "SUPERSEDES", count: 1 },
         { predicate: "SUPPORTS", count: 2 },
       ]);
-      expect(
-        db.get("SELECT COUNT(*) AS count FROM capture_events"),
-      ).toEqual({ count: 2 });
+      expect(db.get("SELECT COUNT(*) AS count FROM capture_events")).toEqual({
+        count: 2,
+      });
       expect(db.get("SELECT COUNT(*) AS count FROM index_outbox")).toEqual({
         count: 3,
       });
-      expect(
-        db.get("SELECT COUNT(*) AS count FROM note_provenance"),
-      ).toEqual({ count: 13 });
+      expect(db.get("SELECT COUNT(*) AS count FROM note_provenance")).toEqual({
+        count: 13,
+      });
     } finally {
       db.close();
     }
@@ -170,9 +170,7 @@ describe("AGZ hash politikası", () => {
         "UUID tabanlı eşleme",
         "Proje UUID değişse de not UUID korunur.",
       ),
-    ).toBe(
-      "8c71e6721c1d7031d35046ae0051cfe82dbefbb875b2786ff627a668b7882179",
-    );
+    ).toBe("8c71e6721c1d7031d35046ae0051cfe82dbefbb875b2786ff627a668b7882179");
     expect(
       noteContentHash(
         "fact",
@@ -180,9 +178,7 @@ describe("AGZ hash politikası", () => {
         "Emoji ve Türkçe",
         "İçerik: \u0130stanbul, \u00e7ağrı, 🤝, e\u0301 (combining).",
       ),
-    ).toBe(
-      "2114876fc9079bb1f82efe3ceeeac8e921346da444b6b2d9d68ed478192052e7",
-    );
+    ).toBe("2114876fc9079bb1f82efe3ceeeac8e921346da444b6b2d9d68ed478192052e7");
     expect(noteContentHash("context", "", "", "")).toBe(
       "cc199689ffa814c37db9abd2d0b8ba40c4cda6f192776819bf4ac6999a0662a4",
     );
@@ -193,9 +189,7 @@ describe("AGZ hash politikası", () => {
         "özet",
         "satır1\nsatır2\ttab",
       ),
-    ).toBe(
-      "3bf317f5280a04a85137bd7233dfa567c6e5486ef4945501cb247c2c5e0424bd",
-    );
+    ).toBe("3bf317f5280a04a85137bd7233dfa567c6e5486ef4945501cb247c2c5e0424bd");
   });
 });
 
@@ -245,23 +239,42 @@ describe("salt-okunur kaynak erişimi", () => {
     expect(await readdir(root)).toEqual(["agz-base.db"]);
   });
 
-  test("WAL yan dosyası bulunan kopya anlık görüntü olarak doğrulanmaz", async () => {
+  test("WAL yan dosyası bulunan kopya dondurulmuş anlık görüntü olarak reddedilir", async () => {
     const copyRoot = await freshRoot("forge-agz-wal-");
     const copyPath = join(copyRoot, "copy.db");
     await copyFile(fixturePath, copyPath);
     await writeFile(`${copyPath}-wal`, "stale-wal-bytes");
-    const source = await openAgzSource(copyPath, { now: () => REPORT_NOW });
-    try {
-      expect(source.identity.file.walPresent).toBe(true);
-      const report = source.buildDryRunReport();
-      const issue = report.issues.find(
-        (item) => item.code === "wal_snapshot_unverified",
-      );
-      expect(issue).toMatchObject({ severity: "blocking" });
-      expect(report.decision.status).toBe("blocked");
-    } finally {
-      await source.close();
-    }
+    const before = await fileSnapshot(copyPath);
+    const error = await captureRejection(() =>
+      openAgzSource(copyPath, { now: () => REPORT_NOW }),
+    );
+    expect(error).toMatchObject({ code: "source_snapshot_not_frozen" });
+    expect(
+      (error as { details: Record<string, unknown> }).details,
+    ).toMatchObject({ reason: "sidecar_present" });
+    const after = await fileSnapshot(copyPath);
+    expect(after.sha256).toBe(before.sha256);
+    expect((await readdir(copyRoot)).sort()).toEqual([
+      "copy.db",
+      "copy.db-wal",
+    ]);
+  });
+
+  test("WAL günlük modundaki kaynak açılmadan reddedilir ve yan dosya üretmez", async () => {
+    const walRoot = await freshRoot("forge-agz-walmode-");
+    const walPath = join(walRoot, "wal-mode.db");
+    await buildAgzFixture(walPath, { freeze: false });
+    const before = await fileSnapshot(walPath);
+    const error = await captureRejection(() =>
+      openAgzSource(walPath, { now: () => REPORT_NOW }),
+    );
+    expect(error).toMatchObject({ code: "source_snapshot_not_frozen" });
+    expect(
+      (error as { details: Record<string, unknown> }).details,
+    ).toMatchObject({ reason: "wal_mode_source" });
+    const after = await fileSnapshot(walPath);
+    expect(after.sha256).toBe(before.sha256);
+    expect(await readdir(walRoot)).toEqual(["wal-mode.db"]);
   });
 });
 
@@ -342,10 +355,7 @@ describe("envanter sayımları ve cursor/batch taraması", () => {
     const source = await openBaseFixture();
     try {
       const notesAll = source.scanNotes({ limit: 1000 }).items;
-      const notesPaged = await collectAll(
-        (page) => source.scanNotes(page),
-        2,
-      );
+      const notesPaged = await collectAll((page) => source.scanNotes(page), 2);
       expect(notesPaged.map((note) => note.id)).toEqual(
         notesAll.map((note) => note.id),
       );
@@ -507,10 +517,7 @@ describe("dry-run raporu", () => {
     try {
       const report = source.buildDryRunReport();
       const exclusions = new Map(
-        report.exclusions.map((exclusion) => [
-          exclusion.table,
-          exclusion,
-        ]),
+        report.exclusions.map((exclusion) => [exclusion.table, exclusion]),
       );
       expect(exclusions.get("capture_events")).toMatchObject({ count: 2 });
       expect(exclusions.get("index_outbox")).toMatchObject({ count: 3 });
@@ -574,9 +581,7 @@ describe("eşleme çakışma senaryoları", () => {
       const baseReport = base.buildDryRunReport();
       const twinReport = twin.buildDryRunReport();
       expect(baseReport.source.databaseId).toBe(AGZ_FIXTURE_IDS.databaseId);
-      expect(twinReport.source.databaseId).toBe(
-        AGZ_FIXTURE_IDS.twinDatabaseId,
-      );
+      expect(twinReport.source.databaseId).toBe(AGZ_FIXTURE_IDS.twinDatabaseId);
       expect(baseReport.digest).not.toBe(twinReport.digest);
     } finally {
       await base.close();
