@@ -1,21 +1,59 @@
 # ADR: Codex ve Claude oturum hook'larında hafıza sürekliliği
 
-Durum: **Proposed — uygulanmadı.** Karar bekliyor; bu belge FAZ 1 keşif ve
-uygulama planıdır. Tarih: 2026-09-11. İlgili issue: #38 (üst plan #33).
-İnceleme tabanı: `1bda764` / dal `memory/m05-hooks`. Önkoşullar #34 (M01 alan
-sahipliği), #35 (M02 dayanıklı kayıt/teslim) ve #36 (M03 bağlam) teslim
-edilmeden bu tasarımın hiçbir maddesi üretime alınmaz. Bu ADR yazılırken
-`src/**` ve `scripts/**` değiştirilmedi; hiçbir hook, spool veya installer
-davranışı uygulanmış değildir.
+Durum: **Accepted — Faz A uygulandı; native Codex/Claude kabulü yapılmadı.**
+Bu belge uygulanan Faz A ile planlanan Faz B'yi ayrı işaretler. Tarih:
+2026-09-11. İlgili issue: #38 (üst plan #33). İnceleme tabanı: `1bda764` /
+dal `memory/m05-hooks`; uygulama `feat/memory-m03-m08` üzerine rebase edilmiş
+dalda M01/M02 sonrası yapıldı. Önkoşullar #34 (M01) ve #35 (M02) teslim
+edilmiştir; #36 (M03) bağlam enjeksiyonu Faz B'dir ve bu ADR'de plan olarak
+kalır.
 
 Kanıt sınıfları bu belgede açıkça ayrılır:
 
-| Sınıf              | Bu ADR'deki karşılığı                                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Kaynak kod         | Bu dalda okunan gerçek dosyalar; bölüm 1 ve 11'de satır aralıklarıyla anılır                                                          |
-| Resmî belge        | 11.09.2026 erişimli Codex/Claude hook sayfaları; davranış iddiaları bunlara dayanır, native test yerine geçmez                        |
-| Fixture testi      | Bu fazda yazılmadı; test matrisi (bölüm 10) hangi senaryonun fixture ile kanıtlanabileceğini işaretler                                |
-| Gerçek native test | **Yok.** Bu ortamda `codex` ve `claude` CLI kurulu değil (`command -v` boş); `~/.codex` ve `~/.claude` dizinleri test kanıtı değildir |
+| Sınıf              | Bu ADR'deki karşılığı                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kaynak kod         | Bu dalda okunan gerçek dosyalar; bölüm 1 ve 11'de satır aralıklarıyla anılır                                                                                                                                                          |
+| Resmî belge        | 11.09.2026 erişimli Codex/Claude hook sayfaları; davranış iddiaları bunlara dayanır, native test yerine geçmez                                                                                                                        |
+| Fixture testi      | Faz A'da yazıldı: `test/hook-events-contract.test.ts`, `test/hook-spool-delivery.test.ts`, `test/hook-worktree-binding.test.ts`, `test/hook-memory-off.test.ts`, `test/hook-hot-path.test.ts`, `test/installer-memory-events.test.ts` |
+| Gerçek native test | **Yok.** Bu ortamda `codex` ve `claude` CLI kurulu değil (`command -v` boş); `~/.codex` ve `~/.claude` dizinleri test kanıtı değildir                                                                                                 |
+
+## 0. Uygulama durumu (Faz A, 2026-09-11)
+
+**Uygulandı:**
+
+- `src/clients/hook-contract.ts`: istemci × olay capability tablosu, zarf
+  ayrıştırma, `[memory:off]` algılama, checkpoint içeriği, event kimliği
+  sözleşmesi. Kurulmayan olaylar `degraded`/`unsupported` işaretlidir.
+- `src/clients/hook.ts`: olay başına yönlendirme; mevcut skill handoff ve
+  statik `project_ref` bağlamı korunur; capture ayrı yoldur; guard'lar
+  (`agent_id`/`agent_type`, `stop_hook_active`, bilinmeyen olay) ve
+  `[memory:off]` tur davranışı uygulandı.
+- `src/clients/hook-spool.ts`: yerel SQLite dayanıklı spool (kabul, bounded
+  kuyruk, deterministic `event_id`, çakışma reddi, geri çekilme/terminal
+  durumlar, `memory_spool`/`memory_turn_flags`/`memory_spool_counters`,
+  M02 `/api/memory/ingest` teslimi).
+- `src/clients/hook-binding.ts` + `worktree-binding.ts`: kurulumda yazılan
+  `binding.json` sidecar'ı ve doğrulanmış `.git → gitdir → commondir` bağı.
+  Hook komutuna yeni argv eklenmedi; Codex trust'ı yeniden incelenmez.
+- `src/clients/installer.ts`: capability tabanlı olay kaydı, olay başına
+  timeout, binding sidecar'ı, kurulum/kaldırma raporunda capability listesi.
+- `src/storage/memory-spool-migration.ts` + `036_memory_spool` kaydı;
+  `/api/installations` event enum genişletmesi (yalnız bu bölüm).
+- Testler: yukarıdaki altı dosya; mevcut `installer.test.ts`,
+  `hook-session.test.ts`, `prompt-removal-boundary.test.ts` yeşil kalır.
+
+**Uygulanmadı (Faz B / #36 sonrası):**
+
+- `memory_context` ile SessionStart/resume/compact ve istek başına bağlam
+  enjeksiyonu; `offered/delivered` takibi; `[memory:off]` bayrağının bağlam
+  yolunda tüketilmesi (bayrak altyapısı hazır, enjeksiyon yok).
+- `Interrupt`, `PreCompact`, `PostCompact` gözlem kaydı ve M04 (#37) durum
+  yüzeyi entegrasyonu.
+- Native Codex/Claude kabul matrisi (bu ortamda istemci yok).
+
+Ölçülen yerel değerler (fixture, native değil): ilk capture ~1.9 sn (tek
+seferlik migration), sıcak capture ortancası ~15–20 ms, sıcak `Stop` callback
+< 1 sn. `hook-hot-path.test.ts` bunları sınırlar.
 
 ## 1. Mevcut hook sözleşmesi (koddan)
 
@@ -379,6 +417,9 @@ içerik_hash))`. Retry aynı `event_id`'yi kullanır; aynı kimlik farklı
 
 ## 9. Sonraki faz için dosya ve şema önerisi
 
+> Faz A'da uygulanan dosyalar ve şema bölüm 0'da listelenir; aşağıdaki tablo
+> Faz B ve sonrası için planı korur.
+
 | Dosya                                    | İçerik                                                                                              | Bağımlılık |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------- |
 | `src/clients/hook-contract.ts`           | Olay × istemci capability tablosu; zarf tipleri ve doğrulayıcıları; timeout önerileri               | Bağımsız   |
@@ -400,6 +441,9 @@ Not: Spool tablosu yerel SQLite'ta tutulur; server profilinde bile ana DB
 göre kesinleşir; bu ADR yalnız ihtiyacı ve sütunları önerir.
 
 ## 10. Test matrisi (#38 kabul maddeleri → senaryo)
+
+> Faz A'da koşan fixture testleri bölüm 0'dadır. `Native — yapılamaz`
+> satırları hâlâ gerçek istemci bekler; fixture sonucu native kabul sayılmaz.
 
 | #38 kabul maddesi                                                                                                      | Kanıt sınıfı (bu ortamda)                  | Senaryo / planlanan test                                                                     |
 | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------- |
