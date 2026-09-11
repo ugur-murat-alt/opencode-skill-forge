@@ -29,9 +29,9 @@ import {
  * silmesi, yazıcı kilidi yarışında temiz hata, tombstone/restore, içerik
  * sınırı ve redaksiyon politikası.
  *
- * Bilinen açık uçlar `test.failing` ile işaretlidir; çekirdek düzeltmesi
- * gelince test yeşile döner ve Bun "failing ama geçti" diye uyarır (bilinçli
- * flip sinyali).
+ * Önceki "bekleyen" uçlar (`reconstructReceipt` not kapsamı ve hayalet
+ * `working_copy_changed`) çekirdek düzeltmesiyle (`e26d46c`) kapandı; artık
+ * normal regresyon testleridir.
  */
 
 interface Env {
@@ -760,113 +760,105 @@ for (const backend of [
   }, 30000);
 }
 
-test.failing(
-  "#35 bağımsız (bekleyen): receipt_json eksikken replay aynı alandaki başka notun revizyonunu seçmemeli",
-  async () => {
-    const { env, owner, space, commits, record } = await fixture("sqlite");
-    try {
-      const textFor = (noteId: string, body: string) =>
-        contentFor(noteId, space.id, noteId, body);
-      const commitNote = async (key: string, noteId: string, body: string) => {
-        const text = textFor(noteId, body);
-        const event = await record(key, text);
-        return {
-          event,
-          receipt: await commits.commit({
-            identity: owner,
-            spaceId: space.id,
-            eventId: event.id,
-            sourceKind: "manual",
-            content: text,
-          }),
-        };
+test("#35 bağımsız: receipt_json eksikken replay aynı alandaki başka notun revizyonunu seçmemeli", async () => {
+  const { env, owner, space, commits, record } = await fixture("sqlite");
+  try {
+    const textFor = (noteId: string, body: string) =>
+      contentFor(noteId, space.id, noteId, body);
+    const commitNote = async (key: string, noteId: string, body: string) => {
+      const text = textFor(noteId, body);
+      const event = await record(key, text);
+      return {
+        event,
+        receipt: await commits.commit({
+          identity: owner,
+          spaceId: space.id,
+          eventId: event.id,
+          sourceKind: "manual",
+          content: text,
+        }),
       };
-      await commitNote("receipt-a", "note-a", "A gövdesi");
-      const b = await commitNote("receipt-b", "note-b", "B gövdesi");
-      // Onarım/legacy durumu: committed olayın receipt'i yok.
-      await env.storage.db
-        .updateTable("memory_events")
-        .set({ receipt_json: null })
-        .where("id", "=", b.event.id)
-        .execute();
-      const replay = await commits.commit({
-        identity: owner,
-        spaceId: space.id,
-        eventId: b.event.id,
-        sourceKind: "manual",
-        content: textFor("note-b", "B gövdesi"),
-      });
-      expect(replay.noteId).toBe("note-b");
-      expect(replay.filePath).toBe(b.receipt.filePath);
-    } finally {
-      await env.cleanup();
-    }
-  },
-  30000,
-);
+    };
+    await commitNote("receipt-a", "note-a", "A gövdesi");
+    const b = await commitNote("receipt-b", "note-b", "B gövdesi");
+    // Onarım/legacy durumu: committed olayın receipt'i yok.
+    await env.storage.db
+      .updateTable("memory_events")
+      .set({ receipt_json: null })
+      .where("id", "=", b.event.id)
+      .execute();
+    const replay = await commits.commit({
+      identity: owner,
+      spaceId: space.id,
+      eventId: b.event.id,
+      sourceKind: "manual",
+      content: textFor("note-b", "B gövdesi"),
+    });
+    expect(replay.noteId).toBe("note-b");
+    expect(replay.filePath).toBe(b.receipt.filePath);
+  } finally {
+    await env.cleanup();
+  }
+}, 30000);
 
-test.failing(
-  "#35 bağımsız (bekleyen): çalışma kopyası yazıldıktan sonra DB öncesi kesinti replay'i hayalet working_copy_changed üretmemeli",
-  async () => {
-    const { env, owner, space, commits, record } = await fixture("sqlite");
-    try {
-      const v1 = contentFor("ghost-note", space.id, "Ghost 1", "Temel.");
-      const e1 = await record("ghost-e1", v1);
-      await commits.commit({
-        identity: owner,
-        spaceId: space.id,
-        eventId: e1.id,
-        sourceKind: "manual",
-        content: v1,
-      });
-      const v2 = contentFor("ghost-note", space.id, "Ghost 2", "Kesinti.");
-      const e2 = await record("ghost-e2", v2);
-      await commits.commit({
-        identity: owner,
-        spaceId: space.id,
-        eventId: e2.id,
-        sourceKind: "manual",
-        content: v2,
-        baseRevision: 1,
-      });
-      // Kesinti simülasyonu: rev2 dosyası ve çalışma kopyası diskte, DB rev1.
-      await env.storage.db
-        .deleteFrom("memory_note_revisions")
-        .where("revision", "=", 2)
-        .execute();
-      await env.storage.db
-        .updateTable("memory_notes")
-        .set({ current_revision: 1 })
-        .where("id", "=", "ghost-note")
-        .execute();
-      await env.storage.db
-        .updateTable("memory_events")
-        .set({
-          state: "pending",
-          committed_revision: null,
-          receipt_json: null,
-          indexed_at: null,
-        })
-        .where("id", "=", e2.id)
-        .execute();
-      const replay = await commits.commit({
-        identity: owner,
-        spaceId: space.id,
-        eventId: e2.id,
-        sourceKind: "manual",
-        content: v2,
-        baseRevision: 1,
-      });
-      expect(replay.revision).toBe(2);
-      const ghost = await env.storage.db
-        .selectFrom("memory_change_candidates")
-        .select(["id"])
-        .where("reason", "=", "working_copy_changed")
-        .execute();
-      expect(ghost).toEqual([]);
-    } finally {
-      await env.cleanup();
-    }
-  },
-  30000,
-);
+test("#35 bağımsız: çalışma kopyası yazıldıktan sonra DB öncesi kesinti replay'i hayalet working_copy_changed üretmemeli", async () => {
+  const { env, owner, space, commits, record } = await fixture("sqlite");
+  try {
+    const v1 = contentFor("ghost-note", space.id, "Ghost 1", "Temel.");
+    const e1 = await record("ghost-e1", v1);
+    await commits.commit({
+      identity: owner,
+      spaceId: space.id,
+      eventId: e1.id,
+      sourceKind: "manual",
+      content: v1,
+    });
+    const v2 = contentFor("ghost-note", space.id, "Ghost 2", "Kesinti.");
+    const e2 = await record("ghost-e2", v2);
+    await commits.commit({
+      identity: owner,
+      spaceId: space.id,
+      eventId: e2.id,
+      sourceKind: "manual",
+      content: v2,
+      baseRevision: 1,
+    });
+    // Kesinti simülasyonu: rev2 dosyası ve çalışma kopyası diskte, DB rev1.
+    await env.storage.db
+      .deleteFrom("memory_note_revisions")
+      .where("revision", "=", 2)
+      .execute();
+    await env.storage.db
+      .updateTable("memory_notes")
+      .set({ current_revision: 1 })
+      .where("id", "=", "ghost-note")
+      .execute();
+    await env.storage.db
+      .updateTable("memory_events")
+      .set({
+        state: "pending",
+        committed_revision: null,
+        receipt_json: null,
+        indexed_at: null,
+      })
+      .where("id", "=", e2.id)
+      .execute();
+    const replay = await commits.commit({
+      identity: owner,
+      spaceId: space.id,
+      eventId: e2.id,
+      sourceKind: "manual",
+      content: v2,
+      baseRevision: 1,
+    });
+    expect(replay.revision).toBe(2);
+    const ghost = await env.storage.db
+      .selectFrom("memory_change_candidates")
+      .select(["id"])
+      .where("reason", "=", "working_copy_changed")
+      .execute();
+    expect(ghost).toEqual([]);
+  } finally {
+    await env.cleanup();
+  }
+}, 30000);

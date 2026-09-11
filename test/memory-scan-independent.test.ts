@@ -32,8 +32,8 @@ import { noteWorkingPath, vaultRoot } from "../src/memory/paths.js";
  * - Tombstone: silinen not yeniden taramayla dirilmez; açık restore sonrası
  *   dış değişiklik aday olur.
  *
- * Silinen kaynak kökü şu an ham ENOENT ile düşüyor; bu açık uç `test.failing`
- * ile işaretlidir (kaynak durumu raporlanmalı).
+ * Silinen kaynak kökü çekirdek düzeltmesiyle (`e26d46c`) ham ENOENT yerine
+ * kaynak durumu (`missing`) raporlar; test normal regresyondur.
  */
 
 interface Env {
@@ -527,27 +527,23 @@ test("#35 bağımsız: readStableText yarım yazımı ya yakalar ya da kararlı 
   }
 }, 60000);
 
-test.failing(
-  "#35 bağımsız (bekleyen): silinen kaynak kökü scan'i ham ENOENT ile düşürmemeli",
-  async () => {
-    const { env, owner, space, sources } = await fixture("sqlite");
-    const sourceRoot = await mkdtemp(join(tmpdir(), "forge-m02-scan-gone-"));
-    try {
-      await writeFile(join(sourceRoot, "a.md"), "içerik");
-      const source = await sources.registerSource(owner, {
-        spaceId: space.id,
-        rootPath: sourceRoot,
-        mode: "read_only",
-      });
-      await rm(sourceRoot, { recursive: true, force: true });
-      const report = await sources.scan(owner, {
-        sourceId: source.id,
-        limit: 50,
-      });
-      expect(typeof report.scanned).toBe("number");
-    } finally {
-      await env.cleanup();
-    }
-  },
-  30000,
-);
+test("#35 bağımsız: silinen kaynak kökü scan'i ham ENOENT ile düşürmemeli", async () => {
+  const { env, owner, space, sources } = await fixture("sqlite");
+  const sourceRoot = await mkdtemp(join(tmpdir(), "forge-m02-scan-gone-"));
+  try {
+    await writeFile(join(sourceRoot, "a.md"), "içerik");
+    const source = await sources.registerSource(owner, {
+      spaceId: space.id,
+      rootPath: sourceRoot,
+      mode: "read_only",
+    });
+    await rm(sourceRoot, { recursive: true, force: true });
+    const report = await sources.scan(owner, {
+      sourceId: source.id,
+      limit: 50,
+    });
+    expect(typeof report.scanned).toBe("number");
+  } finally {
+    await env.cleanup();
+  }
+}, 30000);

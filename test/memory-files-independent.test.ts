@@ -31,9 +31,9 @@ import {
  * Pozitifler: atomik yazım geçici dosya bırakmaz, aynı revision yolu farklı
  * içerikle ezilmez, safeJoin kök dışına çıkmaz.
  *
- * Açık uç (`test.failing`): vault içindeki bir ara dizin symlink'e
- * çevrildiğinde `publishRevisionFile` dosyayı vault kökünün dışına yazar;
- * yazma yolu symlink ara dizinleri reddetmiyor (okuma/tarama reddediyor).
+ * Kapalı uç (çekirdek düzeltmesi `e26d46c`): vault içindeki bir ara dizin
+ * symlink'e çevrilirse yazma yolu `memory_path_escape` ile reddeder; vault
+ * kökü dışına hiçbir dosya yazılmaz ve mevcut hedef symlink kabul edilmez.
  */
 
 async function rejection(
@@ -113,39 +113,35 @@ test("#35 bağımsız: safeJoin kök dışına çıkmaz", () => {
   expect(writerLockPath(root)).toBe(join(root, ".writer.lock"));
 });
 
-test.failing(
-  "#35 bağımsız (bekleyen): symlink'li ara dizin üzerinden vault dışına yazılmamalı",
-  async () => {
-    const vault = await mkdtemp(join(tmpdir(), "forge-m02-files-sym-"));
-    const outside = await mkdtemp(join(tmpdir(), "forge-m02-files-out-"));
+test("#35 bağımsız: symlink'li ara dizin üzerinden vault dışına yazılmamalı", async () => {
+  const vault = await mkdtemp(join(tmpdir(), "forge-m02-files-sym-"));
+  const outside = await mkdtemp(join(tmpdir(), "forge-m02-files-out-"));
+  try {
+    const spaceId = "space-1";
+    const noteId = "note-1";
+    const content = "---\nformat_version: 1\n---\nGövde.\n";
+    const hash = sha256Hex(content);
+    await mkdir(spaceRoot(vault, spaceId), { recursive: true });
+    await mkdir(join(spaceRoot(vault, spaceId), "revisions"), {
+      recursive: true,
+    });
+    await symlink(outside, revisionDir(vault, spaceId, noteId));
+    let threw = false;
     try {
-      const spaceId = "space-1";
-      const noteId = "note-1";
-      const content = "---\nformat_version: 1\n---\nGövde.\n";
-      const hash = sha256Hex(content);
-      await mkdir(spaceRoot(vault, spaceId), { recursive: true });
-      await mkdir(join(spaceRoot(vault, spaceId), "revisions"), {
-        recursive: true,
-      });
-      await symlink(outside, revisionDir(vault, spaceId, noteId));
-      let threw = false;
-      try {
-        await publishRevisionFile(vault, spaceId, noteId, 1, hash, content);
-      } catch {
-        threw = true;
-      }
-      const outsideEntries = await readdir(outside);
-      // Yazım ya reddedilmeli ya da vault dışına dosya bırakmamalı.
-      expect(threw || outsideEntries.length === 0).toBe(true);
-      // Dosyanın beklenen vault yolu gerçekten symlink olmayan bir dizin
-      // olmalı; aksi halde okuma tarafı da yolu çözemez.
-      expect(revisionPath(vault, spaceId, noteId, 1, hash)).toContain(
-        "revisions",
-      );
-    } finally {
-      await rm(vault, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await publishRevisionFile(vault, spaceId, noteId, 1, hash, content);
+    } catch {
+      threw = true;
     }
-  },
-  15000,
-);
+    const outsideEntries = await readdir(outside);
+    // Yazım ya reddedilmeli ya da vault dışına dosya bırakmamalı.
+    expect(threw || outsideEntries.length === 0).toBe(true);
+    // Dosyanın beklenen vault yolu gerçekten symlink olmayan bir dizin
+    // olmalı; aksi halde okuma tarafı da yolu çözemez.
+    expect(revisionPath(vault, spaceId, noteId, 1, hash)).toContain(
+      "revisions",
+    );
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}, 15000);
