@@ -51,6 +51,11 @@ Kanıt sınıfları bu belgede açıkça ayrılır:
   yüzeyi entegrasyonu.
 - Native Codex/Claude kabul matrisi (bu ortamda istemci yok).
 
+**Bilinen bağımlılık:** Teslim, proje için açılmış bir `kind=project`
+memory_space bekler; yoksa satır `pending` kalır (`space_unavailable`) ve
+yanlış alana yazılmaz. Alanı açmak M02 `ensureSpace`'in HTTP yüzeyi, M03/M07
+veya arayüz işidir; M05 klasör adından alan açmaz.
+
 Ölçülen yerel değerler (fixture, native değil): ilk capture ~1.9 sn (tek
 seferlik migration), sıcak capture ortancası ~15–20 ms, sıcak `Stop` callback
 < 1 sn. `hook-hot-path.test.ts` bunları sınırlar.

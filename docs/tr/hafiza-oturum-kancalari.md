@@ -94,6 +94,10 @@ gösterir.
 
 ## Çevrimdışı ve sınırlar
 
+- Proje hafıza alanı (`memory_spaces.kind = project`) M01/M02/M07 veya arayüz
+  tarafından açılır; klasör adından alan açılmaz. Alan yoksa checkpoint
+  `pending` kalır ve `space_unavailable` olarak işaretlenir; yanlış alana
+  yazılmaz. Alan açıldığında sonraki teslim denemesi satırı iletir.
 - Spool yereldir ve `dataDir/local.sqlite` içindedir (server profilinde bile);
   ana hafıza kaydı değildir. Pending satırlar silinmez; terminal satırlar
   saklanır (içerik temizlenir) ve 30 gün sonra budanır.
