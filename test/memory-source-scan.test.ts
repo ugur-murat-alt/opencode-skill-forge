@@ -312,6 +312,67 @@ for (const backend of [
     }
   }, 30_000);
 
+  test(`#35 a renamed note_id stays visible as missing+conflict, never silently moved (${backend})`, async () => {
+    const { env, owner, space, sources } = await fixture(backend);
+    const sourceRoot = await mkdtemp(join(tmpdir(), "forge-source-rename-"));
+    try {
+      const content = [
+        "---",
+        "format_version: 1",
+        'note_id: "rename-id"',
+        `memory_space_id: ${JSON.stringify(space.id)}`,
+        "kind: note",
+        'title: "Taşınan not"',
+        "---",
+        "",
+        "Aynı içerik.",
+        "",
+      ].join("\n");
+      await writeFile(join(sourceRoot, "eski.md"), content);
+      const source = await sources.registerSource(owner, {
+        spaceId: space.id,
+        rootPath: sourceRoot,
+        mode: "managed",
+      });
+      await bindNote(env.storage, owner, space.id, {
+        noteId: "rename-id",
+        sourceId: source.id,
+        path: "eski.md",
+        hash: sha256Hex(content),
+        revision: 1,
+      });
+      // Yeniden adlandırma: yeni dosya yeni yol, kimlik frontmatter'da.
+      const { rename } = await import("node:fs/promises");
+      await rename(join(sourceRoot, "eski.md"), join(sourceRoot, "yeni.md"));
+      const reports = await drain(sources, owner, source.id, 50);
+      expect(reports.at(-1)!.done).toBe(true);
+      const note = await env.storage.db
+        .selectFrom("memory_notes")
+        .selectAll()
+        .where("id", "=", "rename-id")
+        .executeTakeFirstOrThrow();
+      expect(note.source_state).toBe("missing");
+      expect(note.deleted_at).toBeNull();
+      const rows = await env.storage.db
+        .selectFrom("memory_change_candidates")
+        .selectAll()
+        .execute();
+      const byPath = new Map(rows.map((row) => [row.path, row]));
+      expect(byPath.get("eski.md")).toMatchObject({
+        state: "candidate",
+        reason: "source_missing",
+      });
+      expect(byPath.get("yeni.md")).toMatchObject({
+        state: "conflict",
+        reason: "duplicate_note_id",
+        note_id: "rename-id",
+      });
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await env.cleanup();
+    }
+  }, 30_000);
+
   test(`#35 duplicate note_id, case conflict, symlink and large file stay visible (${backend})`, async () => {
     const { env, owner, space, sources } = await fixture(backend);
     const sourceRoot = await mkdtemp(join(tmpdir(), "forge-source-edge-"));
