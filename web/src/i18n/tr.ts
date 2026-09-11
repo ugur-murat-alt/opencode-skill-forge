@@ -184,6 +184,8 @@ export const tr = {
   },
   errors: {
     aborted: "İş iptal edildi.",
+    agz_hostile_note_id:
+      "Kaynak not kimliği güvenli kalıba uymuyor; taşınmadı.",
     agz_manifest_blocked:
       "Bloklayıcı sorunları olan AGZ manifesti uygulanamaz.",
     agz_receipt_invalid: "AGZ import receipt kaydı bozuk.",

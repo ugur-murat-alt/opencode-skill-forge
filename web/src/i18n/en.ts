@@ -187,6 +187,8 @@ export const en: typeof tr = {
   },
   errors: {
     aborted: "The job was aborted.",
+    agz_hostile_note_id:
+      "The source note identity does not match the safe pattern; it was not imported.",
     agz_manifest_blocked:
       "An AGZ manifest with blocking issues cannot be applied.",
     agz_receipt_invalid: "The AGZ import receipt record is corrupt.",

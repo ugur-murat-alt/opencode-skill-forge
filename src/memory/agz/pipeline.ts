@@ -29,7 +29,9 @@ import {
   agzManifestJson,
   agzStageDir,
   computeAgzStageDigest,
+  isSafeAgzNoteId,
   parseAgzManifestJson,
+  verifyAgzManifest,
   type AgzImportManifest,
   type AgzImportPlan,
 } from "./manifest.js";
@@ -234,6 +236,42 @@ export async function stageAgzImport(
         blockingIssues: plan.manifest.decision.blockingIssues,
       },
     );
+  // Hiçbir yazımdan önce: şema kapısı + hostile kimlik kapısı. Stage yolu
+  // ham kimliğe güvenmez; güvenli olmayan kimlik hiçbir koşulda diske
+  // yazılmaz.
+  verifyAgzManifest(plan.manifest);
+  for (const note of plan.manifest.notes)
+    if (note.status === "ready" && !isSafeAgzNoteId(note.sourceNoteId))
+      throw new ForgeError(
+        "agz_hostile_note_id",
+        "Kaynak not kimliği güvenli kalıba uymuyor; stage yazılmadı.",
+        422,
+        undefined,
+        { sourceNoteId: note.sourceNoteId },
+      );
+  for (const document of plan.documents) {
+    if (!isSafeAgzNoteId(document.sourceNoteId))
+      throw new ForgeError(
+        "agz_hostile_note_id",
+        "Stage dokümanı güvenli olmayan not kimliği taşıyor; stage yazılmadı.",
+        422,
+        undefined,
+        { sourceNoteId: document.sourceNoteId },
+      );
+    const expected = agzDocumentRelativePath(
+      document.sourceNoteId,
+      document.sourceRevision,
+      document.sha256,
+    );
+    if (document.relativePath !== expected)
+      throw new ForgeError(
+        "agz_stage_integrity",
+        "Stage doküman yolu manifest ile uyuşmuyor; stage yazılmadı.",
+        409,
+        undefined,
+        { relativePath: document.relativePath },
+      );
+  }
   const stageDir = agzStageDir(input.vaultRoot, plan.manifest);
   const manifestJson = agzManifestJson(plan.manifest);
   const manifestDigest = sha256Hex(manifestJson);
@@ -605,6 +643,7 @@ export async function applyAgzImport(
     );
   } else if (
     receipt.manifestDigest !== stage.manifestDigest ||
+    receipt.stageDigest !== stage.stageDigest ||
     receipt.databaseId !== manifest.source.databaseId
   ) {
     throw new ForgeError(
@@ -663,6 +702,18 @@ export async function applyAgzImport(
       note.targetNoteId,
     );
     let itemFailure: { status: AgzApplyItemStatus; code: string } | null = null;
+    // Tombstone kapısı: arşivlenmiş hedef, committed olay replay'inde bile
+    // sessiz "duplicate başarı" üretmez ve otomatik diriltilmez.
+    const target = await options.service.db
+      .selectFrom("memory_notes")
+      .select(["deleted_at"])
+      .where("tenant_id", "=", options.identity.tenantId)
+      .where("space_id", "=", item.memorySpaceId)
+      .where("id", "=", note.targetNoteId)
+      .executeTakeFirst();
+    if (target && target.deleted_at !== null)
+      itemFailure = { status: "conflict", code: "memory_note_deleted" };
+    if (itemFailure) expected = null;
     for (const revision of item.revisions) {
       if (itemFailure) {
         revision.status = itemFailure.status;
@@ -799,6 +850,16 @@ export async function rollbackAgzImport(
       "agz_receipt_missing",
       "Rollback için import receipt gerekir.",
       404,
+    );
+  if (
+    receipt.manifestDigest !== stage.manifestDigest ||
+    receipt.stageDigest !== stage.stageDigest ||
+    receipt.databaseId !== manifest.source.databaseId
+  )
+    throw new ForgeError(
+      "agz_stage_conflict",
+      "Receipt başka bir manifest/stage'e ait; rollback reddedildi.",
+      409,
     );
 
   const counters = {

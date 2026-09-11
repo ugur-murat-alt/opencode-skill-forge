@@ -223,6 +223,15 @@ bölünmez; bölünme gerekiyorsa ayrı manifest ve ayrı karar gerekir.
 3. Aynı başlıklı farklı UUID'li notlar birleştirilmez. Aynı kelimelere
    sahip farklı kararlar LLM ile otomatik birleştirilmez; geçiş model
    çağırmaz.
+4. **Hostile kimlik savunması:** Import edilebilir not kimliği
+   `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` kalıbına uymalıdır. `..`, `/`, `\`,
+   NUL, mutlak yol veya 64 karakterden uzun kimlik taşıyan not
+   `agz_hostile_note_id` (blocking) ile karantinaya alınır; hash'i bile
+   taşınmaz. Stage dosya yolu ham kimlikten türetilmez: güvenli kimlik
+   okunur kalır (`documents/<noteId>/...`), güvensiz kimlik yalnız
+   `documents/x-<sha256[0:32]>/...` dizinine eşlenir. `stageAgzImport`
+   şema ve kimlik kapısını **hiçbir dosya yazmadan önce** uygular; hiçbir
+   koşulda `documents/` dışında dosya/dizin oluşmaz.
 
 ### 5.4 Revision ve hash eşlemesi
 
@@ -417,7 +426,8 @@ kaynak sessizce değişmişse hiçbir yeni revision üretilmez.
 ```text
 manifest.json          # dondurulmuş manifest (içeriksiz)
 stage.json             # {manifestDigest, stageDigest, documentCount, bytes}
-documents/<noteId>/<sourceRevision>-<documentSha256>.md
+documents/<noteId>/<sourceRevision>-<documentSha256>.md   # güvenli kimlik
+documents/x-<sha256[0:32]>/...                            # güvensiz kimlik kaçışı
 receipt.json           # apply/rollback sonrası oluşur (aşağıda)
 ```
 
@@ -426,6 +436,30 @@ ve `manifestDigest = sha256(manifest.json baytları)`'dır. Apply, her doküman
 dosyasının hash'ini manifest ile ve `stage.json`'daki digest'leri yeniden
 hesaplar; uyuşmazlık `agz_stage_integrity` ile reddedilir ve hedefe hiçbir
 şey yazılmaz. Bloklayıcı manifest stage edilemez (`agz_manifest_blocked`).
+Stage yazımı ayrıca manifest şemasını ve not kimliği kalıbını doğrular;
+uyuşmazlık `agz_hostile_note_id`/`invalid_agz_manifest` ile, yazımdan önce
+reddedilir. Kalıcı receipt `manifestDigest` + `stageDigest` + `databaseId`
+üçlüsüne bağlıdır; apply ve rollback bu bağı yeniden doğrular, kopuksa
+`agz_stage_conflict` (fail-closed) döner.
+
+### 6.3 Operatör kuralları
+
+- **Organizasyon eşlemesi idempotent değildir.** `ensureAgzTargetSpace`
+  organizasyon türünde her çağrıda yeni bir alan açar (M01: organizasyon
+  adı kimlik değildir). Çağıran eşlemeyi kalıcı saklamalı ve yeniden
+  çalıştırmada aynı `mapping`/`memorySpaceId` ile devam etmelidir; aksi
+  hâlde aynı kaynak ikinci bir alana aktarılır. Kişisel alan kullanıcı
+  başına tek, proje alanı proje başına tektir; organizasyon alanı adı
+  serbest etikettir.
+- **Snapshot başına tek stage dizini.** Dizin anahtarı
+  `imports/<databaseId>/<fileSha256>`'dır. Hedef durumu değişince üretilen
+  yeni manifest farklı `manifestDigest` taşır; eski receipt ile
+  uzlaşmadığı için apply/rollback `agz_stage_conflict` (fail-closed)
+  verir. Operatör çözümü: eski receipt'i arşivleyip stage dizinini
+  kaldırmak/yeniden adlandırmak ve yeni planı temiz dizine stage etmek
+  ya da yeni bir dondurulmuş snapshot (yeni `fileSha256`) almak. Eski
+  receipt asla yeni manifeste işaret ettirilmez; plan sessizce
+  ezilmez.
 
 ## 7. Apply, receipt ve kısmi hata (uygulandı)
 
@@ -447,7 +481,13 @@ hesaplar; uyuşmazlık `agz_stage_integrity` ile reddedilir ve hedefe hiçbir
    ile izlenir.
 5. **Tekrar import:** İkinci aynı stage yeni not/revision/olay üretmez;
    M02 replay yolu duplicate döner ve eksik index işareti tamamlanır.
-   Rapor `already_applied` olur (`revisions.applied = 0`).
+   Rapor `already_applied` olur (`revisions.applied = 0`). **Rollback
+   sonrası** bu garantinin anlamı değişir: tombstoned hedefler için replay
+   sessiz "duplicate başarı" üretmez. `commitLocked` tombstone kontrolünü
+   committed replay'den **önce** yapar (`memory_note_deleted`, 409) ve
+   import hattı bu durumu öğe bazında `conflict` olarak sayar; rapor
+   `partial` olur, hiçbir not otomatik diriltilmez (açık restore ayrı
+   yoldur).
 6. **Crash ve devam:** Dosya sonrası/DB öncesi kesinti M02 orphan-benimseme
    kuralıyla; DB sonrası kesinti replay ile kapanır. Import düzeyinde
    `hooks.afterItem` ile simüle edilen çökmede receipt son committed öğeye
@@ -486,6 +526,9 @@ try {
 
 ## 8. Rollback (uygulandı)
 
+- **Receipt bağı:** Rollback, receipt'in `manifestDigest` + `stageDigest` +
+  `databaseId` üçlüsünü stage ile karşılaştırır; kopuklukta
+  `agz_stage_conflict` ile reddeder ve hiçbir notu geri almaz.
 - Rollback yalnız bu receipt'in uyguladığı ve **hâlâ aynı kabul edilmiş
   revision'da duran** hedeflere uygulanır: `current_revision` receipt'teki
   son hedef revision'a eşit, revision `content_hash` receipt `fileHash`'ine
@@ -577,10 +620,14 @@ Cutover bu belgenin otomatik yetkisi değildir; M07 kodu yazıldı diye
   - `src/memory/agz/documents.ts` — AGZ → M01 Markdown dönüşümü,
   - `src/memory/agz/pipeline.ts` — stage/apply/receipt/rollback,
   - `src/memory/agz/shadow.ts` — eski/yeni karşılaştırma,
-  - `test/agz-import-pipeline.test.ts` — FAZ 2 kabul testleri.
+  - `test/agz-import-pipeline.test.ts` — FAZ 2 kabul testleri,
+  - `test/agz-import-guards.test.ts` — hostile kimlik, rollback replay ve
+    receipt bağı regresyonları.
 - FAZ 2 doğrulaması: `bun test test/agz-import-pipeline.test.ts` (13 test),
-  `bun test test/agz-inventory.test.ts` (18 test), hafıza + sınır süiti
-  (130 test), `bun run typecheck`, `bun run lint`.
+  `bun test test/agz-import-guards.test.ts` (7 test),
+  `bun test test/agz-inventory.test.ts` (18 test),
+  hafıza + sınır + i18n süiti (148 test), `bun run typecheck`,
+  `bun run lint`.
 
 ## 13. Terimler
 

@@ -283,7 +283,6 @@ export class MemoryCommitService {
     const current = await this.loadEvent(input);
     if (!current)
       throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
-    if (current.state === "committed") return this.completeReplay(current);
     if (current.state === "rejected")
       throw new ForgeError("memory_event_rejected", "Olay reddedilmiş.", 409);
 
@@ -294,12 +293,17 @@ export class MemoryCommitService {
       .where("space_id", "=", input.spaceId)
       .where("id", "=", noteId)
       .executeTakeFirst();
+    // Tombstone kontrolü replay'den ÖNCE: arşivlenmiş/silinmiş not committed
+    // olayın yeniden oynatılmasında bile sessiz başarı üretmez ve otomatik
+    // diriltilmez; açık restore yolu ayrıdır.
     if (note?.deleted_at)
       throw new ForgeError(
         "memory_note_deleted",
         "Not arşivlenmiş/silinmiş; önce açık restore gerekir.",
         409,
       );
+    if (current.state === "committed") return this.completeReplay(current);
+
     let expected: number | null;
     if (note) {
       if (input.baseRevision === undefined || input.baseRevision === null)

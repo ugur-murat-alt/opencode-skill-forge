@@ -11,6 +11,7 @@
  * kullanılır ve manifestte `remapped` olarak raporlanır.
  */
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Kysely } from "kysely";
 import type { Identity } from "../../application/identity.js";
@@ -52,6 +53,29 @@ const AGZ_PREDICATES = [
 ] as const;
 const MAX_MANIFEST_EDGES = 200;
 const SCAN_BATCH = 500;
+/**
+ * Import edilebilir not kimlikleri için katı sözleşme: harf/rakam ile
+ * başlar, yalnız harf/rakam/alt çizgi/tire taşır. `..`, `/`, `\`, NUL,
+ * mutlak yol ve çok uzun kimlikler reddedilir; stage yolu ham kimliğe
+ * güvenmez (aşağıdaki hash tabanlı kaçış).
+ */
+export const AGZ_SAFE_NOTE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+export function isSafeAgzNoteId(noteId: string): boolean {
+  return AGZ_SAFE_NOTE_ID.test(noteId);
+}
+
+/** `agz:<databaseId>:` öneki; sahiplik karşılaştırması literal yapılır. */
+export function agzSourceEventPrefix(databaseId: string): string {
+  return `agz:${databaseId}:`;
+}
+
+export function isAgzOwnedSourceKey(
+  sourceEventKey: string,
+  databaseId: string,
+): boolean {
+  return sourceEventKey.startsWith(agzSourceEventPrefix(databaseId));
+}
 
 export type AgzManifestDecisionStatus = "ready" | "partial" | "blocked";
 
@@ -392,12 +416,21 @@ export function agzStageDir(
   );
 }
 
+/**
+ * Stage içi göreli dosya yolu. Güvenli kimlik okunur kalır; güvenli
+ * olmayan kimlik ham hâliyle yola gömülmez, SHA-256 tabanlı sabit bir
+ * dizin adına eşlenir. Böylece `..`, `/`, `\`, NUL veya mutlak yol
+ * içeren bir kimlik hiçbir koşulda `documents/` dışına çıkamaz.
+ */
 export function agzDocumentRelativePath(
   sourceNoteId: string,
   sourceRevision: number,
   documentSha256: string,
 ): string {
-  return `documents/${sourceNoteId}/${sourceRevision}-${documentSha256}.md`;
+  const segment = isSafeAgzNoteId(sourceNoteId)
+    ? sourceNoteId
+    : `x-${createHash("sha256").update(sourceNoteId, "utf8").digest("hex").slice(0, 32)}`;
+  return `documents/${segment}/${sourceRevision}-${documentSha256}.md`;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,17 +588,19 @@ async function targetNoteState(
     .where("id", "=", noteId)
     .executeTakeFirst();
   if (!note) return { exists: false, owned: false, deleted: false };
-  const event = await db
+  // LIKE yerine literal önek: `%`/`_` içeren databaseId aşırı eşleşemez.
+  const events = await db
     .selectFrom("memory_events")
-    .select(["id"])
+    .select(["source_event_key"])
     .where("tenant_id", "=", mapping.target.tenantId)
     .where("space_id", "=", mapping.target.memorySpaceId)
     .where("note_id", "=", noteId)
-    .where("source_event_key", "like", `agz:${databaseId}:%`)
-    .executeTakeFirst();
+    .execute();
   return {
     exists: true,
-    owned: Boolean(event),
+    owned: events.some((event) =>
+      isAgzOwnedSourceKey(event.source_event_key, databaseId),
+    ),
     deleted: note.deleted_at !== null,
   };
 }
@@ -715,6 +750,15 @@ export async function planAgzImport(
 
   for (const note of sortedNotes) {
     const issues: AgzManifestIssue[] = [];
+    if (!isSafeAgzNoteId(note.id))
+      issues.push(
+        issue(
+          "agz_hostile_note_id",
+          "blocking",
+          "Kaynak not kimliği güvenli kalıba uymuyor; hash'i bile taşınmaz.",
+          { sourceProjectId: note.projectId, sourceNoteId: note.id },
+        ),
+      );
     const mapping = mappingByProject.get(note.projectId) ?? null;
     if (!mapping) {
       issues.push(
