@@ -1860,3 +1860,16 @@ Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türeti
 - **Doğrulama turları:** M01/M02/M07 bağımsız paketleri yeşil; entegrasyon turu 6 yeni
   bağımsız dosya (63/63) ve 4 defekt bulgusu (düzeltildi); final ret (M06-B + M08 + ölçüm)
   sürüyor. Nihai kapı: tam takım + tarayıcı kabulü + paket + PR CI.
+
+#### Final doğrulama ve entegrasyon PR'ı (2026-09-11)
+- Doğrulanan HEAD `171b3ed` (dal `feat/memory-m03-m08`, 46 commit): tam takım taze PG DB'de
+  **923 test / 911 pass / 12 ortamsal**; bağımsız paketler **76/76** (PG); çekirdek hafıza
+  süiti **165/165** (PG); gerçek tarayıcı kabulü **207/207** + `--verify` + kasıtlı hata
+  kapısı kırmızı; `npm pack` 49 dosya / 937.8 kB.
+- Ölçüm (donmuş eşikler): recall@8 0.964, kaynak 1.0, stale 0, kapsam sızıntısı 0,
+  çekimserlik 1.0, görev 1.0, poison 0; başlangıç/recall token 978/694 (tahmin);
+  p95 60 ms / 16 örnek → not-measured. Auto-write: 2/2 uygun yazıldı, 0/6 uygunsuz,
+  allowlist ihlali 0 (sample-limited).
+- Açık maddeler dürüstçe ayrıldı: native Codex/Claude matrisi, canlı model ölçümü,
+  gerçek PG restore provası, #37 10k UI ölçümü ve retention otomatik silme yürütücüsü.
+  Bu nedenle yalnız kanıtı tamamlanan issue'lar PR birleşmesiyle kapatılır.
