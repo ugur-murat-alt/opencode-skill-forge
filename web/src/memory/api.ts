@@ -344,23 +344,29 @@ export interface MemoryContextPackage {
   envelope: {
     version: number;
     generated_at: number;
-    session_key: string | null;
-    generation: number | null;
-    branch: string | null;
-    worktree: string | null;
+    session_key?: string | null;
+    generation?: number | null;
+    branch?: string | null;
+    worktree?: string | null;
     package_hash: string;
     token_estimator: string;
+    budget?: {
+      max_tokens: number;
+      used_tokens_estimate: number;
+      byte_limit: number;
+    };
   };
   cards: MemoryContextCard[];
-  sections: {
-    active_tasks: string[];
-    blockers: string[];
-    recent_decisions: string[];
-    pins: string[];
-    continuation: string | null;
+  /** Empty sections and envelope fields are omitted by the compiler. */
+  sections?: {
+    active_tasks?: string[];
+    blockers?: string[];
+    recent_decisions?: string[];
+    pins?: string[];
+    continuation?: string | null;
   };
-  truncated: boolean;
-  continuation_note: { note_id: string; revision: number } | null;
+  truncated?: boolean;
+  continuation_note?: { note_id: string; revision: number } | null;
   offered: { note_id: string; revision: number; content_hash: string }[];
 }
 
@@ -429,6 +435,7 @@ export interface MemoryProposal {
   title: string | null;
   summary: string | null;
   rationale: string | null;
+  source_refs_json?: string;
   claim_class: string | null;
   relation: string | null;
   target_note_id: string | null;
@@ -540,6 +547,56 @@ export async function memoryProposals(
   if (options.after) query.set("after", options.after);
   if (options.limit !== undefined) query.set("limit", String(options.limit));
   return api(`/api/memory/curator/proposals?${query.toString()}`);
+}
+
+export interface CuratorReviewResult {
+  change_id: string;
+  state: "applied" | "rejected";
+  note_id: string | null;
+  revision: number | null;
+  reason: string | null;
+}
+
+/** M06 phase B: human approval of one staged curator proposal. */
+export async function memoryApproveProposal(input: {
+  spaceId: string;
+  changeId: string;
+  expectedRevision?: number;
+}): Promise<CuratorReviewResult> {
+  return withWriterRetry(() =>
+    api(
+      `/api/memory/curator/proposals/${encodeURIComponent(input.changeId)}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          space_id: input.spaceId,
+          ...(input.expectedRevision !== undefined
+            ? { expected_revision: input.expectedRevision }
+            : {}),
+        }),
+      },
+    ),
+  );
+}
+
+/** M06 phase B: rejection only records the decision; no note is touched. */
+export async function memoryRejectProposal(input: {
+  spaceId: string;
+  changeId: string;
+  reason?: string;
+}): Promise<CuratorReviewResult> {
+  return withWriterRetry(() =>
+    api(
+      `/api/memory/curator/proposals/${encodeURIComponent(input.changeId)}/reject`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          space_id: input.spaceId,
+          ...(input.reason ? { reason: input.reason } : {}),
+        }),
+      },
+    ),
+  );
 }
 
 /**

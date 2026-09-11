@@ -1131,7 +1131,11 @@ function MemoryWorkspace({
               />
             )}
             {view === "review" && (
-              <ReviewPanel spaceId={spaceId} onSelectNote={selectNote} />
+              <ReviewPanel
+                spaceId={spaceId}
+                onSelectNote={selectNote}
+                onChanged={refreshNotes}
+              />
             )}
             {view === "health" && <HealthPanel spaceId={spaceId} />}
           </section>

@@ -157,7 +157,7 @@ export function ContextPanel({
         <button
           type="button"
           data-testid="memory-context-deliver"
-          disabled={!pkg || pkg.offered.length === 0}
+          disabled={!pkg || (pkg.offered ?? []).length === 0}
           onClick={() => {
             setKnown((current) => {
               const merged = new Map(
@@ -214,27 +214,27 @@ export function ContextPanel({
           <div className="memory-context-sections">
             {sectionList(
               t("memory.context.activeTasks"),
-              pkg.sections.active_tasks,
+              pkg.sections?.active_tasks ?? [],
               "memory-context-active-tasks",
             )}
             {sectionList(
               t("memory.context.blockers"),
-              pkg.sections.blockers,
+              pkg.sections?.blockers ?? [],
               "memory-context-blockers",
             )}
             {sectionList(
               t("memory.context.recentDecisions"),
-              pkg.sections.recent_decisions,
+              pkg.sections?.recent_decisions ?? [],
               "memory-context-decisions",
             )}
             {sectionList(
               t("memory.context.pins"),
-              pkg.sections.pins,
+              pkg.sections?.pins ?? [],
               "memory-context-pins",
             )}
           </div>
           <h3>{t("memory.context.continuation")}</h3>
-          {pkg.sections.continuation ? (
+          {pkg.sections?.continuation ? (
             <p data-testid="memory-context-continuation">
               {pkg.sections.continuation}
             </p>
@@ -251,11 +251,11 @@ export function ContextPanel({
             </button>
           )}
           <h3>{t("memory.context.cards")}</h3>
-          {pkg.cards.length === 0 ? (
+          {(pkg.cards ?? []).length === 0 ? (
             <p className="muted">{t("memory.context.empty")}</p>
           ) : (
             <ul className="memory-cards" data-testid="memory-context-cards">
-              {pkg.cards.map(renderCard)}
+              {(pkg.cards ?? []).map(renderCard)}
             </ul>
           )}
         </>

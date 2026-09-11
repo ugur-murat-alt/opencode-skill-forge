@@ -1352,3 +1352,21 @@ details pre {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* M06 phase B (issue #39): actionable curator proposal review. */
+.memory-review-actions {
+  margin-top: var(--space-2);
+}
+.memory-reject-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.memory-reject-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
