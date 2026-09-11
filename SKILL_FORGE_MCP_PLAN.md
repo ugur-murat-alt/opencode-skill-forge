@@ -1769,3 +1769,29 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
 - Karar notları: `memoryEnabled` kabul anında işin KENDİ kapsamı için snapshot
   alınır; hedef alan execution'da kapsamla yeniden eşleştirilir. `dist/**`
   birleşik dalda bir sonraki final entegrasyonda tek seferde derlenecek.
+
+#### M02 (#35) — tamamlandı ve bağımsız doğrulandı
+- Faz A `406eaab` (migration 033, vault yolu, atomik/immutable yayın, tek yazıcı
+  kilidi, commit durum makinesi, receipt, HTTP çekirdeği), Faz B `020c523`
+  (kaynak kaydı, cursor/checkpoint sınırlı tarama, aday/çatışma, tombstone +
+  açık restore, HTTP kaynak uçları), `583a234` (i18n kodları), `964840a` +
+  `48c0156` (gerçek SIGKILL replay ve rename kanıtları).
+- Bağımsız doğrulama (M02) 5 gerçek açık uç buldu; tümü kapatıldı:
+  `a5b6964` (bozuk kilit force'suz devralınamaz), `e26d46c` (symlink güvenli
+  yazım + `memory_path_escape`, silinen kaynak kökü `missing` durumu, 034 ile
+  olay→not bağı ve receipt kapsamı, hayalet `working_copy_changed` düzeltmesi,
+  ölü-pid temp GC, receipt dosya doğrulaması), `567e570` + `36da3e5`
+  (bağımsız `.failing` işaretlerinin kaldırılması), `89e7c9f` (HTTP `indexed`
+  işareti yarışının test düzeltmesi).
+- Kanıt: tüm hafıza süiti + bağımsız M02 paketi SQLite/PG yeşil; M01 katı kapısı
+  13/13; taze PG DB'de tam takım **691 test / 679 pass / 12 ortamsal**
+  (Docker sandbox + pg_dump; işlevsel kırmızı yok). Migration 033/034 additive.
+- Sınırlar: çevrimdışı spool M05'te; adayların otomatik uygulanması/3-yollu
+  birleştirme M04/M06'da; kaynak tarama SQLite'ta 1005 dosyayla kanıtlandı,
+  PG'de 61 dosyalık eşdeğer senaryo.
+
+#### Entegrasyon PR'ı (WIP)
+- `feat/memory-second-brain` → `main` draft PR: M01–M02 ve faz-1 plan/doğrulama
+  katmanları; issue–değişiklik–test eşlemesi, doğrulanan HEAD ve kalan engeller
+  (M03–M08) PR açıklamasında. Nihai birleştirme yalnız PR CI yeşil ve kalan
+  M'ler tamamlandığında.
