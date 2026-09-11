@@ -2325,7 +2325,10 @@ async function main() {
           return total;
         };
         let total = await countProjects();
-        for (let i = total; i < 105; i++) {
+        // Issue #29: sayfalama sınırının belirgin biçimde üzerine çık ki
+        // ikinci sayfada güvenli (bağımlı satır taşımayan) hedef bulunsun;
+        // varsayılan projeleri doğrudan SQLite silme FK ile reddeder.
+        for (let i = total; i < 130; i++) {
           await fetch(`${base}/api/projects`, {
             method: "POST",
             headers: { ...ownerHeaders, "content-type": "application/json" },
@@ -2340,16 +2343,26 @@ async function main() {
         const firstIds = new Set(first.items.map((row) => row.id));
         let cursor = first.next;
         let target = null;
-        while (cursor && !target) {
+        let fallback = null;
+        while (cursor) {
           const page = await (
             await fetch(
               `${base}/api/projects?after=${encodeURIComponent(cursor)}`,
               { headers: ownerHeaders },
             )
           ).json();
-          target = page.items.find((row) => !firstIds.has(row.id)) ?? null;
+          for (const row of page.items) {
+            if (firstIds.has(row.id)) continue;
+            fallback ??= row;
+            if (row.name.startsWith("selection-")) {
+              target = row;
+              break;
+            }
+          }
+          if (target) break;
           cursor = page.next;
         }
+        target ??= fallback;
         check(
           "projects-target-beyond-page",
           Boolean(target),
