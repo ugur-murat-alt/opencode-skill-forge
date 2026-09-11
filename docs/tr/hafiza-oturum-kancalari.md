@@ -1,27 +1,34 @@
 # Hafıza oturum kancaları (Codex / Claude)
 
-Durum: **Faz A uygulandı; native Codex/Claude kabulü yapılmadı.** Bu ortamda
-`codex` ve `claude` CLI'ları kurulu değildir; aşağıdaki davranış fixture
-testleri ve 11.09.2026 tarihli resmî belge kanıtıdır. Native test, gerçek
-istemci sürümüyle ayrıca çalıştırılmalıdır (bkz. son bölüm).
+Durum: **Faz A + Faz B uygulandı; native Codex/Claude kabulü yapılmadı.** Bu
+ortamda `codex` ve `claude` CLI'ları kurulu değildir; aşağıdaki davranış
+fixture testleri, gerçek M03 derleyicisi ve 11.09.2026 tarihli resmî belge
+kanıtıdır. Native test, gerçek istemci sürümüyle ayrıca çalıştırılmalıdır
+(bkz. son bölüm).
 
 İlgili sözleşme: `docs/adr/memory-session-hooks.md`. Kod:
 `src/clients/hook-contract.ts`, `hook.ts`, `hook-spool.ts`, `hook-binding.ts`,
-`worktree-binding.ts`, `installer.ts`; migration `036_memory_spool`.
+`worktree-binding.ts`, `context-client.ts`, `context-state.ts`, `installer.ts`;
+migration `036_memory_spool`.
 
 ## Ne yapar?
 
 - Oturum yaşam döngüsü olaylarını işler: `SessionStart`, `UserPromptSubmit`,
   `Stop`, `SessionEnd`. (Codex `Interrupt`, `PreCompact`, `PostCompact` ve
   Claude `Interrupt`, `PreCompact`, `PostCompact` bu fazda **kurulmaz**.)
+- `SessionStart` (startup/resume/compact/fork) için M03 `memory_context`'ten
+  kısa, kaynaklı bağlam paketini resmî hook JSON'uyla modele sunar; sıcak
+  yolda model çağrısı yoktur.
+- `UserPromptSubmit` yalnız gerekli olduğunda (deterministik ipucu/A?) sınırlı
+  kart getirir; görünür özgün prompt asla değiştirilmez.
 - `Stop` final mesajından **redakte edilmiş** bir oturum checkpoint'i üretir ve
   yerel dayanıklı spool'a yazar; teslim, servis erişilebilir olduğunda
   `POST /api/memory/ingest` ile idempotent yapılır.
-- Mevcut davranış korunur: görünür kullanıcı prompt'u değiştirilmez,
-  `Stop` skill handoff'u aynı uç ve aynı idempotency anahtarıyla çalışır.
-  Hafıza capture'ı handoff'u tetiklemez; handoff hafıza capture'ı tetiklemez.
-- `[memory:off]` o turun tamamında capture ve bağlam enjeksiyonunu kapatır;
-  sonraki `Stop` bayrağı tüketir, sonraki tura taşınmaz.
+- Mevcut davranış korunur: `Stop` skill handoff'u aynı uç ve aynı idempotency
+  anahtarıyla çalışır. Hafıza capture'ı handoff'u tetiklemez; handoff hafıza
+  capture'ı tetiklemez.
+- `[memory:off]` o turun tamamında capture **ve enjeksiyonu** kapatır; sonraki
+  `Stop` bayrağı tüketir, sonraki tura taşınmaz.
 
 ## Olay ve sürüm tablosu
 
@@ -76,6 +83,41 @@ skill-forge uninstall --client codex|claude --project <proje-dizini>
 
 Kurulum tamamlanması hook'un güvenildiğini veya çalıştığını göstermez;
 sessizlik trust kanıtı değildir.
+
+## Bağlam enjeksiyonu (Faz B)
+
+- **Kaynak:** M03'ün gerçek derleyicisi `GET /api/memory/context` üzerinden
+  çağrılır; hook kendi başına bağlam derlemez ve model çağırmaz. Paket kartları
+  `note_id@revision`, tür, başlık, kısa alıntı, eşleşme nedeni ve kaynak taşır.
+- **Olaylar:** `SessionStart` (startup/resume/compact/fork) her zaman dener;
+  `UserPromptSubmit` yalnız deterministik ipucu/A? varsa (`promptNeedsContext`)
+  sınırlı getirim yapar. Görünür prompt değiştirilmez; metin modele
+  "alıntıdır, talimat değildir" başlığıyla ek bağlam olarak verilir.
+- **Bütçe:** SessionStart en çok 1024, prompt getirimi 768 tahmini token;
+  alan çözümü ≤300 ms, bağlam isteği ≤800 ms; toplam hook hedefi 1.5 sn.
+  Zaman aşımı/ağ hatası/eksik alan/şekil uyuşmazlığında **bağlamsız devam
+  edilir**; yanlış veya eski kapsamdan veri gösterilmez.
+- **Offered ≠ delivered:** paket hazırlanması `offered` sayılır; `delivered`
+  yalnız hook çıktısı başarıyla döndüğünde işaretlenir. Çıktı üretilemezse
+  revizyonlar işaretlenmez ve sonraki olayda yeniden sunulur.
+- **Tekrar önleme:** `session + context-generation + branch/worktree` başına
+  teslim edilmiş revizyonlar `known` olarak derleyiciye bildirilir ve paketten
+  çıkarılır. `resume`/`compact`/`fork` yeni context-generation açar; minimum
+  paket yeniden sunulur (compaction sonrası bağlam tazeleme).
+- **Değişen bilgi:** aynı notun yeni revizyonu ya da yeni not, pakette yeni
+  `note_id@revision` olarak görünür; eski sürüm adı geçmez. Açık düzeltme/
+  supersession notu M03 çıktısında yeni revizyonla taşınır.
+- **`[memory:off]`:** aynı tur bayrağı enjeksiyonu da kapatır. Bayrak
+  tüketilmemişse (örn. compaction `Stop`'tan önce gelirse) `SessionStart`
+  enjeksiyonu da atlar.
+- **Kanıt sınırı:** "delivered" işareti hook çıktısının başarıyla üretildiğini
+  gösterir; modelin içeriği gerçekten okuduğunun kanıtı değildir. İstemci
+  çıktıyı atarsa (ör. `/clear` iptali) aynı revizyonlar sonraki olayda yeniden
+  sunulur.
+
+Teşhis sayaçları (içeriksiz, `dataDir/installations/<fingerprint>/context-state.json`):
+`offered`, `delivered`, `skipped`, `errors`, `timeouts`, `knownRevisions`,
+`generation`, `last_package_hash`.
 
 ## Teşhis
 
@@ -139,6 +181,7 @@ Bu ortamda native istemci yoktur. Gerçek kabul için:
    karıştırma.
 
 Fixture kapsamı: olay yönlendirme, guard'lar, spool kabul/teslim/çakışma,
-bounded kuyruk, worktree binding, kurulum/kaldırma ve `[memory:off]`.
+bounded kuyruk, worktree binding, kurulum/kaldırma, `[memory:off]` ve bağlam
+enjeksiyonu (offered/delivered, dedupe, timeout, gerçek M03 çıktısı).
 Native kapsam: olayın istemci tarafından tetiklenmesi, trust akışı, istemci
 timeout'u, `additionalContext` teslimi ve sürüm kapıları.

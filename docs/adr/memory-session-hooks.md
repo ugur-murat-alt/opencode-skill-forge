@@ -1,64 +1,71 @@
 # ADR: Codex ve Claude oturum hook'larında hafıza sürekliliği
 
-Durum: **Accepted — Faz A uygulandı; native Codex/Claude kabulü yapılmadı.**
-Bu belge uygulanan Faz A ile planlanan Faz B'yi ayrı işaretler. Tarih:
+Durum: **Accepted — Faz A ve Faz B uygulandı; native Codex/Claude kabulü
+yapılmadı.** Bu belge uygulanan Faz A/B ile kalan işleri ayrı işaretler. Tarih:
 2026-09-11. İlgili issue: #38 (üst plan #33). İnceleme tabanı: `1bda764` /
 dal `memory/m05-hooks`; uygulama `feat/memory-m03-m08` üzerine rebase edilmiş
-dalda M01/M02 sonrası yapıldı. Önkoşullar #34 (M01) ve #35 (M02) teslim
-edilmiştir; #36 (M03) bağlam enjeksiyonu Faz B'dir ve bu ADR'de plan olarak
-kalır.
+dalda M01/M02/M03 sonrası yapıldı. #34/#35/#36 teslim edilmiştir; #37 durum
+yüzeyi entegrasyonu ve native kabul kalan işlerdir.
 
 Kanıt sınıfları bu belgede açıkça ayrılır:
 
-| Sınıf              | Bu ADR'deki karşılığı                                                                                                                                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kaynak kod         | Bu dalda okunan gerçek dosyalar; bölüm 1 ve 11'de satır aralıklarıyla anılır                                                                                                                                                          |
-| Resmî belge        | 11.09.2026 erişimli Codex/Claude hook sayfaları; davranış iddiaları bunlara dayanır, native test yerine geçmez                                                                                                                        |
-| Fixture testi      | Faz A'da yazıldı: `test/hook-events-contract.test.ts`, `test/hook-spool-delivery.test.ts`, `test/hook-worktree-binding.test.ts`, `test/hook-memory-off.test.ts`, `test/hook-hot-path.test.ts`, `test/installer-memory-events.test.ts` |
-| Gerçek native test | **Yok.** Bu ortamda `codex` ve `claude` CLI kurulu değil (`command -v` boş); `~/.codex` ve `~/.claude` dizinleri test kanıtı değildir                                                                                                 |
+| Sınıf              | Bu ADR'deki karşılığı                                                                                                                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kaynak kod         | Bu dalda okunan gerçek dosyalar; bölüm 1 ve 11'de satır aralıklarıyla anılır                                                                                                                                     |
+| Resmî belge        | 11.09.2026 erişimli Codex/Claude hook sayfaları; davranış iddiaları bunlara dayanır, native test yerine geçmez                                                                                                   |
+| Fixture testi      | Faz A: `hook-events-contract`, `hook-spool-delivery`, `hook-worktree-binding`, `hook-memory-off`, `hook-hot-path`, `installer-memory-events`. Faz B: `hook-context-injection` (fixture + gerçek M03 derleyicisi) |
+| Gerçek native test | **Yok.** Bu ortamda `codex` ve `claude` CLI kurulu değil (`command -v` boş); `~/.codex` ve `~/.claude` dizinleri test kanıtı değildir                                                                            |
 
-## 0. Uygulama durumu (Faz A, 2026-09-11)
+## 0. Uygulama durumu (Faz A + Faz B, 2026-09-11)
 
 **Uygulandı:**
 
 - `src/clients/hook-contract.ts`: istemci × olay capability tablosu, zarf
   ayrıştırma, `[memory:off]` algılama, checkpoint içeriği, event kimliği
-  sözleşmesi. Kurulmayan olaylar `degraded`/`unsupported` işaretlidir.
+  sözleşmesi, `promptNeedsContext` kapısı ve kaynaklı bağlam metni üreticisi.
+  Kurulmayan olaylar `degraded`/`unsupported` işaretlidir.
 - `src/clients/hook.ts`: olay başına yönlendirme; mevcut skill handoff ve
   statik `project_ref` bağlamı korunur; capture ayrı yoldur; guard'lar
   (`agent_id`/`agent_type`, `stop_hook_active`, bilinmeyen olay) ve
-  `[memory:off]` tur davranışı uygulandı.
+  `[memory:off]` tur davranışı uygulandı. Faz B: `SessionStart` ve koşullu
+  `UserPromptSubmit` bağlam enjeksiyonu; hata/timeout'ta bağlamsız devam.
+- `src/clients/context-client.ts`: M03 `GET /api/memory/context` için bounded
+  istemci; şekil doğrulaması, kapsam filtresi, hata/timeout sınıflaması.
+- `src/clients/context-state.ts`: offered/delivered günlüğü (atomik dosya,
+  bounded); `session+generation+branch/worktree` başına `known` revizyonlar;
+  resume/compact/fork yeni context-generation açar.
 - `src/clients/hook-spool.ts`: yerel SQLite dayanıklı spool (kabul, bounded
   kuyruk, deterministic `event_id`, çakışma reddi, geri çekilme/terminal
   durumlar, `memory_spool`/`memory_turn_flags`/`memory_spool_counters`,
-  M02 `/api/memory/ingest` teslimi).
+  M02 `/api/memory/ingest` teslimi); ayrıca enjeksiyon için proje-alanı çözümü
+  ve `peekTurnMemoryOff`.
 - `src/clients/hook-binding.ts` + `worktree-binding.ts`: kurulumda yazılan
-  `binding.json` sidecar'ı ve doğrulanmış `.git → gitdir → commondir` bağı.
-  Hook komutuna yeni argv eklenmedi; Codex trust'ı yeniden incelenmez.
+  `binding.json` sidecar'ı ve doğrulanmış `.git → gitdir → commondir` bağı;
+  branch ek bilgisi. Hook komutuna yeni argv eklenmedi.
 - `src/clients/installer.ts`: capability tabanlı olay kaydı, olay başına
   timeout, binding sidecar'ı, kurulum/kaldırma raporunda capability listesi.
 - `src/storage/memory-spool-migration.ts` + `036_memory_spool` kaydı;
   `/api/installations` event enum genişletmesi (yalnız bu bölüm).
-- Testler: yukarıdaki altı dosya; mevcut `installer.test.ts`,
+- Testler: yukarıdaki yedi dosya; mevcut `installer.test.ts`,
   `hook-session.test.ts`, `prompt-removal-boundary.test.ts` yeşil kalır.
 
-**Uygulanmadı (Faz B / #36 sonrası):**
+**Kalan işler:**
 
-- `memory_context` ile SessionStart/resume/compact ve istek başına bağlam
-  enjeksiyonu; `offered/delivered` takibi; `[memory:off]` bayrağının bağlam
-  yolunda tüketilmesi (bayrak altyapısı hazır, enjeksiyon yok).
-- `Interrupt`, `PreCompact`, `PostCompact` gözlem kaydı ve M04 (#37) durum
-  yüzeyi entegrasyonu.
+- M04 (#37) durum yüzeyinde spool sayaçları ve context offered/delivered
+  göstergeleri; AGZ beta ile çift adapter tespiti.
 - Native Codex/Claude kabul matrisi (bu ortamda istemci yok).
+- Server profili/uzak hook kimliği ayrı tasarım (Faz A'dan beri açık).
 
-**Bilinen bağımlılık:** Teslim, proje için açılmış bir `kind=project`
-memory_space bekler; yoksa satır `pending` kalır (`space_unavailable`) ve
-yanlış alana yazılmaz. Alanı açmak M02 `ensureSpace`'in HTTP yüzeyi, M03/M07
-veya arayüz işidir; M05 klasör adından alan açmaz.
+**Bilinen bağımlılık:** Teslim ve enjeksiyon, proje için açılmış bir
+`kind=project` memory_space bekler; yoksa capture `pending` kalır
+(`space_unavailable`) ve enjeksiyon yapılmaz. Alanı açmak M02 `ensureSpace`'in
+HTTP yüzeyi, M03/M07 veya arayüz işidir; M05 klasör adından alan açmaz.
 
 Ölçülen yerel değerler (fixture, native değil): ilk capture ~1.9 sn (tek
 seferlik migration), sıcak capture ortancası ~15–20 ms, sıcak `Stop` callback
-< 1 sn. `hook-hot-path.test.ts` bunları sınırlar.
+< 1 sn; bağlam getirimi alan çözümü ≤300 ms + istek ≤800 ms içinde bütçelenir
+ve hata durumunda enjeksiyon yapılmaz. `hook-hot-path.test.ts` ve
+`hook-context-injection.test.ts` bunları sınırlar.
 
 ## 1. Mevcut hook sözleşmesi (koddan)
 
