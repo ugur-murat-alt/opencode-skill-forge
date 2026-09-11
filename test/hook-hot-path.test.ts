@@ -20,6 +20,8 @@ const CAPTURE_FILES = [
   "src/clients/hook-spool.ts",
   "src/clients/hook-binding.ts",
   "src/clients/worktree-binding.ts",
+  "src/clients/context-client.ts",
+  "src/clients/context-state.ts",
 ];
 
 test("capture modules never import a runner, provider or model layer", async () => {

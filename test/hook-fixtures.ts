@@ -11,9 +11,33 @@ import {
  * heartbeat, forge_handoff and the two M02 memory routes. It is deliberately
  * small; the real M02 pipeline is exercised in hook-spool-delivery.test.ts.
  */
+export interface HookContextCardFixture {
+  note_id: string;
+  revision: number;
+  kind: string;
+  title: string;
+  snippet: string;
+  match_reason?: string;
+  space_id?: string;
+  pinned?: boolean;
+}
+
 export interface HookFixtureOptions {
   /** When set, `/api/memory/spaces` advertises this project space. */
   memory?: { spaceId: string; projectRef: string };
+  /**
+   * Faz B context compiler stand-in. `respectKnown` (default true) filters
+   * cards already present in the `known` query, like the real M03 compiler.
+   */
+  context?: {
+    spaceId: string;
+    cards: HookContextCardFixture[];
+    packageHash?: string;
+    truncated?: boolean;
+    respectKnown?: boolean;
+    delayMs?: number | (() => number);
+    status?: number | (() => number);
+  };
   /** Test seam to force an ingest failure (e.g. 503). */
   ingestStatus?: number | (() => number);
   /** Record both URL and parsed body of every request. */
@@ -24,6 +48,10 @@ export interface HookFixture {
   config: LocalConfig;
   received: { url: string; body: any }[];
   ingestKeys: string[];
+  /** Full query strings of `/api/memory/context` calls, in order. */
+  contextQueries: string[];
+  /** Mutable delay for the context route (tests can lift a timeout). */
+  setContextDelay: (ms: number) => void;
   close: () => Promise<void>;
 }
 
@@ -33,6 +61,11 @@ export async function startHookFixture(
 ): Promise<HookFixture> {
   const received: HookFixture["received"] = [];
   const ingestKeys: string[] = [];
+  const contextQueries: string[] = [];
+  let contextDelay: () => number =
+    typeof options.context?.delayMs === "function"
+      ? options.context.delayMs
+      : () => (options.context?.delayMs as number | undefined) ?? 0;
   const server = createServer(
     async (request: IncomingMessage, response: ServerResponse) => {
       let raw = "";
@@ -86,6 +119,82 @@ export async function startHookFixture(
         );
         return;
       }
+      if (url.startsWith("/api/memory/context")) {
+        contextQueries.push(url);
+        const context = options.context;
+        const forced =
+          typeof context?.status === "function"
+            ? context.status()
+            : context?.status;
+        if (forced && forced >= 400) {
+          response.statusCode = forced;
+          response.end(JSON.stringify({ code: "fixture_forced" }));
+          return;
+        }
+        const delay = contextDelay();
+        if (delay > 0)
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        const query = new URL(url, "http://fixture").searchParams;
+        const known = new Set(
+          (query.get("known") ?? "")
+            .split(",")
+            .filter(Boolean)
+            .map((entry) => entry.replace(":", "\u0000")),
+        );
+        const allCards = context?.cards ?? [];
+        const cards =
+          context && context.respectKnown !== false
+            ? allCards.filter(
+                (card) => !known.has(`${card.note_id}\u0000${card.revision}`),
+              )
+            : allCards;
+        const spaceId = context?.spaceId ?? query.get("space_id") ?? "space-1";
+        response.end(
+          JSON.stringify({
+            envelope: {
+              version: 1,
+              generated_at: Date.now(),
+              session_key: query.get("session_key") ?? null,
+              generation: query.get("generation")
+                ? Number(query.get("generation"))
+                : null,
+              branch: query.get("branch") ?? null,
+              worktree: query.get("worktree") ?? null,
+              package_hash:
+                context?.packageHash ??
+                `pkg-${cards
+                  .map((card) => `${card.note_id}@${card.revision}`)
+                  .sort()
+                  .join("|")}`,
+              token_estimator: "fixture",
+            },
+            cards: cards.map((card) => ({
+              space_id: card.space_id ?? spaceId,
+              match_reason: card.match_reason ?? "fixture_reason",
+              pinned: card.pinned === true,
+              token_estimate: 10,
+              lifecycle: "active",
+              task_status: null,
+              ...card,
+            })),
+            sections: {
+              active_tasks: [],
+              blockers: [],
+              recent_decisions: [],
+              pins: [],
+              continuation: null,
+            },
+            truncated: context?.truncated === true,
+            continuation_note: null,
+            offered: cards.map((card) => ({
+              note_id: card.note_id,
+              revision: card.revision,
+              content_hash: `hash-${card.note_id}`,
+            })),
+          }),
+        );
+        return;
+      }
       if (url === "/api/memory/ingest") {
         const forced =
           typeof options.ingestStatus === "function"
@@ -127,6 +236,10 @@ export async function startHookFixture(
     config,
     received,
     ingestKeys,
+    contextQueries,
+    setContextDelay: (ms: number) => {
+      contextDelay = () => ms;
+    },
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
