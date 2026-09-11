@@ -300,7 +300,195 @@ test("#35 HTTP: explicit ingest, durable receipt, read-only GETs and audit", asy
   }
 }, 30000);
 
-/** Metin karşılaştırmasında satır sonu farkını normalize eder. */
+/** Satır sonu farkını normalize eder. */
 function ios(value: string | null): string {
   return (value ?? "").replace(/\r\n/g, "\n");
 }
+
+test("#35 HTTP: source registration/scan/conflicts and explicit archive/restore", async () => {
+  const root = await mkdtemp(join(tmpdir(), "forge-memory-http-src-"));
+  const sourceRoot = await mkdtemp(
+    join(tmpdir(), "forge-memory-http-src-root-"),
+  );
+  await writeFile(
+    join(root, "policy.json"),
+    JSON.stringify({ memoryEnabled: true, evolutionEnabled: false }),
+    { mode: 0o600 },
+  );
+  await writeFile(join(sourceRoot, "not.md"), "kaynak dosyası");
+  const config = await localConfig(root);
+  const app = await createHttpServer(config);
+  const storage = await openDatabase({ dataDir: root });
+  try {
+    const identities = new IdentityService(storage.db);
+    const owner = await identities.bootstrapLocal();
+    const memory = new MemoryService(storage.db, identities, vaultRoot(root));
+    const space = await memory.ensureSpace(owner, { type: "personal" });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string")
+      throw new Error("server_address_missing");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    const registered = await request(base, config, "/api/memory/sources", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        root_path: sourceRoot,
+        mode: "read_only",
+      }),
+    });
+    expect(registered.status).toBe(200);
+    const source = (await registered.json()) as {
+      id: string;
+      root_path: string;
+    };
+    expect(source.root_path).toContain("forge-memory-http-src-root-");
+
+    const scanned = await request(
+      base,
+      config,
+      `/api/memory/sources/${source.id}/scan`,
+      { method: "POST", body: JSON.stringify({ limit: 20 }) },
+    );
+    expect(scanned.status).toBe(200);
+    const report = (await scanned.json()) as {
+      scanned: number;
+      candidates: number;
+      done: boolean;
+    };
+    expect(report).toMatchObject({ scanned: 1, candidates: 1, done: true });
+
+    const conflicts = await request(
+      base,
+      config,
+      `/api/memory/conflicts?space_id=${encodeURIComponent(space.id)}`,
+    );
+    expect(conflicts.status).toBe(200);
+    const conflictPayload = (await conflicts.json()) as {
+      items: { path: string; state: string }[];
+    };
+    expect(conflictPayload.items).toHaveLength(1);
+    expect(conflictPayload.items[0]).toMatchObject({
+      path: "not.md",
+      state: "candidate",
+    });
+
+    // Bir not commit edilir, sonra açık arşiv/restore uygulanır.
+    const content = [
+      "---",
+      "format_version: 1",
+      'note_id: "http-archive"',
+      `memory_space_id: ${JSON.stringify(space.id)}`,
+      "kind: note",
+      'title: "Arşiv notu"',
+      "---",
+      "",
+      "Arşivlenebilir gövde.",
+      "",
+    ].join("\n");
+    const ingest = await request(base, config, "/api/memory/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        source_event_key: "http-archive-evt",
+        source_kind: "manual",
+        content,
+      }),
+    });
+    expect(ingest.status).toBe(200);
+    await until(async () => {
+      const response = await request(
+        base,
+        config,
+        `/api/memory/events?space_id=${encodeURIComponent(space.id)}` +
+          `&source_event_key=http-archive-evt`,
+      );
+      if (response.status !== 200) return null;
+      const payload = (await response.json()) as { state: string };
+      return payload.state === "committed" ? payload : null;
+    });
+
+    const archived = await request(
+      base,
+      config,
+      "/api/memory/notes/http-archive/archive",
+      { method: "POST", body: JSON.stringify({ space_id: space.id }) },
+    );
+    expect(archived.status).toBe(200);
+    expect(
+      (
+        await storage.db
+          .selectFrom("memory_notes")
+          .select(["deleted_at"])
+          .where("id", "=", "http-archive")
+          .executeTakeFirstOrThrow()
+      ).deleted_at,
+    ).not.toBeNull();
+    // Arşivli nota yeni revision commit edilemez (tombstone).
+    const blocked = await request(base, config, "/api/memory/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        source_event_key: "http-archive-evt-2",
+        source_kind: "manual",
+        content: content.replace("Arşivlenebilir gövde.", "Yeni gövde."),
+        base_revision: 1,
+      }),
+    });
+    expect(blocked.status).toBe(200);
+    const blockedRunId = ((await blocked.json()) as { run_id: string }).run_id;
+    const failedRun = await until(async () => {
+      const row = await storage.db
+        .selectFrom("runs")
+        .select(["state", "error_code"])
+        .where("id", "=", blockedRunId)
+        .executeTakeFirst();
+      return row && row.state === "failed" ? row : null;
+    });
+    expect(failedRun.error_code).toBe("memory_note_deleted");
+
+    const restored = await request(
+      base,
+      config,
+      "/api/memory/notes/http-archive/restore",
+      { method: "POST", body: JSON.stringify({ space_id: space.id }) },
+    );
+    expect(restored.status).toBe(200);
+    expect(
+      (
+        await storage.db
+          .selectFrom("memory_notes")
+          .select(["deleted_at"])
+          .where("id", "=", "http-archive")
+          .executeTakeFirstOrThrow()
+      ).deleted_at,
+    ).toBeNull();
+
+    const audit = await storage.db
+      .selectFrom("audit_events")
+      .select(["kind"])
+      .where("tenant_id", "=", owner.tenantId)
+      .where("kind", "in", [
+        "memory.source.registered",
+        "memory.source.scanned",
+        "memory.note.archived",
+        "memory.note.restored",
+      ])
+      .execute();
+    const kinds = new Set(audit.map((row) => row.kind));
+    expect(kinds).toEqual(
+      new Set([
+        "memory.source.registered",
+        "memory.source.scanned",
+        "memory.note.archived",
+        "memory.note.restored",
+      ]),
+    );
+  } finally {
+    await app.close();
+    await storage.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(sourceRoot, { recursive: true, force: true });
+  }
+}, 30000);

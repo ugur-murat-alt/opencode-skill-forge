@@ -627,6 +627,49 @@ export class MemoryService {
       ),
     };
   }
+
+  /**
+   * Explicit tombstone. Source deletion/scanning never deletes a note; only
+   * this mutation does, and restore is the only way back (scan replay and
+   * spool must not revive it).
+   */
+  async archiveNote(
+    identity: Identity,
+    input: { spaceId: string; noteId: string },
+  ) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db
+      .updateTable("memory_notes")
+      .set({ deleted_at: now, lifecycle: "archived", updated_at: now })
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", input.spaceId)
+      .where("id", "=", input.noteId)
+      .where("deleted_at", "is", null)
+      .executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: now, lifecycle: "archived" };
+  }
+
+  async restoreNote(
+    identity: Identity,
+    input: { spaceId: string; noteId: string },
+  ) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db
+      .updateTable("memory_notes")
+      .set({ deleted_at: null, lifecycle: "active", updated_at: now })
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", input.spaceId)
+      .where("id", "=", input.noteId)
+      .where("deleted_at", "is not", null)
+      .executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: null, lifecycle: "active" };
+  }
 }
 
 /** Map a space's typed ownership to the queue scope used for acceptance. */

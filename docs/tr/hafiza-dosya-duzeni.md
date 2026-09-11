@@ -68,9 +68,15 @@ Her gözlenen fark `memory_change_candidates` satırı olur:
 ## HTTP yüzeyi
 
 - `GET /api/memory/spaces`, `GET /api/memory/notes`, `GET /api/memory/notes/:id`,
-  `GET /api/memory/events` salt okunurdur; hiçbir run/olay üretmez.
+  `GET /api/memory/events`, `GET /api/memory/sources`, `GET /api/memory/conflicts`
+  salt okunurdur; hiçbir run/olay üretmez.
 - `POST /api/memory/ingest` açık mutasyondur: alan `write` ACL'i + tenant
   `run` izni + audit (`memory.ingest.accepted`). Aynı `source_event_key` +
   aynı içerik duplicate döner; farklı içerik 409'dur.
-- Kaynak kaydı/tarama, çatışma listesi ve arşiv/restore uçları M02'nin Faz B
-  adımında eklenir.
+- Diğer mutasyonlar da açık POST + ACL + audit taşır:
+  `POST /api/memory/sources` (`memory.source.registered`),
+  `POST /api/memory/sources/:id/scan` (`memory.source.scanned`),
+  `POST /api/memory/notes/:id/archive` (`memory.note.archived`),
+  `POST /api/memory/notes/:id/restore` (`memory.note.restored`).
+- Tarama raporu gerçek sayaçları döner: `scanned`, `read`, `unchanged`,
+  `candidates`, `conflicts`, `skipped`, `errors`, `missing`, `done`, `cursor`.

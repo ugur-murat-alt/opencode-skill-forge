@@ -26,6 +26,8 @@ import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
 import { jobScopeForSpace } from "../memory/service.js";
 import { MemoryCommitService } from "../memory/commit.js";
+import { MemorySourceService } from "../memory/sources.js";
+import { MEMORY_SCAN_DEFAULT_LIMIT } from "../memory/sources.js";
 import { memoryJobHandlers } from "../memory/worker.js";
 import { productionJobKinds } from "../memory/job-kinds.js";
 import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
@@ -94,6 +96,30 @@ export async function createHttpServer(config: LocalConfig) {
     vaultRoot: memoryRoot,
     service: memory,
   });
+  const memorySources = new MemorySourceService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+  });
+  const memoryAudit = async (
+    identity: Identity,
+    kind: string,
+    detail: Record<string, unknown>,
+    projectId: string | null = null,
+  ) => {
+    await storage.db
+      .insertInto("audit_events")
+      .values({
+        tenant_id: identity.tenantId,
+        id: randomUUID(),
+        user_id: identity.userId,
+        project_id: projectId,
+        kind,
+        detail: JSON.stringify(detail),
+        created_at: Date.now(),
+      })
+      .execute();
+  };
   const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
   const worker = new ForgeWorker(
     memoryQueue,
@@ -1489,28 +1515,130 @@ export async function createHttpServer(config: LocalConfig) {
         ...(body.kind ? { kind: body.kind } : {}),
       },
     });
-    await storage.db
-      .insertInto("audit_events")
-      .values({
-        tenant_id: identity.tenantId,
-        id: randomUUID(),
-        user_id: identity.userId,
-        project_id: space.kind === "project" ? space.project_id : null,
-        kind: "memory.ingest.accepted",
-        detail: JSON.stringify({
-          space_id: body.space_id,
-          run_id: accepted.run.id,
-          source_event_key: body.source_event_key,
-          duplicate: accepted.status === "duplicate",
-        }),
-        created_at: Date.now(),
-      })
-      .execute();
+    await memoryAudit(
+      identity,
+      "memory.ingest.accepted",
+      {
+        space_id: body.space_id,
+        run_id: accepted.run.id,
+        source_event_key: body.source_event_key,
+        duplicate: accepted.status === "duplicate",
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
     return {
       status: accepted.status,
       run_id: accepted.run.id,
       run_state: accepted.run.state,
     };
+  });
+  app.get("/api/memory/sources", async (request) => {
+    const query = z
+      .object({ space_id: z.string().min(1).max(200).optional() })
+      .strict()
+      .parse(request.query);
+    return {
+      items: await memorySources.listSources(requestIdentity(request), {
+        spaceId: query.space_id,
+      }),
+    };
+  });
+  app.post("/api/memory/sources", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        root_path: z.string().min(1).max(4000),
+        mode: z.enum(["read_only", "managed"]),
+      })
+      .strict()
+      .parse(request.body);
+    const source = await memorySources.registerSource(identity, {
+      spaceId: body.space_id,
+      rootPath: body.root_path,
+      mode: body.mode,
+    });
+    await memoryAudit(identity, "memory.source.registered", {
+      space_id: body.space_id,
+      source_id: source.id,
+      root_path: source.root_path,
+      mode: source.mode,
+    });
+    return source;
+  });
+  app.post("/api/memory/sources/:id/scan", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ limit: z.number().int().min(1).max(1000).optional() })
+      .strict()
+      .parse(request.body ?? {});
+    const report = await memorySources.scan(identity, {
+      sourceId: (request.params as { id: string }).id,
+      limit: body.limit ?? MEMORY_SCAN_DEFAULT_LIMIT,
+    });
+    await memoryAudit(identity, "memory.source.scanned", {
+      space_id: report.space_id,
+      source_id: (request.params as { id: string }).id,
+      scanned: report.scanned,
+      read: report.read,
+      candidates: report.candidates,
+      conflicts: report.conflicts,
+      done: report.done,
+    });
+    return report;
+  });
+  app.get("/api/memory/conflicts", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        source_id: z.string().min(1).max(200).optional(),
+        state: z
+          .enum(["candidate", "conflict", "applied", "rejected", "quarantined"])
+          .optional(),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memorySources.listCandidates(requestIdentity(request), {
+      spaceId: query.space_id,
+      sourceId: query.source_id,
+      state: query.state,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.post("/api/memory/notes/:id/archive", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.body);
+    const result = await memory.archiveNote(identity, {
+      spaceId: body.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+    await memoryAudit(identity, "memory.note.archived", {
+      space_id: body.space_id,
+      note_id: result.noteId,
+    });
+    return result;
+  });
+  app.post("/api/memory/notes/:id/restore", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.body);
+    const result = await memory.restoreNote(identity, {
+      spaceId: body.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+    await memoryAudit(identity, "memory.note.restored", {
+      space_id: body.space_id,
+      note_id: result.noteId,
+    });
+    return result;
   });
   app.route({
     method: ["GET", "POST", "DELETE"],
