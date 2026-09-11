@@ -160,6 +160,7 @@ export const tr = {
     unconfigured: "Yapılandırılmadı",
   },
   errors: {
+    aborted: "İş iptal edildi.",
     already_member: "Bu hesap zaten organizasyon üyesi.",
     archive_busy: "Paket açma kapasitesi dolu; yeniden deneyin.",
     archive_limit: "ZIP boyutu geçersiz.",
@@ -270,6 +271,9 @@ export const tr = {
     invalid_login_state: "Giriş durumu geçersiz.",
     invalid_manifest: "forge.json giriş sözleşmesi geçersiz.",
     invalid_mapping: "Eşleme beklenen paket seçim şemasına uymuyor.",
+    invalid_memory_event: "Kaynak olay sözleşmesi geçersiz.",
+    invalid_memory_reconcile: "Uzlaştırma limiti 1–100 olmalıdır.",
+    invalid_memory_space: "Alan adı 1–200 karakter olmalıdır.",
     invalid_organization: "Organizasyon adı 1–200 karakter olmalıdır.",
     invalid_origin: "Origin reddedildi.",
     invalid_package_root: "Kaynak paket kökü tek dizin olmalıdır.",
@@ -306,6 +310,11 @@ export const tr = {
     mapping_changed: "Eşleme başka bir keşif manifestine ait.",
     member_unavailable: "Üye bulunamadı.",
     membership_required: "Hesap yöneticisi kullanıcı üyeliğini tanımlamalıdır.",
+    memory_disabled: "Hafıza bu kapsamda kapalı.",
+    memory_event_conflict:
+      "Aynı kaynak anahtarı farklı içerikle daha önce kaydedildi.",
+    memory_event_unavailable: "Kaynak olayı kaydedilemedi.",
+    memory_space_unavailable: "Hafıza alanı bulunamadı veya yetkiniz yok.",
     migration_arguments:
       "--server-url, --tenant-id, --manifest ve --mapping gerekiyor.",
     migration_identity_required: "Yerel aktarım kimliği eksik.",

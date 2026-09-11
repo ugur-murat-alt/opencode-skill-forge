@@ -163,6 +163,7 @@ export const en: typeof tr = {
     unconfigured: "Not configured",
   },
   errors: {
+    aborted: "The job was aborted.",
     already_member: "This account is already an organization member.",
     archive_busy: "Package extraction capacity is full; retry.",
     archive_limit: "ZIP size is invalid.",
@@ -277,6 +278,9 @@ export const en: typeof tr = {
     invalid_manifest: "forge.json entry contract is invalid.",
     invalid_mapping:
       "Mapping does not match the expected package selection schema.",
+    invalid_memory_event: "Source event contract is invalid.",
+    invalid_memory_reconcile: "Reconcile limit must be between 1 and 100.",
+    invalid_memory_space: "Space name must be 1–200 characters.",
     invalid_organization: "Organization name must be 1–200 characters.",
     invalid_origin: "Origin was rejected.",
     invalid_package_root: "Source package root must be a single directory.",
@@ -313,6 +317,11 @@ export const en: typeof tr = {
     mapping_changed: "Mapping belongs to another discovery manifest.",
     member_unavailable: "Member not found.",
     membership_required: "The account manager must define the user membership.",
+    memory_disabled: "Memory is disabled in this scope.",
+    memory_event_conflict:
+      "The same source key was already recorded with different content.",
+    memory_event_unavailable: "Source event could not be recorded.",
+    memory_space_unavailable: "Memory space not found or not authorized.",
     migration_arguments:
       "--server-url, --tenant-id, --manifest and --mapping are required.",
     migration_identity_required: "Local transfer identity is missing.",

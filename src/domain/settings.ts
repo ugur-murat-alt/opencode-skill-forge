@@ -2,6 +2,7 @@ import { z } from "zod";
 export const settingsSchema = z
   .object({
     evolutionEnabled: z.boolean().optional(),
+    memoryEnabled: z.boolean().optional(),
     retentionDays: z.number().int().min(1).max(3650).optional(),
     searchMinScore: z.number().min(0).max(1).optional(),
     searchMaxResults: z.number().int().min(1).max(20).optional(),
@@ -24,6 +25,7 @@ export type Settings = z.infer<typeof settingsSchema>;
 export const storedSettingsSchema = settingsSchema.strip();
 export const defaultSettings: Required<Settings> = {
   evolutionEnabled: true,
+  memoryEnabled: false,
   retentionDays: 30,
   searchMinScore: 0,
   searchMaxResults: 20,
@@ -67,7 +69,11 @@ export function resolveSettings(
         next = Math.min(result.values[key] as number, incoming as number);
       if (key === "searchMinScore")
         next = Math.max(result.values[key] as number, incoming as number);
-      if (key === "allowPaid" || key === "dependencyInstall")
+      if (
+        key === "allowPaid" ||
+        key === "dependencyInstall" ||
+        key === "memoryEnabled"
+      )
         next = result.values[key] && Boolean(incoming);
       if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
         next = result.values[key].filter((origin) =>

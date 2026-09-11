@@ -83,7 +83,7 @@ export class EvolutionStaging {
         async (args) => {
           this.searched = true;
           return this.store.search(this.identity, {
-            projectId: this.run.project_id,
+            projectId: this.run.project_id!,
             query: args.query,
             after: args.after,
           });
@@ -177,7 +177,7 @@ export class EvolutionStaging {
             };
           } else {
             const matches = await this.store.search(this.identity, {
-              projectId: this.run.project_id,
+              projectId: this.run.project_id!,
               query: args.name,
               limit: 20,
             });
@@ -358,7 +358,7 @@ export class EvolutionStaging {
               );
             const published = await this.store.publishRebased(this.identity, {
               ...this.selected,
-              projectId: this.run.project_id,
+              projectId: this.run.project_id!,
               files: this.files,
               run: this.run,
             });

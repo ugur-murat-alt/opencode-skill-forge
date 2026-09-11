@@ -196,7 +196,7 @@ export function productionHandler(
         sessionId: run.session_id,
         model: resolved.model,
         systemPrompt: (
-          await resolvePrompt(storage.db, identity.tenantId, run.project_id)
+          await resolvePrompt(storage.db, identity.tenantId, run.project_id!)
         ).content,
         input: JSON.stringify(input),
         tools,

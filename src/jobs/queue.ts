@@ -10,7 +10,9 @@ import {
   defaultJobKinds,
   type DefaultJobKind,
   type JobKindDefinition,
+  type JobScope,
 } from "../domain/job-kinds.js";
+export type { JobScope } from "../domain/job-kinds.js";
 export const terminalStates: RunState[] = [
   "completed",
   "no_op",
@@ -22,6 +24,52 @@ export const terminalStates: RunState[] = [
   "unchanged",
   "fallback",
 ];
+/**
+ * Issue #34: resolve the typed scope from the legacy `projectId` shorthand or
+ * the explicit `scope`. Exactly one is required; no fake project is built.
+ */
+export function resolveJobScope(input: {
+  projectId?: string;
+  scope?: JobScope;
+}): JobScope {
+  if (input.projectId !== undefined && input.scope !== undefined)
+    throw new ForgeError(
+      "invalid_scope",
+      "İş kapsamı projectId ve scope ile birlikte verilemez.",
+      422,
+    );
+  if (input.scope !== undefined) {
+    const scope = input.scope as { type?: unknown; projectId?: unknown };
+    if (scope.type === "project") {
+      if (typeof scope.projectId !== "string" || !scope.projectId)
+        throw new ForgeError(
+          "invalid_scope",
+          "Proje kapsamı gerçek bir projectId gerektirir.",
+          422,
+        );
+      return { type: "project", projectId: scope.projectId };
+    }
+    if (scope.type === "personal" || scope.type === "organization")
+      return { type: scope.type };
+    throw new ForgeError("invalid_scope", "Tanımsız iş kapsamı.", 422);
+  }
+  if (typeof input.projectId === "string" && input.projectId)
+    return { type: "project", projectId: input.projectId };
+  throw new ForgeError(
+    "invalid_scope",
+    "İş kapsamı (proje veya kişisel/organizasyon) zorunlu.",
+    422,
+  );
+}
+/** Stable idempotency/ACL key for a scope; never a fabricated project id. */
+export function jobScopeKey(
+  scope: JobScope,
+  identity: { userId: string },
+): string {
+  if (scope.type === "project") return scope.projectId;
+  if (scope.type === "personal") return identity.userId;
+  return "organization";
+}
 /**
  * Issue #32: acceptance, scheduling, idempotency, budget and audit stay
  * common; kind-specific payload validation, config snapshot and skill-owned
@@ -39,7 +87,10 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
   async accept(
     identity: Identity,
     input: {
-      projectId: string;
+      /** Legacy project shorthand; exactly one of projectId/scope is required. */
+      projectId?: string;
+      /** Issue #34: explicit personal/project/organization target. */
+      scope?: JobScope;
       kind: Kind;
       key: string;
       payload: Record<string, unknown>;
@@ -49,6 +100,16 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
     const definition = this.kinds[input.kind];
     if (!definition)
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
+    const scope = resolveJobScope(input);
+    // Skill (and other project-owned) kinds keep their project requirement;
+    // memory kinds accept explicit project/personal/organization scopes.
+    const memoryKind = definition.scope === "memory";
+    if (!memoryKind && scope.type !== "project")
+      throw new ForgeError(
+        "invalid_scope",
+        "Bu iş türü proje kapsamı gerektirir.",
+        422,
+      );
     if (
       !input.key ||
       input.key.length > 200 ||
@@ -74,6 +135,7 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
     if (typeof inputJson !== "string" || Buffer.byteLength(inputJson) > 65536)
       throw new ForgeError("invalid_handoff", "İş girdisi serileştirilemedi.");
     const inputHash = createHash("sha256").update(inputJson).digest("hex");
+    const scopeKey = jobScopeKey(scope, identity);
     return this.storage.db.transaction().execute(async (tx) => {
       // Serialize acceptance/budget/backpressure for this actor across processes.
       await tx
@@ -83,13 +145,20 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         .where("user_id", "=", identity.userId)
         .execute();
       const auth = new IdentityService(tx);
-      await auth.authorize(identity, "run", input.projectId);
+      // Project scope reuses the project run permission; personal and
+      // organization scope only prove the tenant-level run permission here.
+      // The concrete space ACL is verified by MemoryService inside the
+      // handler and again at every later commit step (see ADR).
+      if (scope.type === "project")
+        await auth.authorize(identity, "run", scope.projectId);
+      else await auth.authorize(identity, "run");
       const old = await tx
         .selectFrom("runs")
         .selectAll()
         .where("tenant_id", "=", identity.tenantId)
         .where("user_id", "=", identity.userId)
-        .where("project_id", "=", input.projectId)
+        .where("scope_kind", "=", scope.type)
+        .where("scope_key", "=", scopeKey)
         .where("kind", "=", input.kind)
         .where("idempotency_key", "=", input.key)
         .executeTakeFirst();
@@ -104,9 +173,18 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
       }
       const effective = await new SettingsService(auth, this.policy).effective(
         identity,
-        input.projectId,
+        scope.type === "project" ? scope.projectId : undefined,
         {},
       );
+      // Memory kinds are gated by the independent memoryEnabled flag; skill
+      // kinds keep their own evolution gate below. The two never substitute
+      // for each other.
+      if (memoryKind && !effective.values.memoryEnabled)
+        throw new ForgeError(
+          "memory_disabled",
+          "Hafıza bu kapsamda kapalı.",
+          422,
+        );
       // Skill-owned kinds alone read the provider snapshot and obey the
       // evolution flag; other kinds use the same effective policy without it.
       let config: Record<string, unknown> = { ...effective };
@@ -151,7 +229,7 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
           tenant_id: identity.tenantId,
           id: sessionId,
           user_id: identity.userId,
-          project_id: input.projectId,
+          project_id: scope.type === "project" ? scope.projectId : null,
           created_at: now,
         })
         .execute();
@@ -160,7 +238,9 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         id: runId,
         session_id: sessionId,
         user_id: identity.userId,
-        project_id: input.projectId,
+        project_id: scope.type === "project" ? scope.projectId : null,
+        scope_kind: scope.type,
+        scope_key: scopeKey,
         kind: input.kind,
         state: "queued",
         idempotency_key: input.key,
@@ -188,6 +268,8 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         {
           run_id: runId,
           kind: input.kind,
+          scope_kind: scope.type,
+          scope_key: scopeKey,
         },
         now,
       );
@@ -430,11 +512,33 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         "İşin lease sahipliği değişti.",
         409,
       );
-    await new IdentityService(db).authorize(
+    await this.authorizeRun(
+      db,
       { userId: run.user_id, tenantId: run.tenant_id },
+      run,
       "run",
-      run.project_id,
     );
+  }
+  /**
+   * Issue #34: every read/mutation re-authorizes the persisted scope.
+   * Project scope re-checks project `read`/`run`; personal and organization
+   * scope re-check the tenant-level permission (the space ACL is enforced by
+   * `MemoryService` in the handler and at later commit steps).
+   */
+  private async authorizeRun(
+    db: Kysely<DB>,
+    identity: Identity,
+    run: Pick<Run, "scope_kind" | "project_id">,
+    permission: "read" | "run",
+  ) {
+    const auth = new IdentityService(db);
+    if (run.scope_kind === "project") {
+      if (!run.project_id)
+        throw new ForgeError("run_unavailable", "İş kapsamı tutarsız.", 404);
+      await auth.authorize(identity, permission, run.project_id);
+    } else {
+      await auth.authorize(identity, permission);
+    }
   }
   async finish(
     run: Run,
@@ -537,11 +641,7 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
         "İş bulunamadı veya yetkiniz yok.",
         404,
       );
-    await new IdentityService(this.storage.db).authorize(
-      identity,
-      "read",
-      run.project_id,
-    );
+    await this.authorizeRun(this.storage.db, identity, run, "read");
     return run;
   }
   async attempts(identity: Identity, runId: string, after = 0) {
@@ -563,11 +663,7 @@ export class JobQueue<Kind extends string = DefaultJobKind> {
   }
   async cancel(identity: Identity, runId: string) {
     const run = await this.get(identity, runId);
-    await new IdentityService(this.storage.db).authorize(
-      identity,
-      "run",
-      run.project_id,
-    );
+    await this.authorizeRun(this.storage.db, identity, run, "run");
     await this.storage.db.transaction().execute(async (tx) => {
       const now = await this.now(tx);
       const updated = await tx

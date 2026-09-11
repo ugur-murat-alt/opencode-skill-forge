@@ -1,6 +1,11 @@
 import type { Generated } from "kysely";
 import type { MemberRole, ProjectRole } from "../domain/roles.js";
-import type { JobKind } from "../domain/job-kinds.js";
+import type { JobKind, RunScopeKind } from "../domain/job-kinds.js";
+import type {
+  MemoryLifecycle,
+  MemorySpaceKind,
+  TaskStatus,
+} from "../domain/memory.js";
 export interface Tenant {
   id: string;
   name: string;
@@ -346,10 +351,15 @@ export interface DB {
     tenant_id: string;
     id: string;
     user_id: string;
-    project_id: string;
+    /** Issue #34: null for personal/organization-scope sessions. */
+    project_id: string | null;
     created_at: number;
   };
   runs: Run;
+  memory_spaces: MemorySpace;
+  memory_notes: MemoryNote;
+  memory_note_revisions: MemoryNoteRevision;
+  memory_events: MemoryEvent;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -421,7 +431,15 @@ export interface Run {
   id: string;
   session_id: string;
   user_id: string;
-  project_id: string;
+  /**
+   * Issue #34: null for personal/organization scope. Project-scope runs keep
+   * the real project id; no fake project is ever generated.
+   */
+  project_id: string | null;
+  /** Issue #34: typed job scope carried on every persisted run. */
+  scope_kind: RunScopeKind;
+  /** Project id, user id or the literal "organization" (see queue). */
+  scope_key: string;
   /**
    * Issue #32: persisted text column; the production union stays visible in
    * the type while explicitly registered composition kinds (tests, future
@@ -445,4 +463,65 @@ export interface Run {
   fence: number;
   attempt: number;
   max_attempts: number;
+}
+
+/**
+ * Issue #34: memory spaces are typed. A personal space belongs to one user,
+ * a project space names a real project and an organization space is shared
+ * tenant-wide; project_id is never fabricated for the latter two.
+ */
+export interface MemorySpace {
+  tenant_id: string;
+  id: string;
+  kind: MemorySpaceKind;
+  owner_user_id: string;
+  project_id: string | null;
+  name: string;
+  created_at: number;
+  updated_at: number;
+}
+export interface MemoryNote {
+  tenant_id: string;
+  space_id: string;
+  id: string;
+  lifecycle: MemoryLifecycle;
+  pinned: number;
+  task_status: TaskStatus | null;
+  current_revision: number | null;
+  format_version: number;
+  title: string;
+  summary: string | null;
+  created_at: number;
+  updated_at: number;
+  superseded_by: string | null;
+}
+export interface MemoryNoteRevision {
+  tenant_id: string;
+  space_id: string;
+  note_id: string;
+  revision: number;
+  format_version: number;
+  kind: string;
+  title: string;
+  summary: string | null;
+  body_md: string;
+  metadata_json: string;
+  sources_json: string;
+  base_revision: number | null;
+  created_by: string;
+  created_at: number;
+}
+export type MemoryEventState = "pending" | "committed" | "rejected";
+export interface MemoryEvent {
+  tenant_id: string;
+  space_id: string;
+  id: string;
+  source_event_key: string;
+  source_kind: string;
+  content_hash: string;
+  state: MemoryEventState;
+  observed_at: number | null;
+  created_at: number;
+  updated_at: number;
+  committed_revision: number | null;
 }

@@ -16,7 +16,8 @@ export interface BudgetAccountSummary {
   uncertain_reservations: {
     id: string;
     run_id: string;
-    project_id: string;
+    /** Null for personal/organization-scope runs (non-project memory jobs). */
+    project_id: string | null;
     reserved_micros: number;
   }[];
 }
@@ -91,7 +92,11 @@ export class BudgetService {
           "Rezervasyon işi bu kullanıcıya ait değil.",
           404,
         );
-      await new IdentityService(tx).authorize(identity, "run", run.project_id);
+      await new IdentityService(tx).authorize(
+        identity,
+        "run",
+        run.project_id ?? undefined,
+      );
       const account = await tx
         .updateTable("budget_accounts")
         .set({ reserved_micros: sql`reserved_micros` })
@@ -278,7 +283,7 @@ export class BudgetService {
       await new IdentityService(tx).authorize(
         identity,
         "run",
-        reservation.project_id,
+        reservation.project_id ?? undefined,
       );
       if (reservation.state === "settled") {
         if (reservation.actual_micros !== actualMicros)

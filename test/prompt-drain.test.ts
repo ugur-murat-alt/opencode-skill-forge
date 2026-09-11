@@ -41,6 +41,8 @@ async function seedRun(
       session_id: seed.sessionId,
       user_id: seed.userId,
       project_id: seed.projectId,
+      scope_kind: "project",
+      scope_key: seed.projectId,
       kind: seed.kind,
       state: seed.state,
       idempotency_key: randomUUID(),
