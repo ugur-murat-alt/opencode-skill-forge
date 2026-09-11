@@ -11,7 +11,7 @@ import {
  * raw HTML never reaches the DOM and unsafe links/images render as inert
  * text. Bounded input is enforced by the parser.
  */
-export function Markdown({
+export function MarkdownPreview({
   source,
   testId,
 }: {

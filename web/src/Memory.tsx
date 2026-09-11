@@ -3,7 +3,7 @@ import { Archive, FileText, Pin, Plus, RotateCcw } from "lucide-react";
 import { errorCode } from "./api";
 import { useLang } from "./i18n/lang";
 import { ErrorNotice, Empty, Refresh, Status, date, useResource } from "./ui";
-import { Markdown } from "./memory/Markdown";
+import { MarkdownPreview } from "./memory/MarkdownPreview";
 import { SourcePanel } from "./memory/SourcePanel";
 import { GraphView } from "./memory/GraphView";
 import { SearchPanel } from "./memory/SearchPanel";
@@ -963,7 +963,7 @@ function MemoryWorkspace({
                       {viewing.content === null ? (
                         <p className="muted">{t("memory.history.noContent")}</p>
                       ) : (
-                        <Markdown
+                        <MarkdownPreview
                           source={splitMemoryDocument(viewing.content).body}
                           testId="memory-history-preview"
                         />
@@ -1037,7 +1037,7 @@ function MemoryWorkspace({
                         </button>
                       </div>
                       {preview ? (
-                        <Markdown
+                        <MarkdownPreview
                           source={fields.body}
                           testId="memory-preview"
                         />
