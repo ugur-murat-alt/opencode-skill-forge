@@ -1795,3 +1795,13 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
   katmanları; issue–değişiklik–test eşlemesi, doğrulanan HEAD ve kalan engeller
   (M03–M08) PR açıklamasında. Nihai birleştirme yalnız PR CI yeşil ve kalan
   M'ler tamamlandığında.
+
+#### PR #42 (draft) — CI yeşil ve kabul sağlamlaştırması
+- `50353bc`: Proje oluşturmada kapsam yeniden doğrulaması, liste yenilemesi
+  başarısız olsa da çalışır (`Projects.tsx` finally); `dist` web bundle güncel.
+- `2bfb868`: Silinen proje kabul kontrolü `/api/me` yeniden doğrulama yanıtını
+  bekler; pin kontrolünde nadir "Bilinmeyen hata" bandına tek sınırlı yeniden
+  deneme eklenir (ikinci deneme de düşerse kontrol kırmızı kalır).
+- Doğrulanan HEAD `2bfb868`: push ve PR CI koşuları (34559715401, 34559718246)
+  beş işte de yeşil; yerel tarayıcı kabulü 101/101; linux-contracts tam takımı
+  temiz DB ile geçti. PR draft olarak açık; birleştirme kullanıcı onayında.
