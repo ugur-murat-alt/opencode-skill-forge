@@ -1,8 +1,38 @@
 import { z } from "zod";
+import {
+  CURATOR_AUTO_WRITE_KINDS,
+  CURATOR_HARD_LIMITS,
+  MEMORY_CURATOR_MODES,
+  narrowCuratorMode,
+  type MemoryCuratorMode,
+} from "./curator.js";
 export const settingsSchema = z
   .object({
     evolutionEnabled: z.boolean().optional(),
     memoryEnabled: z.boolean().optional(),
+    memoryCuratorMode: z.enum(MEMORY_CURATOR_MODES).optional(),
+    curatorMaxCalls: z
+      .number()
+      .int()
+      .min(1)
+      .max(CURATOR_HARD_LIMITS.maxCalls)
+      .optional(),
+    curatorMaxProposals: z
+      .number()
+      .int()
+      .min(1)
+      .max(CURATOR_HARD_LIMITS.maxProposals)
+      .optional(),
+    curatorMaxSourceBytes: z
+      .number()
+      .int()
+      .min(256)
+      .max(CURATOR_HARD_LIMITS.maxSourceBytes)
+      .optional(),
+    curatorAutoWriteKinds: z
+      .array(z.enum(CURATOR_AUTO_WRITE_KINDS))
+      .max(CURATOR_AUTO_WRITE_KINDS.length)
+      .optional(),
     retentionDays: z.number().int().min(1).max(3650).optional(),
     searchMinScore: z.number().min(0).max(1).optional(),
     searchMaxResults: z.number().int().min(1).max(20).optional(),
@@ -26,6 +56,11 @@ export const storedSettingsSchema = settingsSchema.strip();
 export const defaultSettings: Required<Settings> = {
   evolutionEnabled: true,
   memoryEnabled: false,
+  memoryCuratorMode: "manual",
+  curatorMaxCalls: CURATOR_HARD_LIMITS.maxCalls,
+  curatorMaxProposals: CURATOR_HARD_LIMITS.maxProposals,
+  curatorMaxSourceBytes: 32768,
+  curatorAutoWriteKinds: [],
   retentionDays: 30,
   searchMinScore: 0,
   searchMaxResults: 20,
@@ -64,9 +99,17 @@ export function resolveSettings(
           "concurrency",
           "retentionDays",
           "searchMaxResults",
+          "curatorMaxCalls",
+          "curatorMaxProposals",
+          "curatorMaxSourceBytes",
         ].includes(key)
       )
         next = Math.min(result.values[key] as number, incoming as number);
+      if (key === "memoryCuratorMode")
+        next = narrowCuratorMode(
+          result.values.memoryCuratorMode as MemoryCuratorMode,
+          incoming as MemoryCuratorMode,
+        );
       if (key === "searchMinScore")
         next = Math.max(result.values[key] as number, incoming as number);
       if (
@@ -75,6 +118,10 @@ export function resolveSettings(
         key === "memoryEnabled"
       )
         next = result.values[key] && Boolean(incoming);
+      if (key === "curatorAutoWriteKinds")
+        next = (result.values.curatorAutoWriteKinds as string[]).filter(
+          (kind) => (incoming as string[]).includes(kind),
+        );
       if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
         next = result.values[key].filter((origin) =>
           (incoming as string[]).includes(origin),

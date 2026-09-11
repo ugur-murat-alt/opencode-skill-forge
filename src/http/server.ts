@@ -41,6 +41,14 @@ import {
   MEMORY_RELATIONS,
   TASK_STATUSES,
 } from "../domain/memory.js";
+import {
+  CURATOR_EXTRACTOR_VERSION,
+  CURATOR_POLICY_VERSION,
+  MEMORY_CURATOR_MODES,
+  curatorSourceRefSchema,
+} from "../domain/curator.js";
+import { MemoryCuratorProfileRepository } from "../memory/curator/profile.js";
+import { resolveCuratorModel } from "../runner/curator-model.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -1750,6 +1758,149 @@ export async function createHttpServer(config: LocalConfig) {
       note_id: result.noteId,
     });
     return result;
+  });
+  // --- Hafıza küratörü (issue #39): bağımsız model bağı, elle kuyruklama ve
+  // salt-okunur öneri listesi. Otomatik yazım yalnız finalize + politika
+  // içinde, M02 commit yolundan yapılır; bu uçlar doğrudan yazmaz.
+  app.get("/api/memory/curator/status", async (request) => {
+    const identity = requestIdentity(request);
+    const repository = new MemoryCuratorProfileRepository(storage.db, vault);
+    const status = await repository.status(identity);
+    const effective = await settings.effective(identity, undefined, {});
+    const resolved = await resolveCuratorModel(repository, identity, {
+      local: config.profile !== "server",
+      allowedOrigins: effective.values.allowedOrigins,
+      allowPaid: effective.values.allowPaid,
+    });
+    return {
+      revision: status.revision,
+      profile: status.profile,
+      credential: status.credential,
+      model_ready: resolved !== null,
+      mode: effective.values.memoryCuratorMode,
+      memory_enabled: effective.values.memoryEnabled,
+      extractor_version: CURATOR_EXTRACTOR_VERSION,
+      policy_version: CURATOR_POLICY_VERSION,
+    };
+  });
+  app.put("/api/memory/curator/profile", async (request) =>
+    new MemoryCuratorProfileRepository(storage.db, vault).update(
+      requestIdentity(request),
+      request.body,
+    ),
+  );
+  app.post("/api/memory/curator/run", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        mode: z.enum(MEMORY_CURATOR_MODES).optional(),
+        source_refs: z.array(curatorSourceRefSchema).min(1).max(20),
+        note_refs: z.array(z.string().min(1).max(200)).max(20).optional(),
+        reason: z.string().min(1).max(500).optional(),
+        idempotency_key: z.string().min(1).max(200),
+      })
+      .strict()
+      .parse(request.body);
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const effective = await settings.effective(
+      identity,
+      space.kind === "project" ? (space.project_id ?? undefined) : undefined,
+      {},
+    );
+    if (!effective.values.memoryEnabled)
+      throw new ForgeError(
+        "memory_disabled",
+        "Hafıza bu kapsamda kapalı.",
+        422,
+      );
+    if (effective.values.memoryCuratorMode === "off")
+      throw new ForgeError(
+        "memory_disabled",
+        "Hafıza küratörü bu kapsamda kapalı.",
+        422,
+        undefined,
+        { reason: "curator_off" },
+      );
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_curate",
+      key: body.idempotency_key,
+      payload: {
+        space_id: body.space_id,
+        ...(body.mode ? { mode: body.mode } : {}),
+        source_refs: body.source_refs,
+        ...(body.note_refs ? { note_refs: body.note_refs } : {}),
+        ...(body.reason ? { reason: body.reason } : {}),
+      },
+    });
+    await memoryAudit(
+      identity,
+      "memory.curator.run.accepted",
+      {
+        space_id: body.space_id,
+        run_id: accepted.run.id,
+        duplicate: accepted.status === "duplicate",
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state,
+    };
+  });
+  app.get("/api/memory/curator/proposals", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        state: z
+          .enum(["proposed", "shadow", "applied", "rejected", "stale"])
+          .optional(),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    await memory.authorizeSpace(identity, query.space_id, "read");
+    const limit = Math.min(Math.max(Number(query.limit ?? 20), 1), 50);
+    let selected = storage.db
+      .selectFrom("memory_curator_changes")
+      .select([
+        "id",
+        "space_id",
+        "run_id",
+        "mode",
+        "operation",
+        "note_id",
+        "base_revision",
+        "kind",
+        "title",
+        "summary",
+        "rationale",
+        "claim_class",
+        "relation",
+        "target_note_id",
+        "risk",
+        "state",
+        "applied_revision",
+        "reason",
+        "created_at",
+        "updated_at",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", query.space_id);
+    if (query.state) selected = selected.where("state", "=", query.state);
+    if (query.after) selected = selected.where("id", ">", query.after);
+    const rows = await selected
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    return {
+      items: rows.slice(0, limit),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
   });
   app.get("/api/memory/recall", async (request) => {
     const query = z

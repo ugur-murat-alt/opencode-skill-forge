@@ -15,6 +15,7 @@ import { ForgeRunner } from "./forge-runner.js";
 import { resolveProvider } from "./providers.js";
 import { EvolutionStaging } from "./staging.js";
 import { resolvePrompt } from "../application/agent-prompts.js";
+import { curatorJobHandler } from "./curator-handler.js";
 /**
  * Composition-test seam for the production handler. Only the provider event
  * stream is replaceable; lease fencing, budget reservation, the real tools
@@ -23,6 +24,8 @@ import { resolvePrompt } from "../application/agent-prompts.js";
  */
 export interface RunnerHandlerOverrides {
   providerStream?: StreamFn;
+  /** Curator runs use their own explicit seam; it is never the skill stream. */
+  curatorProviderStream?: StreamFn;
 }
 /**
  * Issue #26: single composition point for the runner's package store. The
@@ -44,7 +47,17 @@ export function productionHandler(
   local: boolean,
   overrides: RunnerHandlerOverrides = {},
 ): JobHandler {
+  const curator = curatorJobHandler({
+    storage,
+    dataDir,
+    vault,
+    local,
+    providerStream: overrides.curatorProviderStream,
+  });
   return async (run, signal) => {
+    // Issue #39: the memory curator is a separate bounded profile; it never
+    // shares the skill provider, staging or evolution gates.
+    if (run.kind === "memory_curate") return curator(run, signal);
     // Issue #32: this handler owns the skill kind only. A run of another
     // kind never reaches the skill provider/PackageStore path by accident.
     if (run.kind !== "skill_evolve")

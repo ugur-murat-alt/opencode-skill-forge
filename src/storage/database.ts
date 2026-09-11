@@ -34,6 +34,7 @@ import { memoryEventNoteMigration } from "./memory-event-note-migration.js";
 import { memoryIndexMigration } from "./memory-index-migration.js";
 import { memorySpoolMigration } from "./memory-spool-migration.js";
 import { memoryValidityMigration } from "./memory-validity-migration.js";
+import { curatorMigration } from "./curator-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
   Kysely,
@@ -90,6 +91,7 @@ export function migrationsFor(backend: Backend): Record<string, Migration> {
     "035_memory_index": memoryIndexMigration,
     "036_memory_spool": memorySpoolMigration,
     "037_memory_validity": memoryValidityMigration,
+    "038_memory_curator": curatorMigration,
     "001_identity": {
       up: async (database) => {
         await database.schema

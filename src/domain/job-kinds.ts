@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { memoryCuratePayloadSchema } from "./curator.js";
 
 /**
  * Issue #34 (M01): a job target is an explicit, typed scope. Project jobs
@@ -49,8 +50,19 @@ export const skillEvolveJobKind = {
 } as const satisfies JobKindDefinition;
 
 /** Production kinds. Test/composition kinds extend this registry explicitly. */
+export const memoryCurateJobKind = {
+  kind: "memory_curate",
+  payload: memoryCuratePayloadSchema,
+  // Model-backed but memory-owned: it never reads the skill provider profile,
+  // never obeys evolutionEnabled and is gated by memoryEnabled + the curator
+  // mode. The memory worker falls back to the production handler for it.
+  skillProfile: false,
+  scope: "memory",
+} as const satisfies JobKindDefinition;
+
 export const defaultJobKinds = {
   skill_evolve: skillEvolveJobKind,
+  memory_curate: memoryCurateJobKind,
 } as const satisfies JobKindRegistry;
 export type DefaultJobKind = keyof typeof defaultJobKinds;
 /** Persisted `runs.kind` is open text; the queue/worker APIs stay typed. */

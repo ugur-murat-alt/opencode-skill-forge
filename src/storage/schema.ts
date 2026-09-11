@@ -368,6 +368,9 @@ export interface DB {
   memory_spool: MemorySpoolRow;
   memory_turn_flags: MemoryTurnFlag;
   memory_spool_counters: MemorySpoolCounter;
+  memory_curator_profiles: MemoryCuratorProfile;
+  memory_curator_extractions: MemoryCuratorExtraction;
+  memory_curator_changes: MemoryCuratorChange;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -610,6 +613,62 @@ export interface MemoryTurnFlag {
 export interface MemorySpoolCounter {
   key: string;
   value: number;
+  updated_at: number;
+}
+/** Issue #39 (M06): independent model binding for memory work. */
+export interface MemoryCuratorProfile {
+  tenant_id: string;
+  user_id: string;
+  id: string;
+  revision: number;
+  profile_json: string;
+  secret_ref: string | null;
+  created_at: number;
+}
+export type MemoryCuratorExtractionStatus =
+  "ready" | "not_ready" | "no_op" | "failed";
+export interface MemoryCuratorExtraction {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  run_id: string;
+  mode: string;
+  extractor_version: string;
+  policy_version: string;
+  source_fingerprint: string;
+  status: MemoryCuratorExtractionStatus;
+  result_json: string | null;
+  usage_json: string | null;
+  error_code: string | null;
+  created_at: number;
+}
+export type MemoryCuratorChangeState =
+  "proposed" | "shadow" | "applied" | "rejected" | "stale";
+export interface MemoryCuratorChange {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  extraction_id: string | null;
+  run_id: string;
+  mode: string;
+  operation: "create" | "update" | "supersede" | "link";
+  note_id: string | null;
+  base_revision: number | null;
+  kind: string | null;
+  title: string | null;
+  summary: string | null;
+  body_md: string | null;
+  rationale: string;
+  source_refs_json: string;
+  claim_class: string | null;
+  relation: string | null;
+  target_note_id: string | null;
+  confidence_micros: number | null;
+  risk: "low" | "medium" | "high";
+  state: MemoryCuratorChangeState;
+  applied_revision: number | null;
+  reason: string | null;
+  created_at: number;
   updated_at: number;
 }
 export type MemoryCandidateState =
