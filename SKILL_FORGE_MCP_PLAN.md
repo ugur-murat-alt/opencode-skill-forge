@@ -1707,3 +1707,48 @@ işleri yeşil olmadan issue kapatılmaz.
 - İlk final koşu **34533437017** (commit `5d8f744`) beş işin tamamında yeşil:
   linux-contracts 6m11s, web-acceptance 1m41s (artifact `--verify` + kasıtlı hata kapısı),
   portable-artifact windows/macos/ubuntu. Issue kapanışları bu koşuya dayanır.
+
+### Hafıza modülü kampanyası (#33–#41) — koordinatör kaydı (2026-09-11)
+
+Taban: `1bda764` (main, takip kampanyası kapanışı). Kampanya dalı:
+`feat/memory-second-brain` (push edildi). Hedef: Obsidian'sız, Markdown ana kayıtlı,
+kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01–M04.
+
+#### Bağlayıcı sözleşme kararları (M01/#34)
+- Modül yerleşimi: `src/domain/memory.ts` (saf sözleşme), `src/memory/service.ts`
+  (uygulama işlemleri), `src/memory/job-kinds.ts` + `src/memory/worker.ts`
+  (deterministik, model gerektirmeyen işler), `src/storage/memory-migration.ts`.
+  HTTP/MCP/CLI yalnız adapter olacak; `PackageStore`/`EvolutionStaging` hafızaya
+  taşınmaz.
+- Kapsam: `runs.scope_kind` (`project|personal|organization`) + `scope_key`;
+  `project_id` nullable; sahte proje yok. Skill türleri proje ister; hafıza türleri
+  tenant düzeyi yetki + alan ACL'i ile projesiz kabul edilir. Kabul, claim/finish
+  ve commit aynı kapsamı yeniden yetkilendirir; tekillik anahtarı kapsam tabanlıdır.
+- Markdown format v1: LF kanonik serileştirme (gövde anlamı korunur, Unicode
+  normalizasyonu yok), `revision` alanı hariç SHA-256, bilinmeyen frontmatter
+  korunur, gelecek format mutasyonsuz reddedilir, `note_id` rename'de sabit,
+  wikilink belirsizliği rastgele çözülmez, task durumu not yaşam döngüsünden ayrı.
+- Tablolar: `memory_spaces`, `memory_notes`, `memory_note_revisions`,
+  `memory_events`; migration `032_memory` (SQLite 12-adım yeniden inşa + PG alter).
+- İş türleri: `memory_ingest`, `memory_reconcile`; `skillProfile:false`;
+  `memoryEnabled` bağımsız ayar (varsayılan kapalı), `evolutionEnabled`'dan ayrı.
+
+#### Bağımlılık haritası ve iş akışları
+- M01 (#34) → M02 (#35) → M03 (#36) → M04 (#37) → M05 (#38) → M06 (#39);
+  M07 (#40) salt-okunur keşifle paralel; M08 (#41) tüm süreç boyunca bağımsız test.
+- Ajanlar (worktree / branch):
+  - Çekirdek: `agent-mem-core` / `memory/m01-core` → #34, sonra #35+#36.
+  - Arayüz: `agent-mem-ui` / `memory/m04-ui` → #37 (faz 1 plan; uygulama M03 sonrası).
+  - Entegrasyon: `agent-mem-hooks` / `memory/m05-hooks` → #38 (faz 1 plan).
+  - Aktarım: `agent-mem-agz` / `memory/m07-agz` → #40 (faz 1 salt-okunur keşif).
+  - Doğrulama: `agent-mem-verify` / `memory/m08-verify` → #41 (sürekli bağımsız test).
+- Entegrasyon: ajanlar push etmez; koordinatör rebase + ff-merge ile kampanya
+  dalına alır. `SKILL_FORGE_MCP_PLAN.md`, `docs/evidence/issues-progress.json` ve
+  `dist/**` tek yazarlı/ertelemeli. Nihai entegrasyon PR'ı issue–değişiklik–test
+  eşlemesi, doğrulanan HEAD ve kalan engellerle açılır; issue'lar yalnız kabul
+  kanıtıyla kapatılır. Sürüm/canlı AGZ/üretim geçişi bu kampanyanın yetkisi değil.
+
+#### M01 çalışma notları (ajan raporlarından bağımsız)
+- Koordinatör kararı: M01 sözleşmesi doğrudan ajan promptunda bağlayıcı olarak
+  verildi; sapma hâlinde ajan duracak. Koordinatör, birleşme sonrası kodu ve
+  testleri bağımsız olarak doğrulayacak (ajan raporu kanıt sayılmaz).
