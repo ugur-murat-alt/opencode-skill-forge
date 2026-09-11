@@ -23,6 +23,10 @@ const RETRYABLE_DB_CODES = new Set([
   "40P01",
 ]);
 export function isRetryableWorkerError(error: unknown): boolean {
+  // Issue #37 follow-up: the single vault writer lock can be held by a
+  // concurrent direct write; the commit retries instead of terminalizing.
+  if (error instanceof ForgeError && error.code === "memory_writer_busy")
+    return true;
   if (
     error instanceof ForgeError &&
     [429, 502, 503, 504].includes(error.status)

@@ -15,6 +15,7 @@ import {
   defaultJobKinds,
   type JobKindDefinition,
 } from "../src/domain/job-kinds.js";
+import { ForgeError } from "../src/domain/errors.js";
 
 /**
  * Issue #36 follow-up: concurrent SQLite writers (server + worker +
@@ -73,6 +74,15 @@ test("the retry classifier covers busy/locked and serialization codes", () => {
     ),
   ).toBe(true);
   expect(isRetryableWorkerError(new Error("plain failure"))).toBe(false);
+  expect(
+    isRetryableWorkerError(
+      new ForgeError(
+        "memory_writer_busy",
+        "Vault yazıcısı başka bir süreçte etkin.",
+        409,
+      ),
+    ),
+  ).toBe(true);
   expect(
     isRetryableWorkerError(
       Object.assign(new Error("missing column"), { code: "SQLITE_ERROR" }),
