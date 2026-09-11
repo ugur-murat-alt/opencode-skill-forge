@@ -13,7 +13,7 @@ import {
 import { BindingService } from "../application/bindings.js";
 import { TelemetryService } from "../application/telemetry.js";
 import { MaintenanceService } from "../application/maintenance.js";
-import { terminalStates } from "../jobs/queue.js";
+import { JobQueue, terminalStates } from "../jobs/queue.js";
 import { redact as redactMetadata } from "../telemetry/redact.js";
 import { PackageManager } from "../application/packages.js";
 import { PackageStore } from "../skills/store.js";
@@ -23,6 +23,9 @@ import { ForgeService } from "../application/forge.js";
 import { ForgeWorker } from "../jobs/worker.js";
 import { BudgetService } from "../jobs/budgets.js";
 import { productionHandler } from "../runner/handler.js";
+import { MemoryService } from "../memory/service.js";
+import { memoryJobHandlers } from "../memory/worker.js";
+import { productionJobKinds } from "../memory/job-kinds.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -78,15 +81,19 @@ export async function createHttpServer(config: LocalConfig) {
     config.token,
     config.policy,
   );
+  const memory = new MemoryService(storage.db);
   const worker = new ForgeWorker(
-    forge.queue,
+    new JobQueue(storage, config.policy, productionJobKinds),
     productionHandler(
       storage,
       config.dataDir,
       vault,
       config.profile !== "server",
     ),
-    { postgresUrl: config.postgresUrl },
+    {
+      postgresUrl: config.postgresUrl,
+      handlers: memoryJobHandlers(memory),
+    },
   );
   const localOwner =
     config.profile !== "server" ? await identityService.bootstrapLocal() : null;
