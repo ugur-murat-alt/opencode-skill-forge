@@ -24,8 +24,14 @@ import { ForgeWorker } from "../jobs/worker.js";
 import { BudgetService } from "../jobs/budgets.js";
 import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
+import { jobScopeForSpace } from "../memory/service.js";
+import { MemoryCommitService } from "../memory/commit.js";
 import { memoryJobHandlers } from "../memory/worker.js";
 import { productionJobKinds } from "../memory/job-kinds.js";
+import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
+import { sha256Hex } from "../memory/files.js";
+import { vaultRoot } from "../memory/paths.js";
+import { MEMORY_KINDS } from "../domain/memory.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -35,7 +41,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { z, ZodError } from "zod";
 import { createMcpServer } from "../mcp/server.js";
@@ -81,9 +87,16 @@ export async function createHttpServer(config: LocalConfig) {
     config.token,
     config.policy,
   );
-  const memory = new MemoryService(storage.db);
+  const memoryRoot = vaultRoot(config.dataDir);
+  const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryCommits = new MemoryCommitService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+  });
+  const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
   const worker = new ForgeWorker(
-    new JobQueue(storage, config.policy, productionJobKinds),
+    memoryQueue,
     productionHandler(
       storage,
       config.dataDir,
@@ -92,7 +105,7 @@ export async function createHttpServer(config: LocalConfig) {
     ),
     {
       postgresUrl: config.postgresUrl,
-      handlers: memoryJobHandlers(memory),
+      handlers: memoryJobHandlers(memory, memoryCommits),
     },
   );
   const localOwner =
@@ -1385,6 +1398,119 @@ export async function createHttpServer(config: LocalConfig) {
       requestIdentity(request),
       request.body,
     );
+  });
+  // --- Hafıza (issue #35): GET salt-okunur; mutasyonlar açık POST + ACL +
+  // audit. ACK yalnız kalıcı kabulden sonra döner; receipt ayrı okunur.
+  app.get("/api/memory/spaces", async (request) => {
+    const query = z
+      .object({
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listSpaces(requestIdentity(request), {
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listNotes(requestIdentity(request), {
+      spaceId: query.space_id,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes/:id", async (request) => {
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    return memory.readNote(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+  });
+  app.get("/api/memory/events", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        source_event_key: z.string().min(1).max(200),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryCommits.receipt(
+      requestIdentity(request),
+      query.space_id,
+      query.source_event_key,
+    );
+  });
+  app.post("/api/memory/ingest", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        source_event_key: z.string().min(1).max(200),
+        source_kind: z.string().min(1).max(40),
+        content: z.string().min(1).max(MEMORY_INGEST_CONTENT_MAX),
+        note_id: z.string().min(1).max(200).optional(),
+        base_revision: z.number().int().min(0).optional(),
+        kind: z.enum(MEMORY_KINDS).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    // Mutasyon sınırında somut alan ACL'i; accept ayrıca tenant/kapsam
+    // `run` iznini doğrular.
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const contentHash = sha256Hex(body.content);
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_ingest",
+      // Kapsam/olay çifti kararlı ve sınırlı tek bir anahtara indirilir.
+      key: sha256Hex(`${body.space_id}\u0000${body.source_event_key}`),
+      payload: {
+        spaceId: body.space_id,
+        sourceEventKey: body.source_event_key,
+        sourceKind: body.source_kind,
+        contentHash,
+        content: body.content,
+        ...(body.note_id ? { noteId: body.note_id } : {}),
+        ...(body.base_revision !== undefined
+          ? { baseRevision: body.base_revision }
+          : {}),
+        ...(body.kind ? { kind: body.kind } : {}),
+      },
+    });
+    await storage.db
+      .insertInto("audit_events")
+      .values({
+        tenant_id: identity.tenantId,
+        id: randomUUID(),
+        user_id: identity.userId,
+        project_id: space.kind === "project" ? space.project_id : null,
+        kind: "memory.ingest.accepted",
+        detail: JSON.stringify({
+          space_id: body.space_id,
+          run_id: accepted.run.id,
+          source_event_key: body.source_event_key,
+          duplicate: accepted.status === "duplicate",
+        }),
+        created_at: Date.now(),
+      })
+      .execute();
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state,
+    };
   });
   app.route({
     method: ["GET", "POST", "DELETE"],

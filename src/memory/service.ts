@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { Kysely } from "kysely";
-import type { DB, MemoryEvent, MemorySpace } from "../storage/schema.js";
+import type {
+  DB,
+  MemoryEvent,
+  MemoryNote,
+  MemoryNoteRevision,
+  MemorySpace,
+} from "../storage/schema.js";
 import { IdentityService, type Identity } from "../application/identity.js";
 import { ForgeError } from "../domain/errors.js";
-import type { RunScopeKind } from "../domain/job-kinds.js";
+import type { JobScope, RunScopeKind } from "../domain/job-kinds.js";
 import type { MemorySpaceScope } from "../domain/memory.js";
+import { readTextIfExists } from "./files.js";
+import { noteDisplayPath, resolveVaultRelative } from "./paths.js";
 
 /**
  * Issue #34 (M01): the single owner of memory application behavior. Spaces
@@ -60,6 +68,8 @@ export class MemoryService {
   constructor(
     readonly db: Kysely<DB>,
     readonly identities: IdentityService = new IdentityService(db),
+    /** Optional vault root for read-only note content views (M02 HTTP). */
+    readonly vaultRoot?: string,
   ) {}
 
   /** The caller's personal space, created on first use by a writable member. */
@@ -332,6 +342,10 @@ export class MemoryService {
         created_at: now,
         updated_at: now,
         committed_revision: null,
+        error_code: null,
+        receipt_json: null,
+        attempts: 0,
+        indexed_at: null,
       };
       const inserted = await tx
         .insertInto("memory_events")
@@ -466,10 +480,174 @@ export class MemoryService {
       return report;
     });
   }
+
+  /** Spaces the actor may read; same visibility rule as `reconcile`. */
+  async listSpaces(
+    identity: Identity,
+    options: { after?: string; limit?: number } = {},
+  ) {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+    const role = await this.identities.authorize(identity, "read");
+    const administrator = role === "founder" || role === "admin";
+    let query = this.db
+      .selectFrom("memory_spaces")
+      .selectAll()
+      .where("tenant_id", "=", identity.tenantId)
+      .where((eb) =>
+        eb.or([
+          eb.and([
+            eb("kind", "=", "personal"),
+            eb("owner_user_id", "=", identity.userId),
+          ]),
+          eb("kind", "=", "organization"),
+          eb.and([
+            eb("kind", "=", "project"),
+            administrator
+              ? eb("project_id", "is not", null)
+              : eb("project_id", "in", (sub) =>
+                  sub
+                    .selectFrom("project_members")
+                    .select("project_id")
+                    .where("tenant_id", "=", identity.tenantId)
+                    .where("user_id", "=", identity.userId),
+                ),
+          ]),
+        ]),
+      );
+    if (options.after) query = query.where("id", ">", options.after);
+    const rows = await query
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    return {
+      items: rows.slice(0, limit).map((space) => ({
+        ...space,
+        scope: jobScopeForSpace(space),
+      })),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
+  }
+
+  /** Bounded note list with a stable id cursor and presentation path. */
+  async listNotes(
+    identity: Identity,
+    input: { spaceId: string; after?: string; limit?: number },
+  ) {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    let query = this.db
+      .selectFrom("memory_notes")
+      .selectAll()
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id);
+    if (input.after) query = query.where("id", ">", input.after);
+    const rows = await query
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    const items = rows.slice(0, limit);
+    const kinds = new Map<string, string>();
+    if (items.length > 0) {
+      const revisions = await this.db
+        .selectFrom("memory_note_revisions")
+        .select(["note_id", "kind", "revision"])
+        .where("tenant_id", "=", identity.tenantId)
+        .where("space_id", "=", space.id)
+        .where(
+          "note_id",
+          "in",
+          items.map((note) => note.id),
+        )
+        .execute();
+      for (const revision of revisions)
+        if (!kinds.has(revision.note_id))
+          kinds.set(revision.note_id, revision.kind);
+    }
+    return {
+      space: { id: space.id, kind: space.kind, name: space.name },
+      items: items.map((note) => ({
+        ...note,
+        display_path: noteDisplayPath(
+          space.id,
+          kinds.get(note.id) ?? "note",
+          note.title,
+          note.id,
+        ),
+      })),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
+  }
+
+  /** Note detail with the current accepted revision and its file content. */
+  async readNote(
+    identity: Identity,
+    input: { spaceId: string; noteId: string },
+  ): Promise<{
+    note: MemoryNote;
+    revision: MemoryNoteRevision | null;
+    content: string | null;
+    display_path: string;
+  }> {
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    const note = await this.db
+      .selectFrom("memory_notes")
+      .selectAll()
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("id", "=", input.noteId)
+      .executeTakeFirst();
+    if (!note)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    const revision =
+      note.current_revision === null
+        ? null
+        : ((await this.db
+            .selectFrom("memory_note_revisions")
+            .selectAll()
+            .where("tenant_id", "=", identity.tenantId)
+            .where("space_id", "=", space.id)
+            .where("note_id", "=", note.id)
+            .where("revision", "=", note.current_revision)
+            .executeTakeFirst()) ?? null);
+    let content: string | null = null;
+    if (this.vaultRoot && revision?.file_path) {
+      content = await readTextIfExists(
+        resolveVaultRelative(this.vaultRoot, revision.file_path),
+      );
+    }
+    return {
+      note,
+      revision,
+      content,
+      display_path: noteDisplayPath(
+        space.id,
+        revision?.kind ?? "note",
+        note.title,
+        note.id,
+      ),
+    };
+  }
+}
+
+/** Map a space's typed ownership to the queue scope used for acceptance. */
+export function jobScopeForSpace(
+  space: Pick<MemorySpace, "kind" | "project_id">,
+): JobScope {
+  if (space.kind === "project") {
+    if (!space.project_id)
+      throw new ForgeError(
+        "memory_space_unavailable",
+        "Proje alanı tutarsız.",
+        404,
+      );
+    return { type: "project", projectId: space.project_id };
+  }
+  if (space.kind === "personal") return { type: "personal" };
+  return { type: "organization" };
 }
 
 /** Unique-violation detection across SQLite and PostgreSQL drivers. */
-function isUniqueViolation(error: unknown): boolean {
+export function isUniqueViolation(error: unknown): boolean {
   const code = (error as { code?: unknown }).code;
   if (code === "23505" || code === "SQLITE_CONSTRAINT_UNIQUE") return true;
   const message = error instanceof Error ? error.message : String(error);

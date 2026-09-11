@@ -98,6 +98,41 @@ değildir. Bu yüzden:
   kurtarması yapılabileceği iddia edilmez.** Kurtarma, Markdown sürümleri ve
   operasyon metadata'sını aynı tutarlı sınırda kapsar.
 
+## Commit, tek yazıcı ve kurtarma (issue #35)
+
+- **Kabul aşamaları:** `queued` kalıcı teslim alındığını (run + pending
+  olay), `committed` immutable Markdown revision'ının ve DB head'inin kabul
+  edildiğini, `indexed` türetilmiş görünüm işaretinin yazıldığını söyler.
+  ACK yalnız ilgili aşama kalıcı olduktan sonra döner; disk/DB hatasında
+  başarı uydurulmaz.
+- **Sıra:** doğrula → temp + fsync → immutable sürüm dosyasını yayımla →
+  DB (revision satırı + head CAS + olay `committed` + kalıcı receipt) →
+  indeks işareti. Dosya sistemi ile SQL tek atomik transaction sayılmaz.
+- **Kesinti noktaları:** (a) ACK öncesi: olay `pending` kalır, handler
+  yeniden dener; (b) dosya sonrası/DB öncesi: yetim revision dosyası
+  event+hash eşleşirse benimsenir, eşleşmeyen yetimler yalnız metadata
+  karantinasına yazılıp temizlenir; (c) DB sonrası/indeks öncesi: kalıcı
+  receipt yeniden oynatmayla işareti tamamlar, ikinci revision üretilmez.
+- **Tek yazıcı:** vault kökü başına tek aktif FS yazıcısı vardır; kilit
+  writer id + pid + host + heartbeat taşır. Aynı host'ta canlı pid (duraklamış
+  olsa bile) devralınamaz; ölü pid devralınır; farklı/bilinmeyen host yalnız
+  açık kurtarma (`force`) ile devralınır. DB lease süresi doldu diye canlı
+  olabilecek yazıcıdan sahiplik alınmaz. Alan başına kısa commit sırası
+  FIFO'dur; model/uzun okuma bu kilidi tutmaz.
+- **CAS ve dosya güvenliği:** revision dosya adı `<revision>-<fileHash>.md`
+  olduğundan kaybeden yazar kazananın dosyasını silemez; yalnız kendi
+  referanssız adayını kaldırır. Head güncellemesi `current_revision` CAS'ı
+  iledir; güncelleme `base_revision` ister.
+- **Markdown sahipliği:** kabul edilen metin ve anlamsal metadata Markdown
+  dosyasındadır; DB kimlik/ACL, head/revision manifesti, receipt, tombstone
+  ve kaynak eşlemesini tutar. Commit edilen sürümün dosyası bulunmadan
+  başarı dönmez.
+- **Kaynak durumu ve tombstone:** kaynağın silinmesi `source_state=missing`
+  olur; not otomatik silinmez. Tombstone (`deleted_at`) yalnız açık restore
+  ile kalkar; yeniden tarama/eski spool silinmiş notu diriltemez. Dış
+  editörün daha yeni çalışma kopyası ezilmez; çatışma
+  `memory_change_candidates` üzerinde görünür olur.
+
 ## İlk sürümde kapalı olanlar
 
 - Alanlar arası otomatik kalıcı ilişki, link üretimi veya bilgi kopyalama

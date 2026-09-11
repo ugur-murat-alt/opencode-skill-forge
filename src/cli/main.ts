@@ -21,6 +21,8 @@ import { JobQueue } from "../jobs/queue.js";
 import { ForgeWorker } from "../jobs/worker.js";
 import { productionHandler } from "../runner/handler.js";
 import { MemoryService } from "../memory/service.js";
+import { MemoryCommitService } from "../memory/commit.js";
+import { vaultRoot } from "../memory/paths.js";
 import { memoryJobHandlers } from "../memory/worker.js";
 import { productionJobKinds } from "../memory/job-kinds.js";
 import { IdentityService } from "../application/identity.js";
@@ -417,7 +419,13 @@ async function main() {
       if (config.profile !== "server")
         await new IdentityService(storage.db).bootstrapLocal();
       const vault = await SecretVault.open(config.dataDir);
-      const memory = new MemoryService(storage.db);
+      const memoryRoot = vaultRoot(config.dataDir);
+      const memory = new MemoryService(storage.db, undefined, memoryRoot);
+      const memoryCommits = new MemoryCommitService({
+        db: storage.db,
+        vaultRoot: memoryRoot,
+        service: memory,
+      });
       const worker = new ForgeWorker(
         new JobQueue(storage, config.policy, productionJobKinds),
         productionHandler(
@@ -428,7 +436,7 @@ async function main() {
         ),
         {
           postgresUrl: config.postgresUrl,
-          handlers: memoryJobHandlers(memory),
+          handlers: memoryJobHandlers(memory, memoryCommits),
         },
       );
       await worker.start();

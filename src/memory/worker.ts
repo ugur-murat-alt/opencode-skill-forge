@@ -2,6 +2,7 @@ import { ForgeError } from "../domain/errors.js";
 import type { JobHandler } from "../jobs/worker.js";
 import type { Identity } from "../application/identity.js";
 import { MemoryService } from "./service.js";
+import type { MemoryCommitService } from "./commit.js";
 import { memoryIngestJobKind, memoryReconcileJobKind } from "./job-kinds.js";
 
 /**
@@ -10,9 +11,17 @@ import { memoryIngestJobKind, memoryReconcileJobKind } from "./job-kinds.js";
  * SPR tools, they respect the abort signal, and the space ACL is re-resolved
  * inside `MemoryService` on every call. They run with `evolutionEnabled`
  * false; `memoryEnabled` was already checked at acceptance.
+ *
+ * Issue #35 (M02): when the accepted payload carries bounded content, the
+ * handler commits an immutable revision through `MemoryCommitService`; the
+ * durable pending event is recorded first, so a crash never loses the
+ * accepted event and replay adopts the published file.
  */
 
-export function memoryIngestHandler(service: MemoryService): JobHandler {
+export function memoryIngestHandler(
+  service: MemoryService,
+  commits?: MemoryCommitService,
+): JobHandler {
   return async (run, signal) => {
     throwIfAborted(signal);
     const payload = memoryIngestJobKind.payload.parse(
@@ -26,6 +35,30 @@ export function memoryIngestHandler(service: MemoryService): JobHandler {
     // regular space ACL is re-checked inside `recordEvent` as well.
     await service.authorizeRunSpace(run, payload.spaceId, "write");
     const outcome = await service.recordEvent(identity, payload);
+    if (payload.content !== undefined) {
+      if (!commits)
+        throw new ForgeError(
+          "memory_commit_unavailable",
+          "Hafıza commit servisi yapılandırılmadı.",
+          503,
+        );
+      const receipt = await commits.commit({
+        identity,
+        run,
+        spaceId: payload.spaceId,
+        eventId: outcome.event.id,
+        sourceKind: payload.sourceKind,
+        content: payload.content,
+        noteId: payload.noteId ?? null,
+        baseRevision: payload.baseRevision ?? null,
+        kind: payload.kind,
+      });
+      throwIfAborted(signal);
+      return {
+        state: "completed",
+        result: { eventId: outcome.event.id, ...receipt },
+      };
+    }
     throwIfAborted(signal);
     return {
       state: "completed",
@@ -54,9 +87,12 @@ export function memoryReconcileHandler(service: MemoryService): JobHandler {
   };
 }
 
-export function memoryJobHandlers(service: MemoryService) {
+export function memoryJobHandlers(
+  service: MemoryService,
+  commits?: MemoryCommitService,
+) {
   return {
-    memory_ingest: memoryIngestHandler(service),
+    memory_ingest: memoryIngestHandler(service, commits),
     memory_reconcile: memoryReconcileHandler(service),
   } satisfies Partial<Record<"memory_ingest" | "memory_reconcile", JobHandler>>;
 }

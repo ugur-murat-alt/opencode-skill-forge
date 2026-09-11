@@ -29,6 +29,7 @@ import { providerMigration } from "./provider-migration.js";
 import { outboxDeliveryMigration } from "./outbox-delivery-migration.js";
 import { jobMigration } from "./job-migration.js";
 import { memoryMigration } from "./memory-migration.js";
+import { memoryPipelineMigration } from "./memory-pipeline-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
   Kysely,
@@ -80,6 +81,7 @@ export function migrationsFor(backend: Backend): Record<string, Migration> {
     "003_providers": providerMigration,
     "004_skills": skillMigration(backend),
     "032_memory": memoryMigration(backend),
+    "033_memory_pipeline": memoryPipelineMigration,
     "001_identity": {
       up: async (database) => {
         await database.schema

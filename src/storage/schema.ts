@@ -360,6 +360,8 @@ export interface DB {
   memory_notes: MemoryNote;
   memory_note_revisions: MemoryNoteRevision;
   memory_events: MemoryEvent;
+  memory_sources: MemorySource;
+  memory_change_candidates: MemoryChangeCandidate;
   outbox: {
     tenant_id: string;
     run_id: string;
@@ -494,7 +496,15 @@ export interface MemoryNote {
   created_at: number;
   updated_at: number;
   superseded_by: string | null;
+  /** Issue #35: source binding; null for service-created notes. */
+  source_id: string | null;
+  source_path: string | null;
+  source_hash: string | null;
+  source_state: MemorySourceState;
+  /** Tombstone; a deleted note is never revived by a scan or spool replay. */
+  deleted_at: number | null;
 }
+export type MemorySourceState = "present" | "missing";
 export interface MemoryNoteRevision {
   tenant_id: string;
   space_id: string;
@@ -510,6 +520,10 @@ export interface MemoryNoteRevision {
   base_revision: number | null;
   created_by: string;
   created_at: number;
+  /** Issue #35: vault-relative immutable file and canonical hash. */
+  file_path: string | null;
+  content_hash: string | null;
+  byte_size: number | null;
 }
 export type MemoryEventState = "pending" | "committed" | "rejected";
 export interface MemoryEvent {
@@ -524,4 +538,41 @@ export interface MemoryEvent {
   created_at: number;
   updated_at: number;
   committed_revision: number | null;
+  /** Issue #35: durable receipt/diagnostic and derived-index marker. */
+  error_code: string | null;
+  receipt_json: string | null;
+  attempts: number;
+  indexed_at: number | null;
+}
+export type MemorySourceMode = "read_only" | "managed";
+export interface MemorySource {
+  tenant_id: string;
+  id: string;
+  space_id: string;
+  root_path: string;
+  mode: MemorySourceMode;
+  cursor_json: string | null;
+  checkpoint: string | null;
+  last_scan_at: number | null;
+  status: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+export type MemoryCandidateState =
+  "candidate" | "conflict" | "applied" | "rejected" | "quarantined";
+export interface MemoryChangeCandidate {
+  tenant_id: string;
+  id: string;
+  /** Null when the candidate belongs to a service working-copy conflict. */
+  source_id: string | null;
+  path: string;
+  note_id: string | null;
+  previous_hash: string | null;
+  observed_hash: string | null;
+  base_revision: number | null;
+  state: MemoryCandidateState;
+  reason: string | null;
+  created_at: number;
+  updated_at: number;
 }
