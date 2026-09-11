@@ -309,26 +309,61 @@ Bekleyen uçlar (bağımsız inceleme, 11.09.2026; her biri `test.failing`):
 Çekirdek düzeltmesi gelince ilgili test yeşile döner; `.failing` işareti
 kaldırılmalıdır (Bun aksi halde "failing ama geçti" diye kırmızı verir).
 
-## 7. Sonraki M'ler için doğrulama başlıkları
+## 7. Entegrasyon turu bağımsız doğrulaması (M03-B / M04-A / M06 / M07 + retry)
 
-M01 (#34) ve M02 (#35) bağımsız kapıları yukarıda; kalan başlıklar:
+Yeni bağımsız dosyalar ve kapsadıkları sözleşmeler:
 
-- **M03 (#36) retrieval/context:** 1.000/10.000 ölçekte son %2 eşleşmesi;
-  kapsam sızıntısı; token zarfı ve continuation; compaction/resume delta;
-  HTTP–MCP eşdeğerliği. Kanıt: benchmark raporu + gerçek HTTP/MCP çağrısı.
+| Dosya                                        | Kapsam                                                                                                                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/memory-writes-independent.test.ts`     | `MemoryWriteService` create/patch CAS, event_key, archive/restore, link iki uç, checkpoint otomatik-done yasağı, `MemoryContextService` kart/bölüm/delta, bütçe ve supersede uçları             |
+| `test/memory-surface-independent.test.ts`    | Gerçek HTTP + gerçek MCP istemcisi: `memoryEnabled=false` kataloğu (5 `forge_*`), `=true` kataloğu (6 `memory_*`), MCP↔HTTP aynı sonuç, revisions/context eşleşmesi                             |
+| `test/memory-m04-independent.test.ts`        | Taslak kapsam anahtarı (tenant+space+note+base), yayımlanmamış iş, belge kayıpsız düzenleme; sürüm geçmişi salt-okunurluğu + kiracı izolasyonu, 409 + yeniden tabanlama, alan oluşturma audit'i |
+| `test/memory-curator-independent.test.ts`    | Finalize kapısı, `off` modda sağlayıcı çağrılmaması, sert çağrı bütçesi, auto-write tür tavanı, beş araçlık dar yüzey + `run_closed`                                                            |
+| `test/agz-import-guards-independent.test.ts` | Güvensiz not kimliği reddi, `%` databaseId sahiplik yanılgısı, rollback receipt digest bağı                                                                                                     |
+| `test/worker-db-retry-independent.test.ts`   | SQLITE_BUSY/40001 yeniden deneme, gerçek hatanın terminal kalması, sınıflama matrisi                                                                                                            |
+
+Koşum: yukarıdaki altı dosya SQLite'ta; M01/M02 paketleri ayrıca PostgreSQL'de
+yeşil. Benchmark kabulü (`test/benchmarks/memory-acceptance.test.ts`) gerçek
+ölçüm üretir: kalite metrikleri ölçülü ve eşik üstü, otomatik yazım
+`not-measured`, p95 30 örnek dolmadan `not-measured`; token sayıları
+`utf8_bytes_div_2.5_estimate` etiketli tahmindir, garanti değildir.
+
+Bağımsız incelemede açık kalan ve `test.failing` ile işaretlenen uçlar
+(11.09.2026):
+
+- `src/memory/context.ts` — bütçe yalnız kartlardan kırpılıyor; bölüm
+  kimlikleri (`active_tasks`/`blockers`/`decisions`/`pins`) ve zarf
+  sınırsız olduğundan `used_tokens_estimate` `max_tokens`'ı aşabiliyor
+  (30 not, `max_tokens=128` → ölçüm 628).
+- `src/memory/writes.ts` — `loadParsed` metadata'daki `sources`'u, bilinmeyen
+  frontmatter'ı, `created_at` ve `valid_from/valid_until` alanlarını
+  taşımıyor; her tipli düzenleme bu alanları sessizce düşürüyor.
+- `src/memory/writes.ts` — aynı `event_key` ile idempotent retry
+  `memory_event_conflict` (409) dönüyor; M02 replay receipt'i yerine hata
+  üretiliyor.
+- `src/memory/writes.ts` — `supersede_target` kaynağı `superseded` yaparken
+  aynı anda kaynaktan hedefe `SUPERSEDES` kenarı ekliyor (anlamsal çelişki;
+  sözleşmede hedefin mi yoksa kaynağın mı yaşam döngüsünün değişeceği
+  netleşmeli).
+
+M07 düzeltmeleri (`509f92c`, `622d560`) bağımsız olarak doğrulandı: hostile
+kimlik stage dışına yazamıyor, `%` sahiplik yanılgısı yok, rollback digest
+bağı kopuksa hiçbir not arşivlenmiyor; rollback sonrası replay tombstone'ları
+görünür sayıyor.
+
+## 8. Sonraki M'ler için doğrulama başlıkları
+
+M01–M04, M06 ve M07 bağımsız kapıları yukarıda; kalan başlıklar:
+
 - **M05 (#38) native istemci:** Gerçek Codex/Claude sürüm + olay matrisi;
   offline spool; interrupt'ta alınmamış son olayın uydurulmaması.
-- **M06 (#39) otomasyon:** Tek MemoryCurator profili, dar iç araçlar, ölçülmüş
-  auto-write; yanlış yazım ve yetki genişletme negatifleri.
-- **M07 (#40) AGZ geçişi:** Kaynak değişmeden kimlik/sürüm/ilişki aktarımı,
-  receipt ve rollback; kaynak veriye yazma yok.
 - **M08 (#41) backup/restore/retention/işletim:** Aynı commit sınırında
   Markdown + işletim DB snapshot'ı; boş hedefe restore → yeniden indeks →
   aynı yetkili not/graph/bağlam; unut/purge ve eski yedekten dirilme negatifi;
   tanılama ekranı/doctor; public health'te not/tenant adı yok; kademeli açılış
   matrisi.
 
-## 8. Artifact şeması ve placeholder
+## 9. Artifact şeması ve placeholder
 
 - `docs/evidence/memory/report.schema.json` — rapor JSON şeması.
 - `docs/evidence/memory/example.report.json` — **placeholder**; gerçek koşum
