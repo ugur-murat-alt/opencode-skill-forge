@@ -359,6 +359,45 @@ export async function consumeTurnMemoryOff(
   });
 }
 
+/**
+ * Read-only variant of the turn flag: SessionStart injection must respect an
+ * unconsumed `[memory:off]` decision without consuming it (Stop still owns the
+ * consume step).
+ */
+export async function peekTurnMemoryOff(
+  input: TurnFlagInput,
+): Promise<boolean> {
+  const now = input.now ?? Date.now();
+  return withSpoolDb(input.dataDir, async (db) => {
+    const row = await db
+      .selectFrom("memory_turn_flags")
+      .select(["memory_off", "expires_at"])
+      .where("installation_id", "=", input.installationId)
+      .where("session_id", "=", input.sessionId)
+      .executeTakeFirst();
+    return Boolean(row && row.memory_off === 1 && row.expires_at >= now);
+  });
+}
+
+/**
+ * Resolves the project's memory space with a bounded lookup. Used by the
+ * context path; a missing space is a normal "no context" outcome, never a
+ * reason to read another scope.
+ */
+export async function resolveProjectSpaceId(input: {
+  config: Pick<LocalConfig, "url" | "token">;
+  projectRef: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs: number;
+}): Promise<string | null> {
+  return resolveProjectSpace(
+    input.fetchImpl ?? fetch,
+    input.config,
+    input.projectRef,
+    Date.now() + input.timeoutMs,
+  );
+}
+
 export interface DeliverSpoolOptions {
   config: Pick<LocalConfig, "dataDir" | "url" | "token">;
   fetchImpl?: typeof fetch;

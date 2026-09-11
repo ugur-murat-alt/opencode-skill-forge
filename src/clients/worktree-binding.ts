@@ -23,7 +23,25 @@ export interface WorkspaceBinding {
   /** Stable per-worktree scope key (16 hex chars). */
   worktreeKey: string | null;
   commonDir: string | null;
+  /** Current git branch (null when detached/unreadable/not a repo). */
+  branch: string | null;
   reason: string | null;
+}
+
+const MAX_BRANCH_BYTES = 512;
+
+async function readBranch(headFile: string): Promise<string | null> {
+  const text = await readBoundedTextFile(headFile, MAX_BRANCH_BYTES);
+  if (!text || !text.startsWith("ref:") || !text.startsWith("ref: refs/heads/"))
+    return null;
+  const branch = text.slice("ref: refs/heads/".length).trim();
+  if (
+    !branch ||
+    branch.length > 200 ||
+    [...branch].some((character) => character.charCodeAt(0) < 0x20)
+  )
+    return null;
+  return branch;
 }
 
 export const WORKTREE_METADATA_MAX_BYTES = 2048;
@@ -32,6 +50,7 @@ interface GitChain {
   commonDir: string;
   worktreeRoot: string;
   kind: "main" | "linked";
+  headFile: string;
 }
 
 function isInside(dir: string, target: string): boolean {
@@ -76,7 +95,12 @@ async function resolveGitChain(worktreeRoot: string): Promise<GitChain | null> {
     const commonDir = await realpath(dotGit).catch(() => null);
     const root = await realpath(worktreeRoot).catch(() => null);
     if (!commonDir || !root) return null;
-    return { commonDir, worktreeRoot: root, kind: "main" };
+    return {
+      commonDir,
+      worktreeRoot: root,
+      kind: "main",
+      headFile: join(commonDir, "HEAD"),
+    };
   }
   if (!stat.isFile() || stat.size > WORKTREE_METADATA_MAX_BYTES) return null;
   const text = await readBoundedTextFile(dotGit, WORKTREE_METADATA_MAX_BYTES);
@@ -122,7 +146,12 @@ async function resolveGitChain(worktreeRoot: string): Promise<GitChain | null> {
   if (!isInside(commonDir, adminDir)) return null;
   const root = await realpath(worktreeRoot).catch(() => null);
   if (!root) return null;
-  return { commonDir, worktreeRoot: root, kind: "linked" };
+  return {
+    commonDir,
+    worktreeRoot: root,
+    kind: "linked",
+    headFile: join(adminDir, "HEAD"),
+  };
 }
 
 export function worktreeKeyFor(worktreeRoot: string): string {
@@ -144,6 +173,7 @@ export async function resolveWorkspaceBinding(
       status: "mismatch",
       worktreeKey: null,
       commonDir: null,
+      branch: null,
       reason: "project_root_unreadable",
     };
   const cwd = await realDir(resolve(cwdInput));
@@ -152,20 +182,25 @@ export async function resolveWorkspaceBinding(
       status: "mismatch",
       worktreeKey: null,
       commonDir: null,
+      branch: null,
       reason: "cwd_unreadable",
     };
-  if (cwd === projectRoot || isInside(projectRoot, cwd))
+  if (cwd === projectRoot || isInside(projectRoot, cwd)) {
+    const projectChain = await resolveGitChain(projectRoot).catch(() => null);
     return {
       status: "direct",
       worktreeKey: worktreeKeyFor(projectRoot),
       commonDir: null,
+      branch: projectChain ? await readBranch(projectChain.headFile) : null,
       reason: null,
     };
+  }
   if (isInside(cwd, projectRoot))
     return {
       status: "mismatch",
       worktreeKey: null,
       commonDir: null,
+      branch: null,
       reason: "cwd_ancestor_of_project",
     };
   const [projectChain, cwdChain] = await Promise.all([
@@ -177,6 +212,7 @@ export async function resolveWorkspaceBinding(
       status: "mismatch",
       worktreeKey: null,
       commonDir: null,
+      branch: null,
       reason: "git_metadata_invalid",
     };
   if (projectChain.commonDir !== cwdChain.commonDir)
@@ -184,12 +220,14 @@ export async function resolveWorkspaceBinding(
       status: "mismatch",
       worktreeKey: null,
       commonDir: null,
+      branch: null,
       reason: "different_repository",
     };
   return {
     status: "linked",
     worktreeKey: worktreeKeyFor(cwdChain.worktreeRoot),
     commonDir: cwdChain.commonDir,
+    branch: await readBranch(cwdChain.headFile),
     reason: null,
   };
 }

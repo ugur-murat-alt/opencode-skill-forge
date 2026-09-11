@@ -5,8 +5,14 @@ import { ensureDaemon } from "../cli/daemon.js";
 import { sanitizeUntrustedText } from "../telemetry/sanitize.js";
 import {
   buildCheckpointContent,
+  buildMemoryContextText,
+  CONTEXT_FETCH_TIMEOUT_MS,
+  CONTEXT_PROMPT_MAX_TOKENS,
+  CONTEXT_SESSION_MAX_TOKENS,
+  CONTEXT_SPACE_LOOKUP_TIMEOUT_MS,
   isHookEvent,
   parseHookInput,
+  promptNeedsContext,
   requestsMemoryOff,
   type ClientName,
   type HookEnvelope,
@@ -15,11 +21,21 @@ import {
   acceptHookCapture,
   consumeTurnMemoryOff,
   deliverSpool,
+  peekTurnMemoryOff,
   recordSpoolCounter,
   recordUnsupportedEvent,
+  resolveProjectSpaceId,
   setTurnMemoryOff,
 } from "./hook-spool.js";
 import { resolveProjectBinding } from "./hook-binding.js";
+import { fetchMemoryContext } from "./context-client.js";
+import {
+  beginContextTurn,
+  recordContextDelivered,
+  recordContextEmpty,
+  recordContextFailure,
+  recordContextOffered,
+} from "./context-state.js";
 
 /**
  * Issue #38 (M05) Faz A hook adapter.
@@ -38,6 +54,18 @@ export interface HookOptions {
   fetchImpl?: typeof fetch;
   /** Set false in unit tests that assert capture without delivery. */
   deliver?: boolean;
+  /** Context network budget overrides; tests use small values. */
+  contextTimeoutMs?: number;
+  contextSpaceTimeoutMs?: number;
+  /**
+   * Test seam invoked with the composed context text before the delivered
+   * mark is written. Production uses the default no-op (the hook output is
+   * the delivery evidence); a thrown error proves "offered but not delivered".
+   */
+  contextDelivery?: (
+    text: string,
+    event: "SessionStart" | "UserPromptSubmit",
+  ) => Promise<void>;
 }
 
 export async function clientHook(
@@ -86,15 +114,43 @@ export async function clientHook(
     );
   if (envelope.event === "UserPromptSubmit") {
     // Prompt hazırlama kaldırıldı (P22): görünür metin değiştirilmez.
-    // Yalnız proje bağlamı ek bağlam olarak taşınır; niyet aynen korunur.
-    await recordTurnDecision(config, client, projectRef, envelope).catch(
-      () => undefined,
-    );
+    // Yalnız proje bağlamı ve (gerektiğinde) kaynaklı hafıza kartları ek
+    // bağlam olarak taşınır; niyet aynen korunur.
+    const memoryOff =
+      envelope.prompt !== null && requestsMemoryOff(envelope.prompt);
+    await recordTurnDecision(
+      config,
+      client,
+      projectRef,
+      envelope,
+      memoryOff,
+    ).catch(() => undefined);
     await flushSpool(config, options).catch(() => undefined);
+    const staticLine = `Skill Forge project_ref: ${projectRef}. Original prompt remains unchanged.`;
+    let additionalContext = staticLine;
+    if (
+      !memoryOff &&
+      envelope.prompt !== null &&
+      promptNeedsContext(envelope.prompt)
+    ) {
+      const injected = await injectContext(
+        config,
+        client,
+        projectRef,
+        envelope,
+        {
+          event: "UserPromptSubmit",
+          goal: envelope.prompt,
+          maxTokens: CONTEXT_PROMPT_MAX_TOKENS,
+          options,
+        },
+      ).catch(() => null);
+      if (injected) additionalContext = `${staticLine}\n\n${injected}`;
+    }
     return {
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: `Skill Forge project_ref: ${projectRef}. Original prompt remains unchanged.`,
+        additionalContext,
       },
     };
   }
@@ -121,7 +177,27 @@ export async function clientHook(
     await flushSpool(config, options).catch(() => undefined);
     return {};
   }
-  // SessionStart / SessionEnd: heartbeat + bounded spool flush, no output.
+  // SessionStart: sourced, bounded context injection (startup/resume/compact).
+  if (envelope.event === "SessionStart") {
+    if (!daemonReady && typeof input.cwd === "string")
+      await heartbeat(config, client, projectRef, input.cwd, envelope).catch(
+        () => undefined,
+      );
+    const injected = await injectContext(config, client, projectRef, envelope, {
+      event: "SessionStart",
+      maxTokens: CONTEXT_SESSION_MAX_TOKENS,
+      options,
+    }).catch(() => null);
+    await flushSpool(config, options, 300).catch(() => undefined);
+    if (!injected) return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: injected,
+      },
+    };
+  }
+  // SessionEnd: heartbeat + bounded spool flush, no output.
   if (!daemonReady && typeof input.cwd === "string")
     await heartbeat(config, client, projectRef, input.cwd, envelope).catch(
       () => undefined,
@@ -193,6 +269,7 @@ async function recordTurnDecision(
   client: ClientName,
   projectRef: string,
   envelope: HookEnvelope,
+  memoryOff: boolean,
 ) {
   if (envelope.prompt === null) return;
   if (!envelope.sessionId || !envelope.cwd) return;
@@ -212,7 +289,7 @@ async function recordTurnDecision(
     installationId,
     sessionId: envelope.sessionId,
     turnRef: envelope.turnRef,
-    memoryOff: requestsMemoryOff(envelope.prompt),
+    memoryOff,
   });
 }
 
@@ -284,7 +361,11 @@ async function safeCapture(
   }
 }
 
-async function flushSpool(config: LocalConfig, options: HookOptions) {
+async function flushSpool(
+  config: LocalConfig,
+  options: HookOptions,
+  budgetMs = 750,
+) {
   if (options.deliver === false) return;
   // Server-profile hooks are out of Faz A scope; delivery needs the local
   // owner token, while the spool itself always stays local.
@@ -296,8 +377,140 @@ async function flushSpool(config: LocalConfig, options: HookOptions) {
       token: config.token,
     },
     fetchImpl: options.fetchImpl,
-    budgetMs: 750,
+    budgetMs,
   });
+}
+
+/**
+ * Fetches the M03 context package and turns it into model-visible text.
+ * Offered/delivered bookkeeping happens here; a failed output (seam throws)
+ * leaves the revisions unmarked so the next event re-offers them.
+ */
+async function injectContext(
+  config: LocalConfig,
+  client: ClientName,
+  projectRef: string,
+  envelope: HookEnvelope,
+  input: {
+    event: "SessionStart" | "UserPromptSubmit";
+    goal?: string;
+    maxTokens: number;
+    options: HookOptions;
+  },
+): Promise<string | null> {
+  if (!envelope.sessionId || !envelope.cwd) return null;
+  const resolved = await resolveProjectBinding(
+    config.dataDir,
+    client,
+    projectRef,
+    envelope.cwd,
+  );
+  if (resolved.status !== "bound") return null;
+  const installationId = installationFingerprint([
+    client,
+    resolved.projectRoot,
+  ]);
+  // `[memory:off]` closes injection with the same turn flag as capture.
+  const memoryOff = await peekTurnMemoryOff({
+    dataDir: config.dataDir,
+    installationId,
+    sessionId: envelope.sessionId,
+    turnRef: envelope.turnRef,
+  }).catch(() => false);
+  if (memoryOff) return null;
+  const spaceTimeout =
+    input.options.contextSpaceTimeoutMs ?? CONTEXT_SPACE_LOOKUP_TIMEOUT_MS;
+  const fetchTimeout =
+    input.options.contextTimeoutMs ?? CONTEXT_FETCH_TIMEOUT_MS;
+  const deadline = Date.now() + spaceTimeout + fetchTimeout;
+  const turn = await beginContextTurn({
+    dataDir: config.dataDir,
+    client,
+    projectRoot: resolved.projectRoot,
+    sessionId: envelope.sessionId,
+    worktreeKey: resolved.worktreeKey,
+    source: input.event === "SessionStart" ? envelope.source : null,
+  });
+  const base = {
+    dataDir: config.dataDir,
+    client,
+    projectRoot: resolved.projectRoot,
+    sessionKey: turn.sessionKey,
+    worktreeKey: turn.worktreeKey,
+  };
+  const spaceStartedAt = Date.now();
+  const spaceId = await resolveProjectSpaceId({
+    config: { url: config.url, token: config.token },
+    projectRef,
+    fetchImpl: input.options.fetchImpl,
+    timeoutMs: spaceTimeout,
+  }).catch(() => null);
+  if (!spaceId) {
+    const kind =
+      Date.now() - spaceStartedAt >= spaceTimeout - 5 ? "timeout" : "error";
+    await recordContextFailure({ ...base, kind }).catch(() => undefined);
+    return null;
+  }
+  const result = await fetchMemoryContext({
+    config: { url: config.url, token: config.token },
+    spaceId,
+    sessionKey: turn.sessionKey,
+    generation: turn.generation,
+    branch: resolved.workspace.branch,
+    worktree: turn.worktreeKey,
+    goal: input.goal,
+    known: turn.known,
+    maxTokens: input.maxTokens,
+    fetchImpl: input.options.fetchImpl,
+    timeoutMs: fetchTimeout,
+    deadline,
+  });
+  if (result.status === "timeout") {
+    await recordContextFailure({ ...base, kind: "timeout" }).catch(
+      () => undefined,
+    );
+    return null;
+  }
+  if (result.status === "error") {
+    await recordContextFailure({ ...base, kind: "error" }).catch(
+      () => undefined,
+    );
+    return null;
+  }
+  if (result.status === "empty") {
+    await recordContextEmpty(base).catch(() => undefined);
+    return null;
+  }
+  const cards = result.package.cards;
+  const text = buildMemoryContextText({
+    cards,
+    continuationNote: result.package.continuation_note,
+    truncated: result.package.truncated,
+  });
+  if (!text) return null;
+  const offered = result.package.offered
+    .filter((entry) =>
+      cards.some(
+        (card) =>
+          card.note_id === entry.note_id && card.revision === entry.revision,
+      ),
+    )
+    .map((entry) => ({ note_id: entry.note_id, revision: entry.revision }));
+  await recordContextOffered({ ...base, count: cards.length });
+  await (input.options.contextDelivery?.(text, input.event) ??
+    Promise.resolve());
+  await recordContextDelivered({
+    ...base,
+    offered:
+      offered.length > 0
+        ? offered
+        : cards.map((card) => ({
+            note_id: card.note_id,
+            revision: card.revision,
+          })),
+    packageHash: result.package.envelope.package_hash,
+  });
+  return text;
 }
 
 export async function readHookInput(
