@@ -630,6 +630,111 @@ export class MemoryService {
   }
 
   /**
+   * Bounded immutable revision history for the read-only UI. Archived notes
+   * keep their history readable so an explicit restore can still show what
+   * was accepted. The list carries metadata only; body content is fetched
+   * per revision.
+   */
+  async listRevisions(
+    identity: Identity,
+    input: { spaceId: string; noteId: string; after?: number; limit?: number },
+  ) {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    const note = await this.db
+      .selectFrom("memory_notes")
+      .select(["id"])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("id", "=", input.noteId)
+      .executeTakeFirst();
+    if (!note)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    let query = this.db
+      .selectFrom("memory_note_revisions")
+      .select([
+        "revision",
+        "format_version",
+        "kind",
+        "title",
+        "summary",
+        "base_revision",
+        "created_by",
+        "created_at",
+        "content_hash",
+        "byte_size",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("note_id", "=", input.noteId);
+    if (input.after !== undefined)
+      query = query.where("revision", ">", input.after);
+    const rows = await query
+      .orderBy("revision")
+      .limit(limit + 1)
+      .execute();
+    return {
+      items: rows.slice(0, limit),
+      next: rows.length > limit ? rows[limit - 1]!.revision : null,
+    };
+  }
+
+  /** One immutable revision with its published file content (read-only). */
+  async readRevision(
+    identity: Identity,
+    input: { spaceId: string; noteId: string; revision: number },
+  ): Promise<{
+    revision: {
+      revision: number;
+      format_version: number;
+      kind: string;
+      title: string;
+      summary: string | null;
+      base_revision: number | null;
+      created_by: string;
+      created_at: number;
+      content_hash: string | null;
+      byte_size: number | null;
+    };
+    content: string | null;
+  }> {
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    const row = await this.db
+      .selectFrom("memory_note_revisions")
+      .select([
+        "revision",
+        "format_version",
+        "kind",
+        "title",
+        "summary",
+        "base_revision",
+        "created_by",
+        "created_at",
+        "content_hash",
+        "byte_size",
+        "file_path",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("note_id", "=", input.noteId)
+      .where("revision", "=", input.revision)
+      .executeTakeFirst();
+    if (!row)
+      throw new ForgeError(
+        "memory_revision_unavailable",
+        "Sürüm bulunamadı.",
+        404,
+      );
+    let content: string | null = null;
+    if (this.vaultRoot && row.file_path)
+      content = await readTextIfExists(
+        resolveVaultRelative(this.vaultRoot, row.file_path),
+      );
+    const { file_path: _filePath, ...revision } = row;
+    return { revision, content };
+  }
+
+  /**
    * Explicit tombstone. Source deletion/scanning never deletes a note; only
    * this mutation does, and restore is the only way back (scan replay and
    * spool must not revive it).

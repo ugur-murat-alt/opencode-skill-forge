@@ -1466,6 +1466,54 @@ export async function createHttpServer(config: LocalConfig) {
       limit: query.limit ? Number(query.limit) : undefined,
     });
   });
+  // M04 UI: kişisel/proje alanı ilk kullanımda açılır; organizasyon alanı
+  // açık adla oluşturulur. Mutasyon sınırında ACL MemoryService içindedir.
+  app.post("/api/memory/spaces", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        kind: z.enum(["personal", "project", "organization"]),
+        project_id: z.string().min(1).max(200).optional(),
+        name: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    let space;
+    if (body.kind === "personal") {
+      space = await memory.ensureSpace(identity, { type: "personal" });
+    } else if (body.kind === "project") {
+      if (!body.project_id)
+        throw new ForgeError(
+          "invalid_memory_space",
+          "Proje alanı için project_id gerekli.",
+          422,
+        );
+      space = await memory.ensureSpace(identity, {
+        type: "project",
+        projectId: body.project_id,
+      });
+    } else {
+      if (!body.name)
+        throw new ForgeError(
+          "invalid_memory_space",
+          "Alan adı 1–200 karakter olmalıdır.",
+          422,
+        );
+      space = await memory.createOrganizationSpace(identity, body.name);
+    }
+    await memoryAudit(
+      identity,
+      "memory.space.ensured",
+      {
+        space_id: space.id,
+        kind: space.kind,
+        name: space.name,
+        project_id: space.project_id,
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
+    return space;
+  });
   app.get("/api/memory/notes", async (request) => {
     const query = z
       .object({
@@ -1489,6 +1537,41 @@ export async function createHttpServer(config: LocalConfig) {
     return memory.readNote(requestIdentity(request), {
       spaceId: query.space_id,
       noteId: (request.params as { id: string }).id,
+    });
+  });
+  // M04 UI: salt-okunur sürüm geçmişi; list metadata, tek sürüm içerik.
+  app.get("/api/memory/notes/:id/revisions", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().regex(/^\d+$/).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listRevisions(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: (request.params as { id: string }).id,
+      after: query.after ? Number(query.after) : undefined,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes/:id/revisions/:revision", async (request) => {
+    const params = request.params as { id: string; revision: string };
+    if (!/^\d+$/.test(params.revision))
+      throw new ForgeError(
+        "memory_revision_unavailable",
+        "Sürüm bulunamadı.",
+        404,
+      );
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    return memory.readRevision(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: params.id,
+      revision: Number(params.revision),
     });
   });
   app.get("/api/memory/events", async (request) => {
@@ -1618,6 +1701,7 @@ export async function createHttpServer(config: LocalConfig) {
       .object({
         space_id: z.string().min(1).max(200).optional(),
         source_id: z.string().min(1).max(200).optional(),
+        note_id: z.string().min(1).max(200).optional(),
         state: z
           .enum(["candidate", "conflict", "applied", "rejected", "quarantined"])
           .optional(),
@@ -1629,6 +1713,7 @@ export async function createHttpServer(config: LocalConfig) {
     return memorySources.listCandidates(requestIdentity(request), {
       spaceId: query.space_id,
       sourceId: query.source_id,
+      noteId: query.note_id,
       state: query.state,
       after: query.after,
       limit: query.limit ? Number(query.limit) : undefined,

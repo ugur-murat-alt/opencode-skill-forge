@@ -843,8 +843,34 @@ export class MemoryCommitService {
       .where("space_id", "=", spaceId)
       .where("source_event_key", "=", sourceEventKey)
       .executeTakeFirst();
-    if (!event)
+    // Issue #37 (M04): a failed commit leaves the durable event pending, so
+    // the run row is the authoritative failure source. The idempotency key
+    // is the same stable binding the accept path persisted.
+    const run = await this.db
+      .selectFrom("runs")
+      .select(["state", "error_code"])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("kind", "=", "memory_ingest")
+      .where(
+        "idempotency_key",
+        "=",
+        sha256Hex(`${spaceId}\u0000${sourceEventKey}`),
+      )
+      .executeTakeFirst();
+    if (!event) {
+      if (run?.state === "failed")
+        return {
+          event_id: "",
+          state: "rejected" as const,
+          indexed: false,
+          committed_revision: null,
+          error_code: run.error_code,
+          run_state: run.state,
+          run_error_code: run.error_code,
+          receipt: null,
+        };
       throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    }
     const payload = event.receipt_json
       ? (JSON.parse(event.receipt_json) as MemoryCommitReceipt)
       : null;
@@ -866,12 +892,22 @@ export class MemoryCommitService {
           409,
         );
     }
+    const failedRun = run?.state === "failed";
     return {
       event_id: event.id,
-      state: event.state,
+      // A committed event always wins; a failed run reports the rejection so
+      // the UI can show the conflict without a second endpoint.
+      state:
+        event.state === "committed"
+          ? ("committed" as const)
+          : failedRun
+            ? ("rejected" as const)
+            : event.state,
       indexed: event.indexed_at !== null,
       committed_revision: event.committed_revision,
-      error_code: event.error_code,
+      error_code: event.error_code ?? (failedRun ? run.error_code : null),
+      run_state: run?.state ?? null,
+      run_error_code: run?.error_code ?? null,
       receipt: payload,
     };
   }
