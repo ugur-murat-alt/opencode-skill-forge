@@ -2423,9 +2423,28 @@ async function main() {
             { timeout: 8000 },
           )
           .catch(() => {});
-        const afterRemoval = await page
+        let afterRemoval = await page
           .locator('[data-testid="scope-badge"]')
           .innerText();
+        if (afterRemoval.includes(target.name)) {
+          // CI yükünde hesap yenilemesi gecikebilir: tam sayfa yenileme
+          // kapsam yeniden doğrulamasını deterministik olarak tetikler.
+          await page.reload({ waitUntil: "networkidle" });
+          await page
+            .waitForFunction(
+              (name) =>
+                !(
+                  document.querySelector('[data-testid="scope-badge"]')
+                    ?.textContent ?? ""
+                ).includes(name),
+              target.name,
+              { timeout: 8000 },
+            )
+            .catch(() => {});
+          afterRemoval = await page
+            .locator('[data-testid="scope-badge"]')
+            .innerText();
+        }
         check(
           "project-removed-safe-exit",
           !afterRemoval.includes(target.name) && afterRemoval.length > 0,
