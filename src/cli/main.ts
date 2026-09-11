@@ -20,6 +20,11 @@ import { SecretVault } from "../storage/secrets.js";
 import { JobQueue } from "../jobs/queue.js";
 import { ForgeWorker } from "../jobs/worker.js";
 import { productionHandler } from "../runner/handler.js";
+import { MemoryService } from "../memory/service.js";
+import { MemoryCommitService } from "../memory/commit.js";
+import { vaultRoot } from "../memory/paths.js";
+import { memoryJobHandlers } from "../memory/worker.js";
+import { productionJobKinds } from "../memory/job-kinds.js";
 import { IdentityService } from "../application/identity.js";
 import { ensureDefaultEnvironment } from "../application/environments.js";
 import { parseArgs } from "node:util";
@@ -414,15 +419,25 @@ async function main() {
       if (config.profile !== "server")
         await new IdentityService(storage.db).bootstrapLocal();
       const vault = await SecretVault.open(config.dataDir);
+      const memoryRoot = vaultRoot(config.dataDir);
+      const memory = new MemoryService(storage.db, undefined, memoryRoot);
+      const memoryCommits = new MemoryCommitService({
+        db: storage.db,
+        vaultRoot: memoryRoot,
+        service: memory,
+      });
       const worker = new ForgeWorker(
-        new JobQueue(storage, config.policy),
+        new JobQueue(storage, config.policy, productionJobKinds),
         productionHandler(
           storage,
           config.dataDir,
           vault,
           config.profile !== "server",
         ),
-        { postgresUrl: config.postgresUrl },
+        {
+          postgresUrl: config.postgresUrl,
+          handlers: memoryJobHandlers(memory, memoryCommits),
+        },
       );
       await worker.start();
       process.stderr.write("Skill Forge worker hazır\n");

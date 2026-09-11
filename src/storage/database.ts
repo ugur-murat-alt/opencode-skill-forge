@@ -28,6 +28,9 @@ import { skillMigration } from "./skill-migration.js";
 import { providerMigration } from "./provider-migration.js";
 import { outboxDeliveryMigration } from "./outbox-delivery-migration.js";
 import { jobMigration } from "./job-migration.js";
+import { memoryMigration } from "./memory-migration.js";
+import { memoryPipelineMigration } from "./memory-pipeline-migration.js";
+import { memoryEventNoteMigration } from "./memory-event-note-migration.js";
 import { Migrator, type Migration } from "kysely/migration";
 import {
   Kysely,
@@ -40,56 +43,14 @@ import { Pool, types } from "pg";
 import { join } from "node:path";
 import type { DB } from "./schema.js";
 export type Backend = "sqlite" | "postgres";
-export async function openDatabase(options: {
-  dataDir: string;
-  postgresUrl?: string;
-}) {
-  let dialect;
-  const backend: Backend = options.postgresUrl ? "postgres" : "sqlite";
-  if (options.postgresUrl) {
-    types.setTypeParser(20, (value) => Number(value));
-    dialect = new PostgresDialect({
-      pool: new Pool({
-        connectionString: options.postgresUrl,
-        max: 12,
-        connectionTimeoutMillis: 5000,
-        statement_timeout: 10000,
-      }),
-    });
-  } else {
-    const path = join(options.dataDir, "local.sqlite");
-    let sqlite: SqliteDatabase;
-    if (process.versions.bun) {
-      const { Database } = await import("bun:sqlite");
-      const native = new Database(path, { create: true });
-      native.exec(
-        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;",
-      );
-      sqlite = {
-        close: () => native.close(),
-        prepare: (query) => {
-          const stmt = native.prepare(query);
-          return {
-            reader: stmt.columnNames.length > 0,
-            all: (params) => stmt.all(...(params as never[])),
-            run: (params) => stmt.run(...(params as never[])),
-            iterate: (params) => stmt.iterate(...(params as never[])),
-          };
-        },
-      };
-    } else {
-      const { default: Database } = await import("better-sqlite3");
-      const native = new Database(path);
-      native.pragma("journal_mode = WAL");
-      native.pragma("foreign_keys = ON");
-      native.pragma("busy_timeout = 5000");
-      native.pragma("synchronous = FULL");
-      sqlite = native;
-    }
-    dialect = new SqliteDialect({ database: sqlite });
-  }
-  const db = new Kysely<DB>({ dialect });
-  const migrations: Record<string, Migration> = {
+
+/**
+ * Issue #34: the migration set is exported so the upgrade path can be tested
+ * against the real pre-`032_memory` schema (apply migrations up to 031,
+ * insert production-shaped data, then run 032).
+ */
+export function migrationsFor(backend: Backend): Record<string, Migration> {
+  return {
     "031_outbox_delivery": outboxDeliveryMigration,
     "028_environment_uniqueness": environmentUniquenessMigration,
     "027_agent_prompts": agentPromptMigration,
@@ -120,6 +81,9 @@ export async function openDatabase(options: {
     "002_jobs": jobMigration,
     "003_providers": providerMigration,
     "004_skills": skillMigration(backend),
+    "032_memory": memoryMigration(backend),
+    "033_memory_pipeline": memoryPipelineMigration,
+    "034_memory_event_note": memoryEventNoteMigration,
     "001_identity": {
       up: async (database) => {
         await database.schema
@@ -274,19 +238,28 @@ export async function openDatabase(options: {
       },
     },
   };
+}
+
+export async function openDatabase(options: {
+  dataDir: string;
+  postgresUrl?: string;
+}) {
+  const handle = await openDatabaseConnection(options);
+  const migrations = migrationsFor(handle.backend);
   const migrator = new Migrator({
-    db,
+    db: handle.db,
     provider: { getMigrations: async () => migrations },
   });
   const result = await migrator.migrateToLatest();
   if (result.error) {
-    await db.destroy();
+    await handle.close();
     throw result.error;
   }
+  const { db, backend } = handle;
   return {
     db,
     backend,
-    close: () => db.destroy(),
+    close: () => handle.close(),
     now: async () => {
       const result =
         backend === "postgres"
@@ -303,5 +276,62 @@ export async function openDatabase(options: {
       return Number(result.rows[0]!.now);
     },
   };
+}
+
+/**
+ * Issue #34: driver-only open (no migrations). Exported so the migration
+ * upgrade test can build the real pre-032 schema with the production driver
+ * wrapper, insert production-shaped rows and then apply `032_memory`.
+ */
+export async function openDatabaseConnection(options: {
+  dataDir: string;
+  postgresUrl?: string;
+}): Promise<{ db: Kysely<DB>; backend: Backend; close: () => Promise<void> }> {
+  let dialect;
+  const backend: Backend = options.postgresUrl ? "postgres" : "sqlite";
+  if (options.postgresUrl) {
+    types.setTypeParser(20, (value) => Number(value));
+    dialect = new PostgresDialect({
+      pool: new Pool({
+        connectionString: options.postgresUrl,
+        max: 12,
+        connectionTimeoutMillis: 5000,
+        statement_timeout: 10000,
+      }),
+    });
+  } else {
+    const path = join(options.dataDir, "local.sqlite");
+    let sqlite: SqliteDatabase;
+    if (process.versions.bun) {
+      const { Database } = await import("bun:sqlite");
+      const native = new Database(path, { create: true });
+      native.exec(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;",
+      );
+      sqlite = {
+        close: () => native.close(),
+        prepare: (query) => {
+          const stmt = native.prepare(query);
+          return {
+            reader: stmt.columnNames.length > 0,
+            all: (params) => stmt.all(...(params as never[])),
+            run: (params) => stmt.run(...(params as never[])),
+            iterate: (params) => stmt.iterate(...(params as never[])),
+          };
+        },
+      };
+    } else {
+      const { default: Database } = await import("better-sqlite3");
+      const native = new Database(path);
+      native.pragma("journal_mode = WAL");
+      native.pragma("foreign_keys = ON");
+      native.pragma("busy_timeout = 5000");
+      native.pragma("synchronous = FULL");
+      sqlite = native;
+    }
+    dialect = new SqliteDialect({ database: sqlite });
+  }
+  const db = new Kysely<DB>({ dialect });
+  return { db, backend, close: () => db.destroy() };
 }
 export type DatabaseHandle = Awaited<ReturnType<typeof openDatabase>>;

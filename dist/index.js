@@ -831,6 +831,7 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { z as z3 } from "zod";
 var settingsSchema = z3.object({
   evolutionEnabled: z3.boolean().optional(),
+  memoryEnabled: z3.boolean().optional(),
   retentionDays: z3.number().int().min(1).max(3650).optional(),
   searchMinScore: z3.number().min(0).max(1).optional(),
   searchMaxResults: z3.number().int().min(1).max(20).optional(),
@@ -846,6 +847,7 @@ var settingsSchema = z3.object({
 var storedSettingsSchema = settingsSchema.strip();
 var defaultSettings = {
   evolutionEnabled: true,
+  memoryEnabled: false,
   retentionDays: 30,
   searchMinScore: 0,
   searchMaxResults: 20,
@@ -882,7 +884,7 @@ function resolveSettings(policy, layers) {
         next = Math.min(result.values[key], incoming);
       if (key === "searchMinScore")
         next = Math.max(result.values[key], incoming);
-      if (key === "allowPaid" || key === "dependencyInstall")
+      if (key === "allowPaid" || key === "dependencyInstall" || key === "memoryEnabled")
         next = result.values[key] && Boolean(incoming);
       if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
         next = result.values[key].filter((origin) => incoming.includes(origin));
@@ -1092,6 +1094,31 @@ var terminalStates = [
   "unchanged",
   "fallback"
 ];
+function resolveJobScope(input) {
+  if (input.projectId !== undefined && input.scope !== undefined)
+    throw new ForgeError("invalid_scope", "İş kapsamı projectId ve scope ile birlikte verilemez.", 422);
+  if (input.scope !== undefined) {
+    const scope = input.scope;
+    if (scope.type === "project") {
+      if (typeof scope.projectId !== "string" || !scope.projectId)
+        throw new ForgeError("invalid_scope", "Proje kapsamı gerçek bir projectId gerektirir.", 422);
+      return { type: "project", projectId: scope.projectId };
+    }
+    if (scope.type === "personal" || scope.type === "organization")
+      return { type: scope.type };
+    throw new ForgeError("invalid_scope", "Tanımsız iş kapsamı.", 422);
+  }
+  if (typeof input.projectId === "string" && input.projectId)
+    return { type: "project", projectId: input.projectId };
+  throw new ForgeError("invalid_scope", "İş kapsamı (proje veya kişisel/organizasyon) zorunlu.", 422);
+}
+function jobScopeKey(scope, identity) {
+  if (scope.type === "project")
+    return scope.projectId;
+  if (scope.type === "personal")
+    return identity.userId;
+  return "organization";
+}
 
 class JobQueue {
   storage;
@@ -1106,6 +1133,10 @@ class JobQueue {
     const definition = this.kinds[input.kind];
     if (!definition)
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
+    const scope = resolveJobScope(input);
+    const memoryKind = definition.scope === "memory";
+    if (!memoryKind && scope.type !== "project")
+      throw new ForgeError("invalid_scope", "Bu iş türü proje kapsamı gerektirir.", 422);
     if (!input.key || input.key.length > 200 || Buffer.byteLength(JSON.stringify(input.payload)) > 65536)
       throw new ForgeError("invalid_handoff", "İş kimliği veya girdi boyutu geçersiz.");
     let payload;
@@ -1118,17 +1149,23 @@ class JobQueue {
     if (typeof inputJson !== "string" || Buffer.byteLength(inputJson) > 65536)
       throw new ForgeError("invalid_handoff", "İş girdisi serileştirilemedi.");
     const inputHash = createHash2("sha256").update(inputJson).digest("hex");
+    const scopeKey = jobScopeKey(scope, identity);
     return this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("memberships").set({ role: sql4`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const auth = new IdentityService(tx);
-      await auth.authorize(identity, "run", input.projectId);
-      const old = await tx.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", input.projectId).where("kind", "=", input.kind).where("idempotency_key", "=", input.key).executeTakeFirst();
+      if (scope.type === "project")
+        await auth.authorize(identity, "run", scope.projectId);
+      else
+        await auth.authorize(identity, "run");
+      const old = await tx.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_kind", "=", scope.type).where("scope_key", "=", scopeKey).where("kind", "=", input.kind).where("idempotency_key", "=", input.key).executeTakeFirst();
       if (old) {
         if (old.input_hash !== inputHash)
           throw new ForgeError("idempotency_conflict", "Aynı idempotency anahtarı farklı girdiye ait.", 409);
         return { status: "duplicate", run: old };
       }
-      const effective = await new SettingsService(auth, this.policy).effective(identity, input.projectId, {});
+      const effective = await new SettingsService(auth, this.policy).effective(identity, scope.type === "project" ? scope.projectId : undefined, {});
+      if (memoryKind && !effective.values.memoryEnabled)
+        throw new ForgeError("memory_disabled", "Hafıza bu kapsamda kapalı.", 422);
       let config = { ...effective };
       if (definition.skillProfile) {
         const providerProfile = await tx.selectFrom("provider_profiles").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("role", "=", "skill").orderBy("revision", "desc").limit(1).executeTakeFirst();
@@ -1145,7 +1182,7 @@ class JobQueue {
         tenant_id: identity.tenantId,
         id: sessionId,
         user_id: identity.userId,
-        project_id: input.projectId,
+        project_id: scope.type === "project" ? scope.projectId : null,
         created_at: now
       }).execute();
       const run = {
@@ -1153,7 +1190,9 @@ class JobQueue {
         id: runId,
         session_id: sessionId,
         user_id: identity.userId,
-        project_id: input.projectId,
+        project_id: scope.type === "project" ? scope.projectId : null,
+        scope_kind: scope.type,
+        scope_key: scopeKey,
         kind: input.kind,
         state: "queued",
         idempotency_key: input.key,
@@ -1175,7 +1214,9 @@ class JobQueue {
       await tx.insertInto("runs").values(run).execute();
       await this.audit(tx, run, "job.accepted", {
         run_id: runId,
-        kind: input.kind
+        kind: input.kind,
+        scope_kind: scope.type,
+        scope_key: scopeKey
       }, now);
       await tx.insertInto("outbox").values({ tenant_id: identity.tenantId, run_id: runId, delivered: 0 }).execute();
       await tx.insertInto("queue_fairness").values({
@@ -1279,18 +1320,34 @@ class JobQueue {
     const result = await this.storage.db.updateTable("runs").set({ lease_until: now + leaseMs, updated_at: now }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("state", "=", "running").where("fence", "=", run.fence).where("worker_id", "=", run.worker_id).where("lease_until", ">", now).executeTakeFirst();
     return Number(result.numUpdatedRows) === 1;
   }
-  async assertLease(db, run) {
+  async assertLeaseFence(db, run) {
     const now = await this.now(db);
     const current = await db.updateTable("runs").set({ fence: sql4`fence` }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("state", "=", "running").where("fence", "=", run.fence).where("worker_id", "=", run.worker_id).where("lease_until", ">", now).returning("id").executeTakeFirst();
     if (!current)
       throw new ForgeError("stale_worker", "İşin lease sahipliği değişti.", 409);
-    await new IdentityService(db).authorize({ userId: run.user_id, tenantId: run.tenant_id }, "run", run.project_id);
   }
-  async finish(run, state, result, errorCode = null) {
+  async assertLease(db, run) {
+    await this.assertLeaseFence(db, run);
+    await this.authorizeRun(db, { userId: run.user_id, tenantId: run.tenant_id }, run, "run");
+  }
+  async authorizeRun(db, identity, run, permission) {
+    const auth = new IdentityService(db);
+    if (run.scope_kind === "project") {
+      if (!run.project_id)
+        throw new ForgeError("run_unavailable", "İş kapsamı tutarsız.", 404);
+      await auth.authorize(identity, permission, run.project_id);
+    } else {
+      await auth.authorize(identity, permission);
+    }
+  }
+  async finish(run, state, result, errorCode = null, options = {}) {
     if (!terminalStates.includes(state))
       throw new ForgeError("invalid_transition", "Terminal iş durumu gerekiyor.");
     return this.storage.db.transaction().execute(async (tx) => {
-      await this.assertLease(tx, run);
+      if (options.requireAuthorization === false)
+        await this.assertLeaseFence(tx, run);
+      else
+        await this.assertLease(tx, run);
       const now = await this.now(tx);
       await tx.updateTable("runs").set({
         state,
@@ -1311,7 +1368,9 @@ class JobQueue {
   async fail(run, code, retryable) {
     const now = await this.storage.now();
     if (!retryable || run.attempt >= run.max_attempts || run.deadline_at <= now)
-      return this.finish(run, "failed", null, code);
+      return this.finish(run, "failed", null, code, {
+        requireAuthorization: false
+      });
     await this.storage.db.transaction().execute(async (tx) => {
       await this.assertLease(tx, run);
       await tx.updateTable("runs").set({
@@ -1334,7 +1393,7 @@ class JobQueue {
     const run = await this.storage.db.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", runId).executeTakeFirst();
     if (!run)
       throw new ForgeError("run_unavailable", "İş bulunamadı veya yetkiniz yok.", 404);
-    await new IdentityService(this.storage.db).authorize(identity, "read", run.project_id);
+    await this.authorizeRun(this.storage.db, identity, run, "read");
     return run;
   }
   async attempts(identity, runId, after = 0) {
@@ -1348,7 +1407,7 @@ class JobQueue {
   }
   async cancel(identity, runId) {
     const run = await this.get(identity, runId);
-    await new IdentityService(this.storage.db).authorize(identity, "run", run.project_id);
+    await this.authorizeRun(this.storage.db, identity, run, "run");
     await this.storage.db.transaction().execute(async (tx) => {
       const now = await this.now(tx);
       const updated = await tx.updateTable("runs").set({
@@ -6437,7 +6496,7 @@ class BudgetService {
       const run = await tx.selectFrom("runs").select(["user_id", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", runId).executeTakeFirst();
       if (!run || run.user_id !== identity.userId)
         throw new ForgeError("run_unavailable", "Rezervasyon işi bu kullanıcıya ait değil.", 404);
-      await new IdentityService(tx).authorize(identity, "run", run.project_id);
+      await new IdentityService(tx).authorize(identity, "run", run.project_id ?? undefined);
       const account = await tx.updateTable("budget_accounts").set({ reserved_micros: sql17`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).returningAll().executeTakeFirst();
       if (!account)
         throw new ForgeError("budget_unconfigured", "Kullanıcı bütçesi tanımlanmamış.", 422);
@@ -6506,7 +6565,7 @@ class BudgetService {
       ]).where("b.tenant_id", "=", identity.tenantId).where("b.user_id", "=", identity.userId).where("b.id", "=", reservationId).executeTakeFirst();
       if (!reservation)
         throw new ForgeError("reservation_unavailable", "Rezervasyon bulunamadı veya yetkiniz yok.", 404);
-      await new IdentityService(tx).authorize(identity, "run", reservation.project_id);
+      await new IdentityService(tx).authorize(identity, "run", reservation.project_id ?? undefined);
       if (reservation.state === "settled") {
         if (reservation.actual_micros !== actualMicros)
           throw new ForgeError("settlement_conflict", "Çağrı daha önce farklı maliyetle uzlaştırıldı.", 409);
@@ -7242,6 +7301,2146 @@ function productionHandler(storage, dataDir, vault, local, overrides = {}) {
   };
 }
 
+// src/memory/service.ts
+import { randomUUID as randomUUID24 } from "node:crypto";
+
+// src/memory/files.ts
+import { createHash as createHash15, randomUUID as randomUUID23 } from "node:crypto";
+import { constants as constants4 } from "node:fs";
+import { hostname } from "node:os";
+import { dirname as dirname4, isAbsolute as isAbsolute3, join as join11, relative as relative4, sep as sep2 } from "node:path";
+import {
+  lstat as lstat6,
+  mkdir as mkdir7,
+  open as open6,
+  readFile as readFile4,
+  readdir as readdir4,
+  realpath as realpath4,
+  rename as rename3,
+  rm as rm3,
+  stat as stat2
+} from "node:fs/promises";
+
+// src/memory/paths.ts
+import { isAbsolute as isAbsolute2, join as join10, relative as relative3, resolve as resolve11, sep } from "node:path";
+var MEMORY_VAULT_DIRNAME = "memory";
+var SEGMENT = /^[A-Za-z0-9._-]{1,128}$/;
+var HASH = /^[0-9a-f]{64}$/;
+function invalidPath(message) {
+  throw new ForgeError("invalid_memory_path", message, 422);
+}
+function assertPathSegment(segment, label = "yol parçası") {
+  if (typeof segment !== "string" || !SEGMENT.test(segment) || segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))
+    invalidPath(`Geçersiz ${label}.`);
+  return segment;
+}
+function safeJoin(root, ...segments) {
+  const resolvedRoot = resolve11(root);
+  for (const segment of segments)
+    assertPathSegment(segment);
+  const candidate = resolve11(resolvedRoot, ...segments);
+  const rel = relative3(resolvedRoot, candidate);
+  if (rel === "" || rel.startsWith("..") || isAbsolute2(rel))
+    invalidPath("Yol vault kökünün dışında.");
+  return candidate;
+}
+function vaultRoot(dataDir) {
+  return join10(resolve11(dataDir), MEMORY_VAULT_DIRNAME);
+}
+function noteWorkingPath(root, spaceId, noteId) {
+  return safeJoin(root, "spaces", spaceId, "notes", `${noteId}.md`);
+}
+function revisionDir(root, spaceId, noteId) {
+  return safeJoin(root, "spaces", spaceId, "revisions", noteId);
+}
+function revisionPath(root, spaceId, noteId, revision2, contentHash) {
+  if (!Number.isInteger(revision2) || revision2 < 1)
+    invalidPath("Revision numarası geçersiz.");
+  if (!HASH.test(contentHash))
+    invalidPath("İçerik hash'i geçersiz.");
+  return safeJoin(root, "spaces", spaceId, "revisions", noteId, `${revision2}-${contentHash}.md`);
+}
+function tempDir(root) {
+  return safeJoin(root, ".tmp");
+}
+function quarantineDir(root) {
+  return safeJoin(root, ".quarantine");
+}
+function writerLockPath(root) {
+  return safeJoin(root, ".writer.lock");
+}
+function resolveVaultRelative(root, relativePath) {
+  if (typeof relativePath !== "string" || !relativePath || relativePath.startsWith("/") || relativePath.includes("\\"))
+    invalidPath("Vault göreli yol geçersiz.");
+  return safeJoin(root, ...relativePath.split("/"));
+}
+function relativeVaultPath(root, absolute) {
+  const rel = relative3(resolve11(root), resolve11(absolute));
+  if (rel === "" || rel.startsWith("..") || isAbsolute2(rel))
+    return null;
+  return rel.split(sep).join("/");
+}
+var KIND_FOLDERS = {
+  decision: "decisions",
+  task: "tasks",
+  session: "sessions",
+  preference: "preferences",
+  research: "research",
+  procedure: "procedures",
+  context: "context",
+  fact: "facts",
+  note: "notes"
+};
+function kindFolder(kind2) {
+  return KIND_FOLDERS[kind2] ?? "notes";
+}
+function slugify(title) {
+  const map = {
+    ç: "c",
+    ğ: "g",
+    ı: "i",
+    İ: "i",
+    ö: "o",
+    ş: "s",
+    ü: "u",
+    Ç: "c",
+    Ğ: "g",
+    Ö: "o",
+    Ş: "s",
+    Ü: "u"
+  };
+  const slug = title.split("").map((char) => map[char] ?? char).join("").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  return slug || "not";
+}
+function noteDisplayPath(spaceId, kind2, title, noteId) {
+  return `spaces/${spaceId}/${kindFolder(kind2)}/${slugify(title)}-${noteId}.md`;
+}
+
+// src/memory/files.ts
+function sha256Hex(content) {
+  return createHash15("sha256").update(content).digest("hex");
+}
+function byteSize(content) {
+  return Buffer.byteLength(content, "utf8");
+}
+async function ensureDir(path, mode = 448) {
+  await mkdir7(path, { recursive: true, mode });
+}
+async function fileExists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readTextIfExists(path) {
+  try {
+    return await readFile4(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+function hostToken(host = hostname()) {
+  return host.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "unknown";
+}
+function tempFileName(pid, host = hostname(), id = randomUUID23()) {
+  return `${pid}.${hostToken(host)}.${id}.tmp`;
+}
+function parseTempFileName(name) {
+  const match = /^(\d+)\.([A-Za-z0-9._-]+)\.([0-9a-f-]{36})\.tmp$/.exec(name);
+  if (!match)
+    return null;
+  return { pid: Number(match[1]), host: match[2] };
+}
+async function syncDir(dir) {
+  try {
+    const handle = await open6(dir, constants4.O_RDONLY);
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {}
+}
+function pathEscape(message = "Yol vault kökünün dışına çıkıyor.") {
+  throw new ForgeError("memory_path_escape", message, 422);
+}
+async function assertSafeWriteTarget(root, target) {
+  const rootResolved = root;
+  const rel = relative4(rootResolved, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute3(rel))
+    pathEscape();
+  await ensureDir(root);
+  await assertNoSymlinkComponents(root, target);
+  await ensureDir(dirname4(target));
+  await assertNoSymlinkComponents(root, target);
+  const rootReal = await realpath4(root);
+  const parentReal = await realpath4(dirname4(target));
+  if (parentReal !== rootReal && !parentReal.startsWith(rootReal + sep2))
+    pathEscape("Hedef dizin vault kökünün dışında.");
+  const targetInfo = await lstat6(target).catch((error) => {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  });
+  if (targetInfo?.isSymbolicLink())
+    pathEscape("Mevcut hedef symlink; yazma reddedildi.");
+}
+async function assertNoSymlinkComponents(root, target) {
+  const rel = relative4(root, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute3(rel))
+    pathEscape();
+  const segments = rel.split(sep2).slice(0, -1);
+  let current = root;
+  for (const segment of segments) {
+    current = join11(current, segment);
+    const info = await lstat6(current).catch((error) => {
+      if (error.code === "ENOENT")
+        return null;
+      throw error;
+    });
+    if (!info)
+      break;
+    if (info.isSymbolicLink())
+      pathEscape("Symlink bileşen üzerinden yazma reddedildi.");
+  }
+}
+async function atomicWriteFile(path, content, options = {}) {
+  const directory = options.tempDir ?? dirname4(path);
+  const temp = join11(directory, tempFileName(process.pid));
+  if (options.vaultRoot) {
+    await assertSafeWriteTarget(options.vaultRoot, path);
+    await assertSafeWriteTarget(options.vaultRoot, temp);
+  }
+  await ensureDir(directory);
+  await ensureDir(dirname4(path));
+  const handle = await open6(temp, "wx", options.mode ?? 384);
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => {
+      return;
+    });
+    await rm3(temp, { force: true }).catch(() => {
+      return;
+    });
+    throw error;
+  }
+  await handle.close();
+  try {
+    await rename3(temp, path);
+  } catch (error) {
+    await rm3(temp, { force: true }).catch(() => {
+      return;
+    });
+    throw error;
+  }
+  await syncDir(dirname4(path));
+}
+async function readStableText(path, options) {
+  const before = await stat2(path);
+  if (before.size > options.maxBytes)
+    throw new ForgeError("memory_file_too_large", "Kaynak dosya boyut sınırını aşıyor.", 422, undefined, { size: before.size, limit: options.maxBytes });
+  const content = await readFile4(path, "utf8");
+  const after = await stat2(path);
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+    throw new ForgeError("memory_file_changed", "Dosya okuma sırasında değişti; sonraki taramada yeniden denenecek.", 409);
+  return { content, hash: sha256Hex(content), size: byteSize(content) };
+}
+async function publishRevisionFile(root, spaceId, noteId, revision2, contentHash, content) {
+  const path = revisionPath(root, spaceId, noteId, revision2, contentHash);
+  const relativePath = relativeVaultPath(root, path);
+  if (!relativePath)
+    throw new ForgeError("invalid_memory_path", "Revision yolu geçersiz.", 422);
+  await assertSafeWriteTarget(root, path);
+  if (await fileExists(path)) {
+    const existing = await readFile4(path, "utf8");
+    if (sha256Hex(existing) !== contentHash)
+      throw new ForgeError("memory_revision_file_conflict", "Aynı revision yolu farklı içerikle dolu; dosya ezilmedi.", 409);
+    return { path, relativePath, created: false };
+  }
+  await atomicWriteFile(path, content, {
+    tempDir: tempDir(root),
+    vaultRoot: root
+  });
+  return { path, relativePath, created: true };
+}
+async function readWorkingCopy(root, spaceId, noteId) {
+  const path = noteWorkingPath(root, spaceId, noteId);
+  const content = await readTextIfExists(path);
+  if (content === null)
+    return null;
+  return { content, hash: sha256Hex(content), size: byteSize(content) };
+}
+async function listRevisionFiles(root, spaceId, noteId) {
+  const dir = revisionDir(root, spaceId, noteId);
+  try {
+    const entries = await readdir4(dir);
+    return entries.filter((name) => name.endsWith(".md")).sort().map((name) => join11(dir, name));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return [];
+    throw error;
+  }
+}
+async function removeFileIfExists(path) {
+  try {
+    await rm3(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+}
+async function gcTempFiles(root, options) {
+  const dir = tempDir(root);
+  let entries;
+  try {
+    entries = await readdir4(dir);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return [];
+    throw error;
+  }
+  const host = options.host ?? hostname();
+  const ownToken = hostToken(host);
+  const now = options.now ?? Date.now;
+  const minAgeMs = options.minAgeMs ?? 5000;
+  const removed = [];
+  for (const name of entries) {
+    const parsed = parseTempFileName(name);
+    if (!parsed)
+      continue;
+    if (parsed.host !== ownToken)
+      continue;
+    if (options.isPidAlive(parsed.pid))
+      continue;
+    const path = join11(dir, name);
+    const info = await stat2(path);
+    if (now() - info.mtimeMs < minAgeMs)
+      continue;
+    await rm3(path, { force: true });
+    removed.push(name);
+  }
+  return removed;
+}
+async function writeQuarantine(root, entry) {
+  const dir = quarantineDir(root);
+  await ensureDir(dir);
+  const id = entry.id ?? randomUUID23();
+  const record = {
+    id,
+    reason: entry.reason.slice(0, 200),
+    hash: entry.hash ?? null,
+    path: entry.path ?? null,
+    summary: entry.summary ? entry.summary.slice(0, 500) : null,
+    created_at: Date.now()
+  };
+  const path = join11(dir, `${id}.json`);
+  await atomicWriteFile(path, JSON.stringify(record), {
+    tempDir: dir,
+    vaultRoot: root
+  });
+  return path;
+}
+
+// src/memory/service.ts
+var HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+class MemoryService {
+  db;
+  identities;
+  vaultRoot;
+  constructor(db, identities = new IdentityService(db), vaultRoot2) {
+    this.db = db;
+    this.identities = identities;
+    this.vaultRoot = vaultRoot2;
+  }
+  async ensureSpace(identity, scope) {
+    if (scope.type === "personal")
+      return this.ensurePersonal(identity);
+    if (scope.type === "project")
+      return this.ensureProject(identity, scope.projectId);
+    throw new ForgeError("invalid_scope", "Organizasyon alanı adıyla açıkça oluşturulur.", 422);
+  }
+  async ensurePersonal(identity) {
+    await this.identities.authorize(identity, "read");
+    const existing = await this.findSpace(identity.tenantId, {
+      kind: "personal",
+      ownerUserId: identity.userId
+    });
+    if (existing)
+      return existing;
+    await this.identities.authorize(identity, "write");
+    return this.insertSpace(identity, {
+      kind: "personal",
+      owner_user_id: identity.userId,
+      project_id: null,
+      name: "Kişisel hafıza"
+    });
+  }
+  async ensureProject(identity, projectId) {
+    await this.identities.authorize(identity, "read", projectId);
+    const existing = await this.findSpace(identity.tenantId, {
+      kind: "project",
+      projectId
+    });
+    if (existing)
+      return existing;
+    await this.identities.authorize(identity, "write", projectId);
+    const project = await this.db.selectFrom("projects").select(["name"]).where("tenant_id", "=", identity.tenantId).where("id", "=", projectId).executeTakeFirstOrThrow();
+    return this.insertSpace(identity, {
+      kind: "project",
+      owner_user_id: identity.userId,
+      project_id: projectId,
+      name: project.name
+    });
+  }
+  findSpace(tenantId, scope) {
+    const query = this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", tenantId);
+    return scope.kind === "personal" ? query.where("kind", "=", "personal").where("owner_user_id", "=", scope.ownerUserId).executeTakeFirst() : query.where("kind", "=", "project").where("project_id", "=", scope.projectId).executeTakeFirst();
+  }
+  async createOrganizationSpace(identity, name) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 200)
+      throw new ForgeError("invalid_memory_space", "Alan adı 1–200 karakter olmalıdır.", 422);
+    await this.identities.authorize(identity, "write");
+    return this.insertSpace(identity, {
+      kind: "organization",
+      owner_user_id: identity.userId,
+      project_id: null,
+      name: trimmed
+    });
+  }
+  async insertSpace(identity, values) {
+    const now = Date.now();
+    const space = {
+      tenant_id: identity.tenantId,
+      id: randomUUID24(),
+      created_at: now,
+      updated_at: now,
+      ...values
+    };
+    try {
+      return await this.db.insertInto("memory_spaces").values(space).returningAll().executeTakeFirstOrThrow();
+    } catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+      const existing = await this.findSpace(identity.tenantId, space.kind === "personal" ? { kind: "personal", ownerUserId: space.owner_user_id } : { kind: "project", projectId: space.project_id });
+      if (existing)
+        return existing;
+      throw error;
+    }
+  }
+  async authorizeSpace(identity, spaceId, access) {
+    const space = await this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", spaceId).executeTakeFirst();
+    if (!space)
+      throw new ForgeError("memory_space_unavailable", "Hafıza alanı bulunamadı veya yetkiniz yok.", 404);
+    if (space.kind === "personal") {
+      await this.identities.authorize(identity, "read");
+      if (space.owner_user_id !== identity.userId)
+        throw new ForgeError("forbidden", "Bu kişisel hafıza alanı başka bir kullanıcıya ait.", 403);
+      if (access === "write")
+        await this.identities.authorize(identity, "write");
+      return space;
+    }
+    if (space.kind === "project") {
+      if (!space.project_id)
+        throw new ForgeError("memory_space_unavailable", "Proje alanı tutarsız.", 404);
+      await this.identities.authorize(identity, access, space.project_id);
+      return space;
+    }
+    await this.identities.authorize(identity, access);
+    return space;
+  }
+  async authorizeRunSpace(run, spaceId, access) {
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    const space = await this.authorizeSpace(identity, spaceId, access);
+    const mismatch = () => new ForgeError("memory_scope_mismatch", "İş kapsamı ile hedef alan uyuşmuyor.", 422);
+    if (run.scope_kind === "personal") {
+      if (space.kind !== "personal" || space.owner_user_id !== run.user_id)
+        throw mismatch();
+    } else if (run.scope_kind === "project") {
+      if (space.kind !== "project" || !run.project_id || space.project_id !== run.project_id)
+        throw mismatch();
+    } else if (run.scope_kind === "organization") {
+      if (space.kind !== "organization")
+        throw mismatch();
+    } else {
+      throw mismatch();
+    }
+    return space;
+  }
+  async recordEvent(identity, input) {
+    if (!input.spaceId || input.spaceId.length > 200 || !input.sourceEventKey || input.sourceEventKey.length > 200 || !input.sourceKind || input.sourceKind.length > 40 || !HASH_PATTERN.test(input.contentHash) || input.observedAt !== undefined && (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0))
+      throw new ForgeError("invalid_memory_event", "Kaynak olay sözleşmesi geçersiz.", 422);
+    return this.db.transaction().execute(async (tx) => {
+      const service = new MemoryService(tx);
+      await service.authorizeSpace(identity, input.spaceId, "write");
+      const existing = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("source_event_key", "=", input.sourceEventKey).executeTakeFirst();
+      if (existing)
+        return service.duplicateOrThrow(existing, input.contentHash);
+      const now = Date.now();
+      const event = {
+        tenant_id: identity.tenantId,
+        space_id: input.spaceId,
+        id: randomUUID24(),
+        source_event_key: input.sourceEventKey,
+        source_kind: input.sourceKind,
+        content_hash: input.contentHash,
+        state: "pending",
+        observed_at: input.observedAt ?? null,
+        created_at: now,
+        updated_at: now,
+        committed_revision: null,
+        note_id: null,
+        error_code: null,
+        receipt_json: null,
+        attempts: 0,
+        indexed_at: null
+      };
+      const inserted = await tx.insertInto("memory_events").values(event).onConflict((oc) => oc.columns(["tenant_id", "space_id", "source_event_key"]).doNothing()).returningAll().executeTakeFirst();
+      if (inserted)
+        return { status: "recorded", event: inserted };
+      const raced = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("source_event_key", "=", input.sourceEventKey).executeTakeFirst();
+      if (!raced)
+        throw new ForgeError("memory_event_unavailable", "Kaynak olayı kaydedilemedi.", 409);
+      return service.duplicateOrThrow(raced, input.contentHash);
+    });
+  }
+  duplicateOrThrow(existing, contentHash) {
+    if (existing.content_hash !== contentHash)
+      throw new ForgeError("memory_event_conflict", "Aynı kaynak anahtarı farklı içerikle daha önce kaydedildi.", 409);
+    return { status: "duplicate", event: existing };
+  }
+  async reconcile(identity, input = {}) {
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+      throw new ForgeError("invalid_memory_reconcile", "Uzlaştırma limiti 1–100 olmalıdır.", 422);
+    return this.db.transaction().execute(async (tx) => {
+      const service = new MemoryService(tx);
+      let spaceIds;
+      if (input.spaceId) {
+        const space = await service.authorizeSpace(identity, input.spaceId, "read");
+        spaceIds = [space.id];
+      } else {
+        const role = await service.identities.authorize(identity, "read");
+        const administrator = role === "founder" || role === "admin";
+        const rows = await tx.selectFrom("memory_spaces").select(["id"]).where("tenant_id", "=", identity.tenantId).where((eb) => eb.or([
+          eb.and([
+            eb("kind", "=", "personal"),
+            eb("owner_user_id", "=", identity.userId)
+          ]),
+          eb("kind", "=", "organization"),
+          eb.and([
+            eb("kind", "=", "project"),
+            administrator ? eb("project_id", "is not", null) : eb("project_id", "in", (sub) => sub.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId))
+          ])
+        ])).execute();
+        spaceIds = rows.map((row) => row.id);
+      }
+      if (spaceIds.length === 0)
+        return {
+          checked: 0,
+          pending: 0,
+          committed: 0,
+          rejected: 0,
+          conflicts: 0
+        };
+      const events = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "in", spaceIds).orderBy("created_at").orderBy("id").limit(limit).execute();
+      const report = {
+        checked: events.length,
+        pending: 0,
+        committed: 0,
+        rejected: 0,
+        conflicts: 0
+      };
+      const seen = new Map;
+      for (const event of events) {
+        if (event.state === "pending")
+          report.pending += 1;
+        else if (event.state === "committed")
+          report.committed += 1;
+        else if (event.state === "rejected")
+          report.rejected += 1;
+        const key2 = `${event.space_id}\x00${event.source_event_key}`;
+        const previous = seen.get(key2);
+        if (previous === undefined)
+          seen.set(key2, event.content_hash);
+        else if (previous !== event.content_hash)
+          report.conflicts += 1;
+      }
+      return report;
+    });
+  }
+  async listSpaces(identity, options = {}) {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+    const role = await this.identities.authorize(identity, "read");
+    const administrator = role === "founder" || role === "admin";
+    let query = this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", identity.tenantId).where((eb) => eb.or([
+      eb.and([
+        eb("kind", "=", "personal"),
+        eb("owner_user_id", "=", identity.userId)
+      ]),
+      eb("kind", "=", "organization"),
+      eb.and([
+        eb("kind", "=", "project"),
+        administrator ? eb("project_id", "is not", null) : eb("project_id", "in", (sub) => sub.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId))
+      ])
+    ]));
+    if (options.after)
+      query = query.where("id", ">", options.after);
+    const rows = await query.orderBy("id").limit(limit + 1).execute();
+    return {
+      items: rows.slice(0, limit).map((space) => ({
+        ...space,
+        scope: jobScopeForSpace(space)
+      })),
+      next: rows.length > limit ? rows[limit - 1].id : null
+    };
+  }
+  async listNotes(identity, input) {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    let query = this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id);
+    if (input.after)
+      query = query.where("id", ">", input.after);
+    const rows = await query.orderBy("id").limit(limit + 1).execute();
+    const items = rows.slice(0, limit);
+    const kinds = new Map;
+    if (items.length > 0) {
+      const revisions = await this.db.selectFrom("memory_note_revisions").select(["note_id", "kind", "revision"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("note_id", "in", items.map((note) => note.id)).execute();
+      for (const revision2 of revisions)
+        if (!kinds.has(revision2.note_id))
+          kinds.set(revision2.note_id, revision2.kind);
+    }
+    return {
+      space: { id: space.id, kind: space.kind, name: space.name },
+      items: items.map((note) => ({
+        ...note,
+        display_path: noteDisplayPath(space.id, kinds.get(note.id) ?? "note", note.title, note.id)
+      })),
+      next: rows.length > limit ? rows[limit - 1].id : null
+    };
+  }
+  async readNote(identity, input) {
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("id", "=", input.noteId).executeTakeFirst();
+    if (!note)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    const revision2 = note.current_revision === null ? null : await this.db.selectFrom("memory_note_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("note_id", "=", note.id).where("revision", "=", note.current_revision).executeTakeFirst() ?? null;
+    let content = null;
+    if (this.vaultRoot && revision2?.file_path) {
+      content = await readTextIfExists(resolveVaultRelative(this.vaultRoot, revision2.file_path));
+    }
+    return {
+      note,
+      revision: revision2,
+      content,
+      display_path: noteDisplayPath(space.id, revision2?.kind ?? "note", note.title, note.id)
+    };
+  }
+  async archiveNote(identity, input) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db.updateTable("memory_notes").set({ deleted_at: now, lifecycle: "archived", updated_at: now }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.noteId).where("deleted_at", "is", null).executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: now, lifecycle: "archived" };
+  }
+  async restoreNote(identity, input) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db.updateTable("memory_notes").set({ deleted_at: null, lifecycle: "active", updated_at: now }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.noteId).where("deleted_at", "is not", null).executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: null, lifecycle: "active" };
+  }
+}
+function jobScopeForSpace(space) {
+  if (space.kind === "project") {
+    if (!space.project_id)
+      throw new ForgeError("memory_space_unavailable", "Proje alanı tutarsız.", 404);
+    return { type: "project", projectId: space.project_id };
+  }
+  if (space.kind === "personal")
+    return { type: "personal" };
+  return { type: "organization" };
+}
+function isUniqueViolation(error) {
+  const code = error.code;
+  if (code === "23505" || code === "SQLITE_CONSTRAINT_UNIQUE")
+    return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /unique constraint failed/i.test(message);
+}
+
+// src/memory/commit.ts
+import { randomUUID as randomUUID26 } from "node:crypto";
+import { sql as sql20 } from "kysely";
+
+// src/domain/memory.ts
+import { createHash as createHash16 } from "node:crypto";
+import { z as z15 } from "zod";
+var MEMORY_FORMAT_VERSION = 1;
+var MEMORY_KINDS = [
+  "decision",
+  "fact",
+  "procedure",
+  "context",
+  "research",
+  "preference",
+  "task",
+  "note",
+  "session"
+];
+var MEMORY_RELATIONS = [
+  "SUPPORTS",
+  "DERIVED_FROM",
+  "PART_OF",
+  "ABOUT",
+  "PRECEDES",
+  "SUPERSEDES",
+  "CONTRADICTS",
+  "DEPENDS_ON"
+];
+var MEMORY_LIFECYCLES = ["active", "superseded", "archived"];
+var TASK_STATUSES = [
+  "planned",
+  "doing",
+  "blocked",
+  "done",
+  "cancelled"
+];
+var MEMORY_VERIFICATIONS = [
+  "declared",
+  "verified",
+  "proposed"
+];
+var memorySourceSchema = z15.object({
+  id: z15.string().min(1).max(200),
+  kind: z15.string().min(1).max(40).optional(),
+  revision: z15.string().min(1).max(200).optional(),
+  hash: z15.string().min(1).max(200).optional(),
+  url: z15.string().min(1).max(2000).optional()
+}).strict();
+var memoryEdgeSchema = z15.object({
+  relation: z15.enum(MEMORY_RELATIONS),
+  target: z15.string().min(1).max(200)
+}).strict();
+var memoryFrontmatterSchema = z15.object({
+  format_version: z15.number().int().min(1).max(1000),
+  note_id: z15.string().min(1).max(200),
+  memory_space_id: z15.string().min(1).max(200),
+  kind: z15.enum(MEMORY_KINDS),
+  title: z15.string().min(1).max(500),
+  summary: z15.string().max(8000).optional(),
+  lifecycle: z15.enum(MEMORY_LIFECYCLES).optional(),
+  pinned: z15.boolean().optional(),
+  task_status: z15.enum(TASK_STATUSES).optional(),
+  verification: z15.enum(MEMORY_VERIFICATIONS).optional(),
+  stale: z15.boolean().optional(),
+  sources: z15.array(memorySourceSchema).max(100).optional(),
+  edges: z15.array(memoryEdgeSchema).max(200).optional(),
+  created_at: z15.number().int().min(0).optional(),
+  observed_at: z15.number().int().min(0).optional(),
+  valid_from: z15.number().int().min(0).optional(),
+  valid_until: z15.number().int().min(0).optional(),
+  base_revision: z15.number().int().min(0).optional(),
+  revision: z15.number().int().min(0).optional()
+});
+var KNOWN_FRONTMATTER_KEYS = new Set([
+  "format_version",
+  "note_id",
+  "memory_space_id",
+  "kind",
+  "title",
+  "summary",
+  "lifecycle",
+  "pinned",
+  "task_status",
+  "verification",
+  "stale",
+  "sources",
+  "edges",
+  "created_at",
+  "observed_at",
+  "valid_from",
+  "valid_until",
+  "base_revision",
+  "revision"
+]);
+function splitFrontmatter(source) {
+  const open7 = /^---[ \t]*\r?\n/.exec(source);
+  if (!open7)
+    return { error: "missing_frontmatter" };
+  const rest = source.slice(open7[0].length);
+  const close = /(?:^|\n)---[ \t]*(?=\r?\n|$)/.exec(rest);
+  if (!close)
+    return { error: "missing_frontmatter" };
+  const delimiterStart = close.index + (close[0].startsWith(`
+`) ? 1 : 0);
+  const delimiterEnd = close.index + close[0].length;
+  const after = rest.slice(delimiterEnd);
+  const lineEnd = /^\r?\n/.exec(after);
+  return {
+    raw: rest.slice(0, delimiterStart),
+    body: lineEnd ? after.slice(lineEnd[0].length) : after
+  };
+}
+function parseScalar(raw) {
+  const value = raw.trim();
+  if (value === "" || value === "~" || value === "null")
+    return null;
+  if (value === "true")
+    return true;
+  if (value === "false")
+    return false;
+  if (/^-?\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : value;
+  }
+  if (/^-?\d+\.\d+$/.test(value))
+    return Number(value);
+  if (value.startsWith("[") || value.startsWith("{") || value.startsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {}
+  }
+  if (value.startsWith("'") && value.endsWith("'") || value.startsWith('"') && value.endsWith('"'))
+    return value.slice(1, -1);
+  return value;
+}
+function parseFrontmatterLines(raw) {
+  const values = {};
+  for (const line of raw.split(`
+`)) {
+    const trimmed = line.replace(/\r$/, "");
+    const text = trimmed.trimStart();
+    if (!text || text.startsWith("#"))
+      continue;
+    const colon = text.indexOf(":");
+    if (colon <= 0)
+      continue;
+    const key2 = text.slice(0, colon).trim();
+    if (!key2)
+      continue;
+    values[key2] = parseScalar(text.slice(colon + 1));
+  }
+  return values;
+}
+function parseMemoryDocument(source) {
+  const split = splitFrontmatter(source);
+  if ("error" in split)
+    return { status: "invalid", issues: [split.error] };
+  const values = parseFrontmatterLines(split.raw);
+  const rawVersion = values.format_version;
+  if (typeof rawVersion === "number" && Number.isInteger(rawVersion) && rawVersion > MEMORY_FORMAT_VERSION)
+    return { status: "unsupported_format", formatVersion: rawVersion };
+  const parsed = memoryFrontmatterSchema.safeParse(values);
+  if (!parsed.success)
+    return {
+      status: "invalid",
+      issues: parsed.error.issues.map((issue) => `${issue.path.length ? issue.path.join(".") : "frontmatter"}: ${issue.message}`)
+    };
+  const fm = parsed.data;
+  const unknown = {};
+  for (const [key2, value] of Object.entries(values))
+    if (!KNOWN_FRONTMATTER_KEYS.has(key2))
+      unknown[key2] = value;
+  return {
+    status: "ok",
+    record: {
+      formatVersion: fm.format_version,
+      noteId: fm.note_id,
+      spaceId: fm.memory_space_id,
+      kind: fm.kind,
+      title: fm.title,
+      summary: fm.summary ?? null,
+      lifecycle: fm.lifecycle ?? "active",
+      pinned: fm.pinned ?? false,
+      taskStatus: fm.task_status ?? null,
+      verification: fm.verification ?? "declared",
+      stale: fm.stale ?? null,
+      sources: fm.sources ?? [],
+      edges: fm.edges ?? [],
+      createdAt: fm.created_at ?? null,
+      observedAt: fm.observed_at ?? null,
+      validFrom: fm.valid_from ?? null,
+      validUntil: fm.valid_until ?? null,
+      baseRevision: fm.base_revision ?? null,
+      revision: fm.revision ?? null,
+      unknown,
+      body: split.body
+    }
+  };
+}
+function stableValue(value) {
+  if (Array.isArray(value))
+    return value.map(stableValue);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.keys(value).sort().map((key2) => [
+      key2,
+      stableValue(value[key2])
+    ]));
+  return value;
+}
+function formatScalar(value) {
+  if (typeof value === "string")
+    return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  if (value === null || value === undefined)
+    return "null";
+  return JSON.stringify(stableValue(value));
+}
+function serializeMemoryDocument(record, options = {}) {
+  const lines = [];
+  const push = (key2, value) => lines.push(`${key2}: ${formatScalar(value)}`);
+  push("format_version", record.formatVersion);
+  push("note_id", record.noteId);
+  push("memory_space_id", record.spaceId);
+  push("kind", record.kind);
+  push("title", record.title);
+  if (record.summary !== null)
+    push("summary", record.summary);
+  push("lifecycle", record.lifecycle);
+  push("pinned", record.pinned);
+  if (record.taskStatus !== null)
+    push("task_status", record.taskStatus);
+  push("verification", record.verification);
+  if (record.stale !== null)
+    push("stale", record.stale);
+  push("sources", record.sources);
+  push("edges", record.edges);
+  if (record.createdAt !== null)
+    push("created_at", record.createdAt);
+  if (record.observedAt !== null)
+    push("observed_at", record.observedAt);
+  if (record.validFrom !== null)
+    push("valid_from", record.validFrom);
+  if (record.validUntil !== null)
+    push("valid_until", record.validUntil);
+  if (record.baseRevision !== null)
+    push("base_revision", record.baseRevision);
+  if (options.includeRevision !== false && record.revision !== null)
+    push("revision", record.revision);
+  for (const key2 of Object.keys(record.unknown).sort()) {
+    if (KNOWN_FRONTMATTER_KEYS.has(key2))
+      continue;
+    push(key2, record.unknown[key2]);
+  }
+  const body = record.body.replace(/\r\n?/g, `
+`);
+  return `---
+${lines.join(`
+`)}
+---
+${body}`;
+}
+function canonicalMemoryText(record) {
+  return serializeMemoryDocument(record, { includeRevision: false });
+}
+function memoryRecordHash(record) {
+  return createHash16("sha256").update(canonicalMemoryText(record)).digest("hex");
+}
+
+// src/memory/writer.ts
+import { randomUUID as randomUUID25 } from "node:crypto";
+import { hostname as hostname2 } from "node:os";
+import { open as open7, readFile as readFile5, rename as rename4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+function defaultIsPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+class VaultWriterLease {
+  writer;
+  writerId;
+  constructor(writer, writerId) {
+    this.writer = writer;
+    this.writerId = writerId;
+  }
+  async heartbeat() {
+    return this.writer.heartbeat(this.writerId);
+  }
+  async release() {
+    await this.writer.release(this.writerId);
+  }
+}
+
+class VaultWriter {
+  root;
+  leaseMs;
+  now;
+  pid;
+  host;
+  isPidAlive;
+  maxAcquireAttempts;
+  constructor(root, options = {}) {
+    this.root = root;
+    this.leaseMs = options.leaseMs ?? 15000;
+    this.now = options.now ?? (() => Date.now());
+    this.pid = options.pid ?? process.pid;
+    this.host = options.host ?? hostname2();
+    this.isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
+    this.maxAcquireAttempts = options.maxAcquireAttempts ?? 5;
+  }
+  async readRecord() {
+    try {
+      const raw = await readFile5(writerLockPath(this.root), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed?.version !== 1 || typeof parsed.writerId !== "string" || typeof parsed.pid !== "number" || typeof parsed.host !== "string" || typeof parsed.heartbeatAt !== "number")
+        return null;
+      return parsed;
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return null;
+      return null;
+    }
+  }
+  busy(record, reason) {
+    const retryAfter = record ? Math.max(1, Math.ceil((this.leaseMs - (this.now() - record.heartbeatAt)) / 1000)) : 5;
+    return new ForgeError("memory_writer_busy", "Vault yazıcısı başka bir süreçte etkin.", 409, retryAfter, record ? {
+      host: record.host,
+      pid: record.pid,
+      heartbeat_at: record.heartbeatAt
+    } : { reason });
+  }
+  async steal(record) {
+    const path = writerLockPath(this.root);
+    const trash = `${path}.stale.${randomUUID25()}`;
+    try {
+      await rename4(path, trash);
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    await rm4(trash, { force: true });
+  }
+  async acquire(input = {}) {
+    await ensureDir(this.root);
+    const path = writerLockPath(this.root);
+    const writerId = input.writerId ?? randomUUID25();
+    for (let attempt = 0;attempt < this.maxAcquireAttempts; attempt += 1) {
+      const record = {
+        version: 1,
+        writerId,
+        pid: this.pid,
+        host: this.host,
+        startedAt: this.now(),
+        heartbeatAt: this.now()
+      };
+      try {
+        const handle = await open7(path, "wx", 384);
+        try {
+          await handle.writeFile(JSON.stringify(record));
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        return new VaultWriterLease(this, writerId);
+      } catch (error) {
+        if (error.code !== "EEXIST")
+          throw error;
+      }
+      const current = await this.readRecord();
+      if (!current) {
+        if (!input.force)
+          throw this.busy(null, "unreadable_lock");
+        await this.steal(null);
+        continue;
+      }
+      const fresh = this.now() - current.heartbeatAt < this.leaseMs;
+      if (fresh)
+        throw this.busy(current, "heartbeat_fresh");
+      if (current.host === this.host) {
+        if (this.isPidAlive(current.pid))
+          throw this.busy(current, "live_pid");
+        await this.steal(current);
+        continue;
+      }
+      if (!input.force)
+        throw new ForgeError("memory_writer_foreign", "Vault kilidi başka makinede; açık kurtarma gerekir.", 409, undefined, {
+          host: current.host,
+          pid: current.pid,
+          heartbeat_at: current.heartbeatAt
+        });
+      await this.steal(current);
+    }
+    throw this.busy(null, "acquire_attempts_exhausted");
+  }
+  async heartbeat(writerId) {
+    const path = writerLockPath(this.root);
+    const current = await this.readRecord();
+    if (!current || current.writerId !== writerId)
+      return false;
+    current.heartbeatAt = this.now();
+    try {
+      await writeFile4(path, JSON.stringify(current), { mode: 384 });
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  async release(writerId) {
+    const path = writerLockPath(this.root);
+    const current = await this.readRecord();
+    if (!current || current.writerId !== writerId)
+      return;
+    await rm4(path, { force: true });
+  }
+  async inspect() {
+    return this.readRecord();
+  }
+}
+
+class SpaceSerialQueue {
+  chains = new Map;
+  async run(key2, fn) {
+    const previous = this.chains.get(key2) ?? Promise.resolve();
+    const next = previous.then(fn, fn);
+    const guarded = next.catch(() => {
+      return;
+    });
+    this.chains.set(key2, guarded);
+    try {
+      return await next;
+    } finally {
+      if (this.chains.get(key2) === guarded)
+        this.chains.delete(key2);
+    }
+  }
+}
+
+// src/memory/commit.ts
+var MEMORY_CONTENT_MAX_BYTES = 48 * 1024;
+var TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui"]);
+
+class MemoryCommitService {
+  deps;
+  writer;
+  service;
+  hooks;
+  spaces = new SpaceSerialQueue;
+  constructor(deps) {
+    this.deps = deps;
+    this.writer = deps.writer ?? new VaultWriter(deps.vaultRoot);
+    this.service = deps.service ?? new MemoryService(deps.db);
+    this.hooks = deps.hooks;
+  }
+  get db() {
+    return this.deps.db;
+  }
+  async commit(input) {
+    const size = byteSize(input.content);
+    if (size > MEMORY_CONTENT_MAX_BYTES)
+      throw new ForgeError("memory_content_limit", "İçerik boyut sınırını aşıyor.", 422, undefined, { size, limit: MEMORY_CONTENT_MAX_BYTES });
+    if (input.run)
+      await this.service.authorizeRunSpace(input.run, input.spaceId, "write");
+    else
+      await this.service.authorizeSpace(input.identity, input.spaceId, "write");
+    const clientHash = sha256Hex(input.content);
+    const event = await this.loadEvent(input);
+    if (!event)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    if (event.content_hash !== clientHash)
+      throw new ForgeError("memory_content_mismatch", "Teslim edilen içerik kabul edilen hash ile eşleşmiyor.", 409);
+    const trusted = TRUSTED_SOURCE_KINDS.has(input.sourceKind ?? "manual");
+    const sanitized = sanitizeUntrustedText(input.content, MEMORY_CONTENT_MAX_BYTES);
+    let storedContent = input.content;
+    let redacted = false;
+    if (sanitized !== input.content) {
+      if (trusted)
+        throw new ForgeError("memory_unsafe_content", "İçerik güvenli olmayan veri taşıyor; açık inceleme gerekir.", 422);
+      storedContent = sanitized;
+      redacted = true;
+    }
+    const { record, noteId } = this.buildRecord({
+      ...input,
+      content: storedContent
+    });
+    const lease = await this.writer.acquire();
+    try {
+      await gcTempFiles(this.deps.vaultRoot, {
+        isPidAlive: defaultIsPidAlive
+      }).catch(() => {
+        process.stderr.write(`Hafıza geçici dosya temizliği ertelendi
+`);
+      });
+      return await this.spaces.run(input.spaceId, () => this.commitLocked(input, event, noteId, record, redacted));
+    } finally {
+      await lease.release();
+    }
+  }
+  async loadEvent(input) {
+    return this.db.selectFrom("memory_events").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).executeTakeFirst();
+  }
+  buildRecord(input) {
+    const parsed = parseMemoryDocument(input.content);
+    if (parsed.status === "unsupported_format")
+      throw new ForgeError("memory_format_unsupported", "Desteklenmeyen format sürümü; içerik değiştirilmedi.", 422, undefined, { formatVersion: parsed.formatVersion });
+    if (parsed.status === "invalid") {
+      if (input.content.trimStart().startsWith("---"))
+        throw new ForgeError("invalid_memory_document", "Frontmatter geçersiz; içerik değiştirilmedi.", 422, undefined, { issues: parsed.issues.slice(0, 10) });
+      const noteId = input.noteId?.trim() || randomUUID26();
+      return {
+        noteId,
+        record: {
+          formatVersion: 1,
+          noteId,
+          spaceId: input.spaceId,
+          kind: input.kind ?? "note",
+          title: deriveTitle(input.content),
+          summary: null,
+          lifecycle: "active",
+          pinned: false,
+          taskStatus: null,
+          verification: "declared",
+          stale: null,
+          sources: [],
+          edges: [],
+          createdAt: Date.now(),
+          observedAt: null,
+          validFrom: null,
+          validUntil: null,
+          baseRevision: input.baseRevision ?? null,
+          revision: null,
+          unknown: {},
+          body: input.content.endsWith(`
+`) ? input.content : `${input.content}
+`
+        }
+      };
+    }
+    const record = parsed.record;
+    if (record.spaceId !== input.spaceId)
+      throw new ForgeError("memory_space_mismatch", "Belge hedef alanla eşleşmiyor.", 422);
+    if (input.noteId && input.noteId !== record.noteId)
+      throw new ForgeError("memory_note_id_mismatch", "Belge note_id hedefle eşleşmiyor.", 422);
+    return { record, noteId: record.noteId };
+  }
+  async commitLocked(input, event, noteId, record, redacted) {
+    const current = await this.loadEvent(input);
+    if (!current)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    if (current.state === "committed")
+      return this.completeReplay(current);
+    if (current.state === "rejected")
+      throw new ForgeError("memory_event_rejected", "Olay reddedilmiş.", 409);
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).executeTakeFirst();
+    if (note?.deleted_at)
+      throw new ForgeError("memory_note_deleted", "Not arşivlenmiş/silinmiş; önce açık restore gerekir.", 409);
+    let expected;
+    if (note) {
+      if (input.baseRevision === undefined || input.baseRevision === null)
+        throw new ForgeError("memory_revision_required", "Güncelleme için base_revision zorunludur.", 422, undefined, { current_revision: note.current_revision });
+      expected = note.current_revision;
+      if (expected === null || input.baseRevision !== expected)
+        throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409, undefined, {
+          current_revision: note.current_revision,
+          base_revision: input.baseRevision
+        });
+    } else {
+      if (input.baseRevision !== undefined && input.baseRevision !== null)
+        throw new ForgeError("memory_revision_conflict", "Not henüz yok; base_revision gönderilmemeli.", 409, undefined, { base_revision: input.baseRevision });
+      expected = null;
+    }
+    const newRevision = (expected ?? 0) + 1;
+    const canonical = {
+      ...record,
+      baseRevision: expected,
+      revision: newRevision
+    };
+    const canonicalParsed = parseMemoryDocument(serializeMemoryDocument(canonical));
+    const finalRecord = canonicalParsed.status === "ok" ? canonicalParsed.record : canonical;
+    const fileContent = serializeMemoryDocument(finalRecord);
+    const recordHash = memoryRecordHash(finalRecord);
+    const fileHash = sha256Hex(fileContent);
+    const size = byteSize(fileContent);
+    const published = await publishRevisionFile(this.deps.vaultRoot, input.spaceId, noteId, newRevision, fileHash, fileContent);
+    await this.hooks?.afterPublish?.();
+    const workingPath = noteWorkingPath(this.deps.vaultRoot, input.spaceId, noteId);
+    const existingWorking = await readWorkingCopy(this.deps.vaultRoot, input.spaceId, noteId);
+    let workingConflict = null;
+    let expectedWorkingHash = null;
+    if (note?.current_revision != null) {
+      const previousRevision = await this.db.selectFrom("memory_note_revisions").select(["content_hash"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).where("revision", "=", note.current_revision).executeTakeFirst();
+      expectedWorkingHash = previousRevision?.content_hash ?? null;
+    }
+    if (!existingWorking || existingWorking.hash === expectedWorkingHash || existingWorking.hash === fileHash) {
+      if (!existingWorking || existingWorking.hash !== fileHash) {
+        await atomicWriteFile(workingPath, fileContent, {
+          tempDir: tempDir(this.deps.vaultRoot),
+          vaultRoot: this.deps.vaultRoot
+        });
+      }
+    } else {
+      workingConflict = {
+        previous: expectedWorkingHash,
+        observed: existingWorking.hash
+      };
+    }
+    const now = Date.now();
+    const receipt = {
+      status: "committed",
+      noteId,
+      revision: newRevision,
+      recordHash,
+      fileHash,
+      filePath: published.relativePath,
+      byteSize: size,
+      redacted,
+      indexed: false
+    };
+    try {
+      await this.db.transaction().execute(async (tx) => {
+        const fresh = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).executeTakeFirst();
+        if (!fresh || fresh.state !== "pending")
+          throw new ForgeError(fresh?.state === "committed" ? "memory_event_conflict" : "memory_event_unavailable", "Olay durumu commit sırasında değişti.", 409);
+        const freshNote = await tx.selectFrom("memory_notes").select(["current_revision", "deleted_at"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).executeTakeFirst();
+        if (freshNote?.deleted_at)
+          throw new ForgeError("memory_note_deleted", "Not arşivlenmiş/silinmiş; önce açık restore gerekir.", 409);
+        if ((freshNote?.current_revision ?? null) !== expected)
+          throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+        if (freshNote) {
+          const updated = await tx.updateTable("memory_notes").set({
+            current_revision: newRevision,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            format_version: finalRecord.formatVersion,
+            updated_at: now
+          }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).where("current_revision", "=", expected).executeTakeFirst();
+          if (Number(updated.numUpdatedRows) !== 1)
+            throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+        } else {
+          await tx.insertInto("memory_notes").values({
+            tenant_id: input.identity.tenantId,
+            space_id: input.spaceId,
+            id: noteId,
+            lifecycle: finalRecord.lifecycle,
+            pinned: finalRecord.pinned ? 1 : 0,
+            task_status: finalRecord.taskStatus,
+            current_revision: newRevision,
+            format_version: finalRecord.formatVersion,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            created_at: now,
+            updated_at: now,
+            superseded_by: null,
+            source_id: null,
+            source_path: null,
+            source_hash: null,
+            source_state: "present",
+            deleted_at: null
+          }).execute();
+        }
+        await tx.insertInto("memory_note_revisions").values({
+          tenant_id: input.identity.tenantId,
+          space_id: input.spaceId,
+          note_id: noteId,
+          revision: newRevision,
+          format_version: finalRecord.formatVersion,
+          kind: finalRecord.kind,
+          title: finalRecord.title,
+          summary: finalRecord.summary,
+          body_md: finalRecord.body,
+          metadata_json: JSON.stringify({
+            record_hash: recordHash,
+            client_hash: event.content_hash,
+            redacted
+          }),
+          sources_json: JSON.stringify(finalRecord.sources),
+          base_revision: expected,
+          created_by: input.identity.userId,
+          created_at: now,
+          file_path: published.relativePath,
+          content_hash: fileHash,
+          byte_size: size
+        }).execute();
+        const committedReceipt = {
+          ...receipt,
+          indexed: false
+        };
+        await tx.updateTable("memory_events").set({
+          state: "committed",
+          committed_revision: newRevision,
+          note_id: noteId,
+          receipt_json: JSON.stringify(committedReceipt),
+          error_code: null,
+          attempts: sql20`attempts + 1`,
+          updated_at: now
+        }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).where("state", "=", "pending").execute();
+      });
+    } catch (error) {
+      if (error instanceof ForgeError) {
+        if (error.code === "memory_revision_conflict")
+          await this.removeUnreferencedCandidate(input, noteId, published.relativePath, published.path);
+        throw error;
+      }
+      if (isUniqueViolation(error)) {
+        await this.removeUnreferencedCandidate(input, noteId, published.relativePath, published.path);
+        throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+      }
+      throw error;
+    }
+    if (workingConflict) {
+      const candidateId = randomUUID26();
+      await this.db.insertInto("memory_change_candidates").values({
+        tenant_id: input.identity.tenantId,
+        id: candidateId,
+        source_id: null,
+        path: workingPath,
+        note_id: noteId,
+        previous_hash: workingConflict.previous,
+        observed_hash: workingConflict.observed,
+        base_revision: expected,
+        state: "conflict",
+        reason: "working_copy_changed",
+        created_at: now,
+        updated_at: now
+      }).execute();
+    }
+    await this.hooks?.afterCommitBeforeIndex?.();
+    let indexed = true;
+    try {
+      await this.markIndexed(input, now);
+    } catch {
+      indexed = false;
+    }
+    await this.cleanupOrphanRevisions(input, noteId).catch(() => {
+      process.stderr.write(`Hafıza yetim revision temizliği ertelendi
+`);
+    });
+    return { ...receipt, status: "committed", indexed };
+  }
+  async markIndexed(input, now) {
+    await this.db.updateTable("memory_events").set({ indexed_at: now, updated_at: now }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).where("indexed_at", "is", null).execute();
+  }
+  async completeReplay(event) {
+    const stored = event.receipt_json ? JSON.parse(event.receipt_json) : null;
+    const receipt = stored ?? await this.reconstructReceipt(event);
+    if (!receipt.filePath)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı.", 409);
+    const absolute = resolveVaultRelative(this.deps.vaultRoot, receipt.filePath);
+    const content = await readTextIfExists(absolute);
+    if (content === null || sha256Hex(content) !== receipt.fileHash)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı veya bozulmuş.", 409);
+    let indexed = event.indexed_at !== null;
+    if (!indexed) {
+      const now = Date.now();
+      try {
+        await this.db.updateTable("memory_events").set({ indexed_at: now, updated_at: now }).where("tenant_id", "=", event.tenant_id).where("space_id", "=", event.space_id).where("id", "=", event.id).where("indexed_at", "is", null).execute();
+        indexed = true;
+      } catch {
+        indexed = false;
+      }
+    }
+    return { ...receipt, status: "duplicate", indexed };
+  }
+  async reconstructReceipt(event) {
+    const revision2 = event.committed_revision;
+    if (!event.note_id)
+      throw new ForgeError("memory_receipt_unavailable", "Kabul edilmiş receipt yeniden kurulamıyor; olay not bağı taşımıyor.", 409);
+    const row = revision2 ? await this.db.selectFrom("memory_note_revisions").selectAll().where("tenant_id", "=", event.tenant_id).where("space_id", "=", event.space_id).where("note_id", "=", event.note_id).where("revision", "=", revision2).executeTakeFirst() : undefined;
+    if (!row)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision kaydı bulunamadı.", 409);
+    const metadata = JSON.parse(row.metadata_json);
+    return {
+      status: "committed",
+      noteId: row.note_id,
+      revision: row.revision,
+      recordHash: metadata.record_hash ?? row.content_hash ?? "",
+      fileHash: row.content_hash ?? "",
+      filePath: row.file_path ?? "",
+      byteSize: row.byte_size ?? 0,
+      redacted: false,
+      indexed: event.indexed_at !== null
+    };
+  }
+  async removeUnreferencedCandidate(input, noteId, relativePath, absolutePath) {
+    const referenced = await this.db.selectFrom("memory_note_revisions").select(["revision"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).where("file_path", "=", relativePath).executeTakeFirst();
+    if (!referenced)
+      await removeFileIfExists(absolutePath);
+  }
+  async cleanupOrphanRevisions(input, noteId) {
+    const files = await listRevisionFiles(this.deps.vaultRoot, input.spaceId, noteId);
+    if (files.length === 0)
+      return;
+    const rows = await this.db.selectFrom("memory_note_revisions").select(["file_path"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).execute();
+    const referenced = new Set(rows.map((row) => row.file_path).filter((path) => !!path));
+    let cleaned = 0;
+    for (const absolute of files) {
+      if (cleaned >= 50)
+        break;
+      const relative5 = relativeVaultPath(this.deps.vaultRoot, absolute);
+      if (!relative5 || referenced.has(relative5))
+        continue;
+      const content = await readTextIfExists(absolute);
+      await writeQuarantine(this.deps.vaultRoot, {
+        reason: "orphan_revision",
+        hash: content !== null ? sha256Hex(content) : null,
+        path: relative5,
+        summary: "Referanssız revision dosyası karantinaya alındı."
+      });
+      await removeFileIfExists(absolute);
+      cleaned += 1;
+    }
+  }
+  async receipt(identity, spaceId, sourceEventKey) {
+    await this.service.authorizeSpace(identity, spaceId, "read");
+    const event = await this.db.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", spaceId).where("source_event_key", "=", sourceEventKey).executeTakeFirst();
+    if (!event)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    const payload = event.receipt_json ? JSON.parse(event.receipt_json) : null;
+    if (event.state === "committed") {
+      if (!payload?.filePath)
+        throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı.", 409);
+      const content = await readTextIfExists(resolveVaultRelative(this.deps.vaultRoot, payload.filePath));
+      if (content === null || sha256Hex(content) !== payload.fileHash)
+        throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı veya bozulmuş.", 409);
+    }
+    return {
+      event_id: event.id,
+      state: event.state,
+      indexed: event.indexed_at !== null,
+      committed_revision: event.committed_revision,
+      error_code: event.error_code,
+      receipt: payload
+    };
+  }
+}
+function deriveTitle(content) {
+  for (const line of content.split(`
+`)) {
+    const trimmed = line.trim();
+    if (!trimmed)
+      continue;
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+    const title = (heading ? heading[1] : trimmed).trim();
+    return title.slice(0, 200) || "Not";
+  }
+  return "Not";
+}
+
+// src/memory/sources.ts
+import { randomUUID as randomUUID27 } from "node:crypto";
+import { lstat as lstat7, readdir as readdir5, realpath as realpath5 } from "node:fs/promises";
+import { dirname as dirname5, isAbsolute as isAbsolute4, join as join12, relative as relative5, resolve as resolve12 } from "node:path";
+import { sql as sql21 } from "kysely";
+var MEMORY_SOURCE_MAX_FILE_BYTES = 1024 * 1024;
+var MEMORY_SCAN_DEFAULT_LIMIT = 200;
+
+class MemorySourceService {
+  deps;
+  service;
+  now;
+  maxFileBytes;
+  constructor(deps) {
+    this.deps = deps;
+    this.service = deps.service ?? new MemoryService(deps.db);
+    this.now = deps.now ?? (() => Date.now());
+    this.maxFileBytes = deps.maxFileBytes ?? MEMORY_SOURCE_MAX_FILE_BYTES;
+  }
+  get db() {
+    return this.deps.db;
+  }
+  async registerSource(identity, input) {
+    await this.service.authorizeSpace(identity, input.spaceId, "write");
+    if (!isAbsolute4(input.rootPath))
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü mutlak yol olmalıdır.", 422);
+    if (input.mode !== "read_only" && input.mode !== "managed")
+      throw new ForgeError("invalid_memory_source", "Kaynak modu read_only veya managed olmalıdır.", 422);
+    let canonical;
+    try {
+      canonical = await realpath5(input.rootPath);
+    } catch {
+      throw new ForgeError("memory_source_unavailable", "Kaynak kökü bulunamadı.", 404);
+    }
+    const info = await lstat7(canonical);
+    if (!info.isDirectory())
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü dizin olmalıdır.", 422);
+    const vault = resolve12(this.deps.vaultRoot);
+    const rel = relative5(vault, canonical);
+    if (rel === "" || !rel.startsWith("..") && !isAbsolute4(rel))
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü hafıza vault'u içinde olamaz.", 422);
+    const existing = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("root_path", "=", canonical).executeTakeFirst();
+    if (existing)
+      return existing;
+    const now = this.now();
+    const source = {
+      tenant_id: identity.tenantId,
+      id: randomUUID27(),
+      space_id: input.spaceId,
+      root_path: canonical,
+      mode: input.mode,
+      cursor_json: null,
+      checkpoint: null,
+      last_scan_at: null,
+      status: "active",
+      created_by: identity.userId,
+      created_at: now,
+      updated_at: now
+    };
+    try {
+      return await this.db.insertInto("memory_sources").values(source).returningAll().executeTakeFirstOrThrow();
+    } catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+      const raced = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("root_path", "=", canonical).executeTakeFirst();
+      if (raced)
+        return raced;
+      throw error;
+    }
+  }
+  async listSources(identity, input = {}) {
+    if (input.spaceId)
+      await this.service.authorizeSpace(identity, input.spaceId, "read");
+    const spaces = input.spaceId ? [{ id: input.spaceId }] : (await this.service.listSpaces(identity)).items;
+    if (spaces.length === 0)
+      return [];
+    let query = this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "in", spaces.map((space) => space.id));
+    query = query.orderBy("id").limit(100);
+    return query.execute();
+  }
+  async scan(identity, input) {
+    const limit = Math.min(Math.max(input.limit ?? MEMORY_SCAN_DEFAULT_LIMIT, 1), 1000);
+    const source = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", input.sourceId).executeTakeFirst();
+    if (!source)
+      throw new ForgeError("memory_source_unavailable", "Kaynak bulunamadı.", 404);
+    await this.service.authorizeSpace(identity, source.space_id, "write");
+    const cursor = parseCursor(source.cursor_json);
+    const report = {
+      space_id: source.space_id,
+      root_state: "present",
+      scanned: 0,
+      read: 0,
+      unchanged: 0,
+      candidates: 0,
+      conflicts: 0,
+      skipped: 0,
+      errors: 0,
+      missing: 0,
+      done: false,
+      cursor
+    };
+    try {
+      await readdir5(source.root_path);
+    } catch (error) {
+      const code = error.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES" && code !== "EPERM")
+        throw error;
+      const now2 = this.now();
+      await this.db.updateTable("memory_sources").set({
+        status: "missing",
+        cursor_json: null,
+        checkpoint: null,
+        last_scan_at: now2,
+        updated_at: now2
+      }).where("tenant_id", "=", identity.tenantId).where("id", "=", source.id).execute();
+      return {
+        ...report,
+        root_state: "missing",
+        errors: 1,
+        done: true,
+        cursor: null
+      };
+    }
+    const openCandidates = await this.openCandidates(source.id, identity.tenantId);
+    let lastEntry = cursor;
+    let budget = limit;
+    const walk = walkEntries(source.root_path, cursor, limit * 10);
+    for await (const entry of walk.entries) {
+      lastEntry = entry.relative;
+      if (entry.kind === "other") {
+        continue;
+      }
+      if (entry.kind === "symlink") {
+        report.scanned += 1;
+        report.skipped += 1;
+        budget -= 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: null,
+          baseRevision: null,
+          state: "quarantined",
+          reason: "symlink"
+        });
+        await writeQuarantine(this.deps.vaultRoot, {
+          reason: "source_symlink",
+          path: entry.relative,
+          summary: "Sembolik bağ tarama dışı bırakıldı."
+        });
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      report.scanned += 1;
+      budget -= 1;
+      if (entry.size > this.maxFileBytes) {
+        report.skipped += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: null,
+          baseRevision: null,
+          state: "quarantined",
+          reason: "too_large"
+        });
+        await writeQuarantine(this.deps.vaultRoot, {
+          reason: "source_too_large",
+          path: entry.relative,
+          summary: "Dosya boyut sınırını aşıyor; içerik okunmadı."
+        });
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      let content;
+      let hash2;
+      try {
+        const stable = await readStableText(entry.absolute, {
+          maxBytes: this.maxFileBytes
+        });
+        content = stable.content;
+        hash2 = stable.hash;
+      } catch (error) {
+        const code = error.code;
+        if (code === "memory_file_changed") {
+          report.skipped += 1;
+          if (budget <= 0)
+            break;
+          continue;
+        }
+        report.errors += 1;
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      report.read += 1;
+      await this.classifyFile(identity, source, entry, content, hash2, report, openCandidates);
+      if (budget <= 0)
+        break;
+    }
+    const closedDirs = walk.state.closedDirs;
+    if (closedDirs.size > 0)
+      report.missing += await this.markMissing(identity, source, closedDirs, report);
+    const done = walk.state.done;
+    const now = this.now();
+    await this.db.updateTable("memory_sources").set({
+      status: "active",
+      cursor_json: done ? null : JSON.stringify({ path: lastEntry }),
+      checkpoint: done ? null : lastEntry,
+      last_scan_at: now,
+      updated_at: now
+    }).where("tenant_id", "=", identity.tenantId).where("id", "=", source.id).execute();
+    report.done = done;
+    report.cursor = done ? null : lastEntry;
+    return report;
+  }
+  async openCandidates(sourceId, tenantId) {
+    const rows = await this.db.selectFrom("memory_change_candidates").selectAll().where("tenant_id", "=", tenantId).where("source_id", "=", sourceId).where("state", "in", ["candidate", "conflict"]).execute();
+    return new Map(rows.map((row) => [row.path, row]));
+  }
+  async classifyFile(identity, source, entry, content, hash2, report, openCandidates) {
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("source_id", "=", source.id).where("source_path", "=", entry.relative).executeTakeFirst();
+    if (note?.deleted_at) {
+      report.skipped += 1;
+      return;
+    }
+    if (note && note.source_hash === hash2) {
+      if (note.source_state !== "present")
+        await this.markSourceState(identity, note, "present");
+      report.unchanged += 1;
+      return;
+    }
+    if (!note) {
+      const duplicate2 = await this.findDuplicateNoteId(identity, source, content, entry.relative);
+      if (duplicate2) {
+        report.conflicts += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: duplicate2.noteId,
+          previousHash: null,
+          observedHash: hash2,
+          baseRevision: duplicate2.baseRevision,
+          state: "conflict",
+          reason: "duplicate_note_id"
+        });
+        return;
+      }
+      const caseConflict = await this.findCaseConflict(identity, source, entry.relative);
+      if (caseConflict) {
+        report.conflicts += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: hash2,
+          baseRevision: null,
+          state: "conflict",
+          reason: "case_conflict"
+        });
+        return;
+      }
+      report.candidates += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: null,
+        previousHash: null,
+        observedHash: hash2,
+        baseRevision: null,
+        state: "candidate",
+        reason: "new"
+      });
+      return;
+    }
+    const previous = openCandidates.get(entry.relative) ?? null;
+    const bothChanged = previous !== null && previous.base_revision !== null && (note.current_revision ?? 0) > previous.base_revision;
+    const duplicate = await this.findDuplicateNoteId(identity, source, content, entry.relative);
+    if (duplicate) {
+      report.conflicts += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: duplicate.noteId,
+        previousHash: note.source_hash,
+        observedHash: hash2,
+        baseRevision: note.current_revision,
+        state: "conflict",
+        reason: "duplicate_note_id"
+      });
+      return;
+    }
+    if (bothChanged) {
+      report.conflicts += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: note.id,
+        previousHash: note.source_hash,
+        observedHash: hash2,
+        baseRevision: previous?.base_revision ?? note.current_revision,
+        state: "conflict",
+        reason: "external_and_accepted_changed"
+      });
+      return;
+    }
+    report.candidates += 1;
+    await this.upsertCandidate(identity, source, entry.relative, {
+      noteId: note.id,
+      previousHash: note.source_hash,
+      observedHash: hash2,
+      baseRevision: note.current_revision,
+      state: "candidate",
+      reason: "updated"
+    });
+  }
+  async findDuplicateNoteId(identity, source, content, path) {
+    const parsed = parseMemoryDocument(content);
+    if (parsed.status !== "ok")
+      return null;
+    const owner = await this.db.selectFrom("memory_notes").select(["id", "source_path", "current_revision"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("id", "=", parsed.record.noteId).executeTakeFirst();
+    if (!owner)
+      return null;
+    if (owner.source_path === path)
+      return null;
+    return {
+      noteId: parsed.record.noteId,
+      baseRevision: owner.current_revision
+    };
+  }
+  async findCaseConflict(identity, source, path) {
+    const row = await this.db.selectFrom("memory_change_candidates").select(["path"]).where("tenant_id", "=", identity.tenantId).where("source_id", "=", source.id).where(sql21`lower(path) = lower(${path})`).where("path", "!=", path).executeTakeFirst();
+    return row?.path ?? null;
+  }
+  async markSourceState(identity, note, state) {
+    await this.db.updateTable("memory_notes").set({ source_state: state, updated_at: this.now() }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", note.space_id).where("id", "=", note.id).execute();
+  }
+  async markMissing(identity, source, closedDirs, report) {
+    const seen = await this.seenPaths(source, closedDirs);
+    const notes = await this.db.selectFrom("memory_notes").select(["id", "space_id", "source_path", "source_state"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("source_id", "=", source.id).where("source_state", "=", "present").execute();
+    let missing = 0;
+    for (const note of notes) {
+      if (!note.source_path)
+        continue;
+      const dir = dirname5(note.source_path);
+      const dirKey = dir === "." ? "" : dir;
+      if (!closedDirs.has(dirKey))
+        continue;
+      if (seen.has(note.source_path))
+        continue;
+      missing += 1;
+      report.candidates += 1;
+      await this.markSourceState(identity, note, "missing");
+      await this.upsertCandidate(identity, source, note.source_path, {
+        noteId: note.id,
+        previousHash: null,
+        observedHash: null,
+        baseRevision: null,
+        state: "candidate",
+        reason: "source_missing"
+      });
+    }
+    return missing;
+  }
+  async seenPaths(source, closedDirs) {
+    const seen = new Set;
+    for (const dir of closedDirs) {
+      const absolute = dir ? safeJoin(source.root_path, ...dir.split("/")) : source.root_path;
+      const entries = await readdir5(absolute, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isFile())
+          continue;
+        const rel = dir ? `${dir}/${entry.name}` : entry.name;
+        seen.add(rel);
+      }
+    }
+    return seen;
+  }
+  async upsertCandidate(identity, source, path, values) {
+    const now = this.now();
+    const existing = await this.db.selectFrom("memory_change_candidates").selectAll().where("tenant_id", "=", identity.tenantId).where("source_id", "=", source.id).where("path", "=", path).where("state", "in", ["candidate", "conflict", "quarantined"]).orderBy("created_at", "desc").limit(1).executeTakeFirst();
+    if (existing) {
+      await this.db.updateTable("memory_change_candidates").set({
+        note_id: values.noteId,
+        previous_hash: values.previousHash,
+        observed_hash: values.observedHash,
+        base_revision: values.baseRevision,
+        state: values.state,
+        reason: values.reason,
+        updated_at: now
+      }).where("tenant_id", "=", identity.tenantId).where("id", "=", existing.id).execute();
+      return;
+    }
+    await this.db.insertInto("memory_change_candidates").values({
+      tenant_id: identity.tenantId,
+      id: randomUUID27(),
+      source_id: source.id,
+      path,
+      note_id: values.noteId,
+      previous_hash: values.previousHash,
+      observed_hash: values.observedHash,
+      base_revision: values.baseRevision,
+      state: values.state,
+      reason: values.reason,
+      created_at: now,
+      updated_at: now
+    }).execute();
+  }
+  async listCandidates(identity, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    let spaceIds;
+    if (input.spaceId) {
+      await this.service.authorizeSpace(identity, input.spaceId, "read");
+      spaceIds = [input.spaceId];
+    } else {
+      spaceIds = (await this.service.listSpaces(identity)).items.map((space) => space.id);
+    }
+    if (spaceIds.length === 0)
+      return { items: [], next: null };
+    let query = this.db.selectFrom("memory_change_candidates as c").innerJoin("memory_sources as s", (join13) => join13.onRef("s.tenant_id", "=", "c.tenant_id").onRef("s.id", "=", "c.source_id")).selectAll("c").where("c.tenant_id", "=", identity.tenantId).where("s.space_id", "in", spaceIds);
+    if (input.sourceId)
+      query = query.where("c.source_id", "=", input.sourceId);
+    if (input.state)
+      query = query.where("c.state", "=", input.state);
+    if (input.after)
+      query = query.where("c.id", ">", input.after);
+    const rows = await query.orderBy("c.id").limit(limit + 1).execute();
+    return {
+      items: rows.slice(0, limit),
+      next: rows.length > limit ? rows[limit - 1].id : null
+    };
+  }
+}
+function parseCursor(raw) {
+  if (!raw)
+    return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed.path === "string" && parsed.path ? parsed.path : null;
+  } catch {
+    return null;
+  }
+}
+function walkEntries(root, cursor, maxEntries) {
+  const state = { closedDirs: new Set, done: false };
+  const entries = async function* () {
+    let processed = 0;
+    const stack = [];
+    const rootEntries = await readdir5(root, { withFileTypes: true });
+    stack.push({
+      absolute: root,
+      relative: "",
+      entries: rootEntries.map((entry) => ({ name: entry.name, isFile: entry.isFile() })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      index: 0
+    });
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (frame.index >= frame.entries.length) {
+        stack.pop();
+        state.closedDirs.add(frame.relative);
+        continue;
+      }
+      const entry = frame.entries[frame.index++];
+      const relative6 = frame.relative ? `${frame.relative}/${entry.name}` : entry.name;
+      if (entry.isFile && relative6 <= (cursor ?? ""))
+        continue;
+      if (processed >= maxEntries)
+        return;
+      processed += 1;
+      const absolute = join12(frame.absolute, entry.name);
+      if (entry.isFile) {
+        const info = await lstat7(absolute).catch(() => null);
+        if (!info)
+          continue;
+        if (info.isSymbolicLink()) {
+          yield { relative: relative6, absolute, kind: "symlink", size: 0 };
+          continue;
+        }
+        if (!info.isFile()) {
+          yield { relative: relative6, absolute, kind: "other", size: 0 };
+          continue;
+        }
+        yield { relative: relative6, absolute, kind: "file", size: info.size };
+        continue;
+      }
+      const childInfo = await lstat7(absolute).catch(() => null);
+      if (!childInfo)
+        continue;
+      if (childInfo.isSymbolicLink()) {
+        yield { relative: relative6, absolute, kind: "symlink", size: 0 };
+        continue;
+      }
+      if (!childInfo.isDirectory()) {
+        yield { relative: relative6, absolute, kind: "other", size: 0 };
+        continue;
+      }
+      const children = await readdir5(absolute, { withFileTypes: true });
+      stack.push({
+        absolute,
+        relative: relative6,
+        entries: children.map((child) => ({ name: child.name, isFile: child.isFile() })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+        index: 0
+      });
+    }
+    state.done = true;
+  }();
+  return { entries, state };
+}
+
+// src/memory/job-kinds.ts
+import { z as z16 } from "zod";
+var MEMORY_INGEST_CONTENT_MAX = 48 * 1024;
+var memoryIngestPayloadSchema = z16.object({
+  spaceId: z16.string().min(1).max(200),
+  sourceEventKey: z16.string().min(1).max(200),
+  sourceKind: z16.string().min(1).max(40),
+  contentHash: z16.string().regex(/^[0-9a-f]{64}$/),
+  observedAt: z16.number().int().min(0).optional(),
+  content: z16.string().min(1).max(MEMORY_INGEST_CONTENT_MAX).optional(),
+  noteId: z16.string().min(1).max(200).optional(),
+  baseRevision: z16.number().int().min(0).optional(),
+  kind: z16.enum(MEMORY_KINDS).optional()
+}).strict();
+var memoryReconcilePayloadSchema = z16.object({
+  spaceId: z16.string().min(1).max(200).optional(),
+  limit: z16.number().int().min(1).max(100).default(20)
+}).strict();
+var memoryIngestJobKind = {
+  kind: "memory_ingest",
+  payload: memoryIngestPayloadSchema,
+  skillProfile: false,
+  scope: "memory"
+};
+var memoryReconcileJobKind = {
+  kind: "memory_reconcile",
+  payload: memoryReconcilePayloadSchema,
+  skillProfile: false,
+  scope: "memory"
+};
+var memoryJobKinds = {
+  memory_ingest: memoryIngestJobKind,
+  memory_reconcile: memoryReconcileJobKind
+};
+var productionJobKinds = {
+  ...defaultJobKinds,
+  ...memoryJobKinds
+};
+
+// src/memory/worker.ts
+function memoryIngestHandler(service, commits) {
+  return async (run, signal) => {
+    throwIfAborted(signal);
+    const payload = memoryIngestJobKind.payload.parse(JSON.parse(run.input_json));
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    await service.authorizeRunSpace(run, payload.spaceId, "write");
+    const outcome = await service.recordEvent(identity, payload);
+    if (payload.content !== undefined) {
+      if (!commits)
+        throw new ForgeError("memory_commit_unavailable", "Hafıza commit servisi yapılandırılmadı.", 503);
+      const receipt = await commits.commit({
+        identity,
+        run,
+        spaceId: payload.spaceId,
+        eventId: outcome.event.id,
+        sourceKind: payload.sourceKind,
+        content: payload.content,
+        noteId: payload.noteId ?? null,
+        baseRevision: payload.baseRevision ?? null,
+        kind: payload.kind
+      });
+      throwIfAborted(signal);
+      return {
+        state: "completed",
+        result: { eventId: outcome.event.id, ...receipt }
+      };
+    }
+    throwIfAborted(signal);
+    return {
+      state: "completed",
+      result: { status: outcome.status, eventId: outcome.event.id }
+    };
+  };
+}
+function memoryReconcileHandler(service) {
+  return async (run, signal) => {
+    throwIfAborted(signal);
+    const payload = memoryReconcileJobKind.payload.parse(JSON.parse(run.input_json));
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    if (payload.spaceId)
+      await service.authorizeRunSpace(run, payload.spaceId, "read");
+    const report = await service.reconcile(identity, payload);
+    throwIfAborted(signal);
+    return { state: "completed", result: report };
+  };
+}
+function memoryJobHandlers(service, commits) {
+  return {
+    memory_ingest: memoryIngestHandler(service, commits),
+    memory_reconcile: memoryReconcileHandler(service)
+  };
+}
+function throwIfAborted(signal) {
+  if (signal.aborted)
+    throw new ForgeError("aborted", "Hafıza işi iptal edildi.", 499);
+}
+
 // src/mcp/schemas.ts
 var toolDescriptions = {
   forge_search: "Search authorized skill metadata. Returns at most 5 default/20 max matches and an opaque cursor; no package content.",
@@ -7256,11 +9455,11 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes as randomBytes4,
-  createHash as createHash15,
-  randomUUID as randomUUID23
+  createHash as createHash17,
+  randomUUID as randomUUID28
 } from "node:crypto";
-import { mkdir as mkdir7, open as open6, readFile as readFile4, lstat as lstat6 } from "node:fs/promises";
-import { join as join10 } from "node:path";
+import { mkdir as mkdir8, open as open8, readFile as readFile6, lstat as lstat8 } from "node:fs/promises";
+import { join as join13 } from "node:path";
 class SecretVault {
   root;
   key;
@@ -7269,14 +9468,14 @@ class SecretVault {
     this.key = key2;
   }
   static async open(dataDir) {
-    const root = join10(dataDir, "secrets");
-    await mkdir7(root, { recursive: true, mode: 448 });
-    const stat2 = await lstat6(root);
-    if (!stat2.isDirectory() || stat2.isSymbolicLink() || process.platform !== "win32" && stat2.mode & 63)
+    const root = join13(dataDir, "secrets");
+    await mkdir8(root, { recursive: true, mode: 448 });
+    const stat3 = await lstat8(root);
+    if (!stat3.isDirectory() || stat3.isSymbolicLink() || process.platform !== "win32" && stat3.mode & 63)
       throw new ForgeError("insecure_vault", "Secret dizini güvenli değil.");
-    const path = join10(root, "master.key");
+    const path = join13(root, "master.key");
     try {
-      const fd = await open6(path, "wx", 384);
+      const fd = await open8(path, "wx", 384);
       try {
         await fd.writeFile(randomBytes4(32));
         await fd.sync();
@@ -7287,12 +9486,12 @@ class SecretVault {
       if (error.code !== "EEXIST")
         throw error;
     }
-    const keyStat = await lstat6(path);
+    const keyStat = await lstat8(path);
     if (!keyStat.isFile() || keyStat.isSymbolicLink() || keyStat.nlink !== 1 || process.platform !== "win32" && keyStat.mode & 63)
       throw new ForgeError("insecure_vault_key", "Secret anahtar dosyası güvenli değil.");
     let key2 = Buffer.alloc(0);
     for (let i = 0;i < 50; i++) {
-      key2 = await readFile4(path);
+      key2 = await readFile6(path);
       if (key2.length === 32)
         break;
       await new Promise((r) => setTimeout(r, 20));
@@ -7302,12 +9501,12 @@ class SecretVault {
     return new SecretVault(root, key2);
   }
   scope(tenant, user) {
-    return createHash15("sha256").update(JSON.stringify([tenant, user])).digest("hex");
+    return createHash17("sha256").update(JSON.stringify([tenant, user])).digest("hex");
   }
   async put(tenant, user, value) {
     if (!value || value.length > 16384)
       throw new ForgeError("invalid_secret", "Secret boyutu geçersiz.");
-    const ref2 = randomUUID23(), scope = this.scope(tenant, user);
+    const ref2 = randomUUID28(), scope = this.scope(tenant, user);
     const nonce = randomBytes4(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
     cipher.setAAD(Buffer.from(`${scope}:${ref2}`));
@@ -7315,8 +9514,8 @@ class SecretVault {
       cipher.update(value, "utf8"),
       cipher.final()
     ]);
-    const path = join10(this.root, `${scope}-${ref2}.json`);
-    const fd = await open6(path, "wx", 384);
+    const path = join13(this.root, `${scope}-${ref2}.json`);
+    const fd = await open8(path, "wx", 384);
     try {
       await fd.writeFile(JSON.stringify({
         version: 1,
@@ -7333,12 +9532,12 @@ class SecretVault {
   async get(tenant, user, ref2) {
     if (!/^[a-f0-9-]{36}$/.test(ref2))
       throw new ForgeError("secret_unavailable", "Secret referansı geçersiz.", 404);
-    const scope = this.scope(tenant, user), path = join10(this.root, `${scope}-${ref2}.json`);
+    const scope = this.scope(tenant, user), path = join13(this.root, `${scope}-${ref2}.json`);
     try {
-      const stat2 = await lstat6(path);
-      if (!stat2.isFile() || stat2.isSymbolicLink() || stat2.nlink !== 1 || stat2.size > 32768)
+      const stat3 = await lstat8(path);
+      if (!stat3.isFile() || stat3.isSymbolicLink() || stat3.nlink !== 1 || stat3.size > 32768)
         throw new Error("unsafe secret");
-      const value = JSON.parse(await readFile4(path, "utf8"));
+      const value = JSON.parse(await readFile6(path, "utf8"));
       const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(value.nonce, "base64"));
       decipher.setAAD(Buffer.from(`${scope}:${ref2}`));
       decipher.setAuthTag(Buffer.from(value.tag, "base64"));
@@ -7355,13 +9554,13 @@ class SecretVault {
 // src/http/server.ts
 import staticFiles from "@fastify/static";
 import { existsSync as existsSync2 } from "node:fs";
-import { resolve as resolve11 } from "node:path";
+import { resolve as resolve13 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual as timingSafeEqual2, createHash as createHash16 } from "node:crypto";
+import { timingSafeEqual as timingSafeEqual2, createHash as createHash18, randomUUID as randomUUID30 } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { z as z15, ZodError as ZodError2 } from "zod";
+import { z as z17, ZodError as ZodError2 } from "zod";
 
 // src/mcp/published-schemas.ts
 function publishedSchema(schema) {
@@ -7538,7 +9737,7 @@ var agentPromptMigration = {
 };
 
 // src/storage/environment-migration.ts
-import { randomUUID as randomUUID24 } from "node:crypto";
+import { randomUUID as randomUUID29 } from "node:crypto";
 var environmentMigration = {
   up: async (db) => {
     await db.schema.createTable("environments").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("environment_pk", ["tenant_id", "id"]).addForeignKeyConstraint("environment_tenant", ["tenant_id"], "tenants", [
@@ -7547,7 +9746,7 @@ var environmentMigration = {
     await db.schema.alterTable("projects").addColumn("environment_id", "text").execute();
     const tenants = await db.selectFrom("tenants").select("id").execute();
     for (const tenant of tenants) {
-      const id = randomUUID24();
+      const id = randomUUID29();
       await db.insertInto("environments").values({
         tenant_id: tenant.id,
         id,
@@ -7582,10 +9781,10 @@ var environmentUniquenessMigration = {
     for (const tenant of tenants) {
       let def = await db.selectFrom("environments").select(["id"]).where("tenant_id", "=", tenant.id).where("name", "=", "default").orderBy("created_at").orderBy("id").executeTakeFirst();
       if (!def) {
-        const { randomUUID: randomUUID25 } = await import("node:crypto");
+        const { randomUUID: randomUUID30 } = await import("node:crypto");
         const row = {
           tenant_id: tenant.id,
-          id: randomUUID25(),
+          id: randomUUID30(),
           name: "default",
           created_at: Date.now()
         };
@@ -7712,7 +9911,7 @@ var learningImportMigration = {
 };
 
 // src/storage/learning-history-migration.ts
-import { sql as sql20 } from "kysely";
+import { sql as sql22 } from "kysely";
 var learningHistoryMigration = {
   up: async (db) => {
     await db.schema.alterTable("learning_entries").addColumn("revision", "integer", (c) => c.notNull().defaultTo(1)).execute();
@@ -7721,7 +9920,7 @@ var learningHistoryMigration = {
       "entry_id",
       "revision"
     ]).addForeignKeyConstraint("learning_history_entry", ["tenant_id", "entry_id"], "learning_entries", ["tenant_id", "id"], (c) => c.onDelete("cascade")).execute();
-    await sql20`insert into learning_history (tenant_id,entry_id,revision,content,trigger_text,disabled,created_at) select tenant_id,id,revision,content,trigger_text,disabled,created_at from learning_entries`.execute(db);
+    await sql22`insert into learning_history (tenant_id,entry_id,revision,content,trigger_text,disabled,created_at) select tenant_id,id,revision,content,trigger_text,disabled,created_at from learning_entries`.execute(db);
   }
 };
 
@@ -7797,7 +9996,7 @@ var executionMigration = {
 };
 
 // src/storage/skill-migration.ts
-import { sql as sql21 } from "kysely";
+import { sql as sql23 } from "kysely";
 function skillMigration(backend) {
   return {
     up: async (db) => {
@@ -7814,9 +10013,9 @@ function skillMigration(backend) {
       if (backend === "postgres")
         await db.schema.alterTable("skills").addForeignKeyConstraint("active_revision_fk", ["tenant_id", "id", "active_revision"], "skill_revisions", ["tenant_id", "skill_id", "revision"]).execute();
       else {
-        await sql21`CREATE TRIGGER skill_active_revision_insert BEFORE INSERT ON skills WHEN NEW.active_revision IS NOT NULL AND NOT EXISTS (SELECT 1 FROM skill_revisions WHERE tenant_id=NEW.tenant_id AND skill_id=NEW.id AND revision=NEW.active_revision) BEGIN SELECT RAISE(ABORT, 'invalid active revision'); END`.execute(db);
-        await sql21`CREATE TRIGGER skill_active_revision_update BEFORE UPDATE OF active_revision ON skills WHEN NEW.active_revision IS NOT NULL AND NOT EXISTS (SELECT 1 FROM skill_revisions WHERE tenant_id=NEW.tenant_id AND skill_id=NEW.id AND revision=NEW.active_revision) BEGIN SELECT RAISE(ABORT, 'invalid active revision'); END`.execute(db);
-        await sql21`CREATE TRIGGER referenced_revision_delete BEFORE DELETE ON skill_revisions WHEN EXISTS (SELECT 1 FROM skills WHERE tenant_id=OLD.tenant_id AND id=OLD.skill_id AND active_revision=OLD.revision) BEGIN SELECT RAISE(ABORT, 'active revision referenced'); END`.execute(db);
+        await sql23`CREATE TRIGGER skill_active_revision_insert BEFORE INSERT ON skills WHEN NEW.active_revision IS NOT NULL AND NOT EXISTS (SELECT 1 FROM skill_revisions WHERE tenant_id=NEW.tenant_id AND skill_id=NEW.id AND revision=NEW.active_revision) BEGIN SELECT RAISE(ABORT, 'invalid active revision'); END`.execute(db);
+        await sql23`CREATE TRIGGER skill_active_revision_update BEFORE UPDATE OF active_revision ON skills WHEN NEW.active_revision IS NOT NULL AND NOT EXISTS (SELECT 1 FROM skill_revisions WHERE tenant_id=NEW.tenant_id AND skill_id=NEW.id AND revision=NEW.active_revision) BEGIN SELECT RAISE(ABORT, 'invalid active revision'); END`.execute(db);
+        await sql23`CREATE TRIGGER referenced_revision_delete BEFORE DELETE ON skill_revisions WHEN EXISTS (SELECT 1 FROM skills WHERE tenant_id=OLD.tenant_id AND id=OLD.skill_id AND active_revision=OLD.revision) BEGIN SELECT RAISE(ABORT, 'active revision referenced'); END`.execute(db);
       }
       await db.schema.createIndex("skill_discovery").on("skills").columns(["tenant_id", "scope_key", "archived", "name", "id"]).execute();
       await db.schema.createTable("skill_overrides").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("project_id", "text", (c) => c.notNull()).addColumn("name", "text", (c) => c.notNull()).addColumn("skill_id", "text", (c) => c.notNull()).addPrimaryKeyConstraint("override_pk", [
@@ -7877,61 +10076,140 @@ var jobMigration = {
   }
 };
 
+// src/storage/memory-migration.ts
+import { sql as sql24 } from "kysely";
+function memoryMigration(backend) {
+  return {
+    up: async (db) => {
+      if (backend === "sqlite")
+        await migrateSqlite(db);
+      else
+        await migratePostgres(db);
+      await createMemoryTables(db);
+    }
+  };
+}
+async function migrateSqlite(db) {
+  await sql24`pragma foreign_keys = off`.execute(db);
+  try {
+    await db.transaction().execute(async (trx) => {
+      await trx.schema.createTable("forge_sessions_new").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("fs_pk", ["tenant_id", "id"]).addForeignKeyConstraint("fs_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("fs_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
+      await sql24`insert into forge_sessions_new (tenant_id, id, user_id, project_id, created_at)
+        select tenant_id, id, user_id, project_id, created_at from forge_sessions`.execute(trx);
+      await trx.schema.dropTable("forge_sessions").execute();
+      await trx.schema.alterTable("forge_sessions_new").renameTo("forge_sessions").execute();
+      await trx.schema.createTable("runs_new").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("session_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("scope_kind", "text", (c) => c.notNull().defaultTo("project")).addColumn("scope_key", "text", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("state", "text", (c) => c.notNull()).addColumn("idempotency_key", "text", (c) => c.notNull()).addColumn("input_hash", "text", (c) => c.notNull()).addColumn("input_json", "text", (c) => c.notNull()).addColumn("config_json", "text", (c) => c.notNull()).addColumn("result_json", "text").addColumn("error_code", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("available_at", "bigint", (c) => c.notNull()).addColumn("deadline_at", "bigint", (c) => c.notNull()).addColumn("lease_until", "bigint", (c) => c.notNull().defaultTo(0)).addColumn("worker_id", "text").addColumn("fence", "integer", (c) => c.notNull().defaultTo(0)).addColumn("attempt", "integer", (c) => c.notNull().defaultTo(0)).addColumn("max_attempts", "integer", (c) => c.notNull().defaultTo(3)).addPrimaryKeyConstraint("run_pk", ["tenant_id", "id"]).addUniqueConstraint("run_dedup", [
+        "tenant_id",
+        "user_id",
+        "scope_kind",
+        "scope_key",
+        "kind",
+        "idempotency_key"
+      ]).addForeignKeyConstraint("run_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("run_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).addForeignKeyConstraint("run_session", ["tenant_id", "session_id"], "forge_sessions", ["tenant_id", "id"]).execute();
+      await sql24`insert into runs_new (
+        tenant_id, id, session_id, user_id, project_id, scope_kind, scope_key,
+        kind, state, idempotency_key, input_hash, input_json, config_json,
+        result_json, error_code, created_at, updated_at, available_at,
+        deadline_at, lease_until, worker_id, fence, attempt, max_attempts
+      ) select
+        tenant_id, id, session_id, user_id, project_id, 'project', project_id,
+        kind, state, idempotency_key, input_hash, input_json, config_json,
+        result_json, error_code, created_at, updated_at, available_at,
+        deadline_at, lease_until, worker_id, fence, attempt, max_attempts
+      from runs`.execute(trx);
+      await trx.schema.dropTable("runs").execute();
+      await trx.schema.alterTable("runs_new").renameTo("runs").execute();
+      await trx.schema.createIndex("run_claim").on("runs").columns(["state", "available_at", "lease_until", "created_at"]).execute();
+      await trx.schema.createIndex("run_user_state").on("runs").columns(["tenant_id", "user_id", "state"]).execute();
+      const check = await sql24`pragma foreign_key_check`.execute(trx);
+      if (check.rows.length > 0)
+        throw new Error(`memory migration left ${check.rows.length} foreign key violation(s)`);
+    });
+  } finally {
+    await sql24`pragma foreign_keys = on`.execute(db);
+  }
+}
+async function migratePostgres(db) {
+  await sql24`alter table forge_sessions alter column project_id drop not null`.execute(db);
+  await sql24`alter table runs drop constraint run_dedup`.execute(db);
+  await sql24`alter table runs alter column project_id drop not null`.execute(db);
+  await sql24`alter table runs add column scope_kind text not null default 'project'`.execute(db);
+  await sql24`alter table runs add column scope_key text`.execute(db);
+  await sql24`update runs set scope_key = project_id where scope_key is null`.execute(db);
+  await sql24`alter table runs alter column scope_key set not null`.execute(db);
+  await sql24`alter table runs add constraint run_dedup unique (
+    tenant_id, user_id, scope_kind, scope_key, kind, idempotency_key
+  )`.execute(db);
+}
+async function createMemoryTables(db) {
+  await db.schema.createTable("memory_spaces").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("owner_user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_space_pk", ["tenant_id", "id"]).addForeignKeyConstraint("memory_space_owner", ["tenant_id", "owner_user_id"], "memberships", ["tenant_id", "user_id"]).addForeignKeyConstraint("memory_space_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).execute();
+  await sql24`create unique index memory_space_personal_unique
+    on memory_spaces (tenant_id, owner_user_id) where kind = 'personal'`.execute(db);
+  await sql24`create unique index memory_space_project_unique
+    on memory_spaces (tenant_id, project_id) where project_id is not null`.execute(db);
+  await db.schema.createIndex("memory_space_tenant_kind").on("memory_spaces").columns(["tenant_id", "kind"]).execute();
+  await db.schema.createTable("memory_notes").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("lifecycle", "text", (c) => c.notNull().defaultTo("active")).addColumn("pinned", "integer", (c) => c.notNull().defaultTo(0)).addColumn("task_status", "text").addColumn("current_revision", "integer").addColumn("format_version", "integer", (c) => c.notNull().defaultTo(1)).addColumn("title", "text", (c) => c.notNull()).addColumn("summary", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("superseded_by", "text").addPrimaryKeyConstraint("memory_note_pk", ["tenant_id", "space_id", "id"]).addForeignKeyConstraint("memory_note_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).execute();
+  await db.schema.createIndex("memory_note_lifecycle").on("memory_notes").columns(["tenant_id", "space_id", "lifecycle"]).execute();
+  await db.schema.createTable("memory_note_revisions").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("note_id", "text", (c) => c.notNull()).addColumn("revision", "integer", (c) => c.notNull()).addColumn("format_version", "integer", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("title", "text", (c) => c.notNull()).addColumn("summary", "text").addColumn("body_md", "text", (c) => c.notNull()).addColumn("metadata_json", "text", (c) => c.notNull()).addColumn("sources_json", "text", (c) => c.notNull()).addColumn("base_revision", "integer").addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_revision_pk", [
+    "tenant_id",
+    "space_id",
+    "note_id",
+    "revision"
+  ]).addForeignKeyConstraint("memory_revision_note", ["tenant_id", "space_id", "note_id"], "memory_notes", ["tenant_id", "space_id", "id"]).execute();
+  await db.schema.createTable("memory_events").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("source_event_key", "text", (c) => c.notNull()).addColumn("source_kind", "text", (c) => c.notNull()).addColumn("content_hash", "text", (c) => c.notNull()).addColumn("state", "text", (c) => c.notNull().defaultTo("pending")).addColumn("observed_at", "bigint").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("committed_revision", "integer").addPrimaryKeyConstraint("memory_event_pk", ["tenant_id", "id"]).addUniqueConstraint("memory_event_source", [
+    "tenant_id",
+    "space_id",
+    "source_event_key"
+  ]).addForeignKeyConstraint("memory_event_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).execute();
+  await db.schema.createIndex("memory_event_state").on("memory_events").columns(["tenant_id", "space_id", "state"]).execute();
+}
+
+// src/storage/memory-pipeline-migration.ts
+var memoryPipelineMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("memory_notes").addColumn("source_id", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_path", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_hash", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_state", "text", (c) => c.notNull().defaultTo("present")).execute();
+    await db.schema.alterTable("memory_notes").addColumn("deleted_at", "bigint").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("file_path", "text").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("content_hash", "text").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("byte_size", "integer").execute();
+    await db.schema.alterTable("memory_events").addColumn("error_code", "text").execute();
+    await db.schema.alterTable("memory_events").addColumn("receipt_json", "text").execute();
+    await db.schema.alterTable("memory_events").addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0)).execute();
+    await db.schema.alterTable("memory_events").addColumn("indexed_at", "bigint").execute();
+    await db.schema.createTable("memory_sources").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("root_path", "text", (c) => c.notNull()).addColumn("mode", "text", (c) => c.notNull()).addColumn("cursor_json", "text").addColumn("checkpoint", "text").addColumn("last_scan_at", "bigint").addColumn("status", "text", (c) => c.notNull().defaultTo("active")).addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_source_pk", ["tenant_id", "id"]).addUniqueConstraint("memory_source_root", [
+      "tenant_id",
+      "space_id",
+      "root_path"
+    ]).addForeignKeyConstraint("memory_source_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).addForeignKeyConstraint("memory_source_creator", ["tenant_id", "created_by"], "memberships", ["tenant_id", "user_id"]).execute();
+    await db.schema.createIndex("memory_source_space").on("memory_sources").columns(["tenant_id", "space_id", "status"]).execute();
+    await db.schema.createTable("memory_change_candidates").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("source_id", "text").addColumn("path", "text", (c) => c.notNull()).addColumn("note_id", "text").addColumn("previous_hash", "text").addColumn("observed_hash", "text").addColumn("base_revision", "integer").addColumn("state", "text", (c) => c.notNull()).addColumn("reason", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_candidate_pk", ["tenant_id", "id"]).addForeignKeyConstraint("memory_candidate_source", ["tenant_id", "source_id"], "memory_sources", ["tenant_id", "id"]).execute();
+    await db.schema.createIndex("memory_candidate_state").on("memory_change_candidates").columns(["tenant_id", "state", "created_at"]).execute();
+    await db.schema.createIndex("memory_candidate_source_path").on("memory_change_candidates").columns(["tenant_id", "source_id", "path"]).execute();
+  }
+};
+
+// src/storage/memory-event-note-migration.ts
+var memoryEventNoteMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("memory_events").addColumn("note_id", "text").execute();
+  }
+};
+
 // src/storage/database.ts
 import { Migrator } from "kysely/migration";
 import {
   Kysely,
   SqliteDialect,
   PostgresDialect,
-  sql as sql22
+  sql as sql25
 } from "kysely";
 import { Pool, types } from "pg";
-import { join as join11 } from "node:path";
-async function openDatabase(options) {
-  let dialect;
-  const backend = options.postgresUrl ? "postgres" : "sqlite";
-  if (options.postgresUrl) {
-    types.setTypeParser(20, (value) => Number(value));
-    dialect = new PostgresDialect({
-      pool: new Pool({
-        connectionString: options.postgresUrl,
-        max: 12,
-        connectionTimeoutMillis: 5000,
-        statement_timeout: 1e4
-      })
-    });
-  } else {
-    const path = join11(options.dataDir, "local.sqlite");
-    let sqlite;
-    if (process.versions.bun) {
-      const { Database } = await import("bun:sqlite");
-      const native = new Database(path, { create: true });
-      native.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
-      sqlite = {
-        close: () => native.close(),
-        prepare: (query) => {
-          const stmt = native.prepare(query);
-          return {
-            reader: stmt.columnNames.length > 0,
-            all: (params) => stmt.all(...params),
-            run: (params) => stmt.run(...params),
-            iterate: (params) => stmt.iterate(...params)
-          };
-        }
-      };
-    } else {
-      const { default: Database } = await import("better-sqlite3");
-      const native = new Database(path);
-      native.pragma("journal_mode = WAL");
-      native.pragma("foreign_keys = ON");
-      native.pragma("busy_timeout = 5000");
-      native.pragma("synchronous = FULL");
-      sqlite = native;
-    }
-    dialect = new SqliteDialect({ database: sqlite });
-  }
-  const db = new Kysely({ dialect });
-  const migrations = {
+import { join as join14 } from "node:path";
+function migrationsFor(backend) {
+  return {
     "031_outbox_delivery": outboxDeliveryMigration,
     "028_environment_uniqueness": environmentUniquenessMigration,
     "027_agent_prompts": agentPromptMigration,
@@ -7962,6 +10240,9 @@ async function openDatabase(options) {
     "002_jobs": jobMigration,
     "003_providers": providerMigration,
     "004_skills": skillMigration(backend),
+    "032_memory": memoryMigration(backend),
+    "033_memory_pipeline": memoryPipelineMigration,
+    "034_memory_event_note": memoryEventNoteMigration,
     "001_identity": {
       up: async (database) => {
         await database.schema.createTable("tenants").addColumn("id", "text", (c) => c.primaryKey()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
@@ -7991,24 +10272,75 @@ async function openDatabase(options) {
       }
     }
   };
+}
+async function openDatabase(options) {
+  const handle = await openDatabaseConnection(options);
+  const migrations = migrationsFor(handle.backend);
   const migrator = new Migrator({
-    db,
+    db: handle.db,
     provider: { getMigrations: async () => migrations }
   });
   const result = await migrator.migrateToLatest();
   if (result.error) {
-    await db.destroy();
+    await handle.close();
     throw result.error;
   }
+  const { db, backend } = handle;
   return {
     db,
     backend,
-    close: () => db.destroy(),
+    close: () => handle.close(),
     now: async () => {
-      const result2 = backend === "postgres" ? await sql22`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as now`.execute(db) : await sql22`select cast((julianday('now') - 2440587.5) * 86400000 as integer) as now`.execute(db);
+      const result2 = backend === "postgres" ? await sql25`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as now`.execute(db) : await sql25`select cast((julianday('now') - 2440587.5) * 86400000 as integer) as now`.execute(db);
       return Number(result2.rows[0].now);
     }
   };
+}
+async function openDatabaseConnection(options) {
+  let dialect;
+  const backend = options.postgresUrl ? "postgres" : "sqlite";
+  if (options.postgresUrl) {
+    types.setTypeParser(20, (value) => Number(value));
+    dialect = new PostgresDialect({
+      pool: new Pool({
+        connectionString: options.postgresUrl,
+        max: 12,
+        connectionTimeoutMillis: 5000,
+        statement_timeout: 1e4
+      })
+    });
+  } else {
+    const path = join14(options.dataDir, "local.sqlite");
+    let sqlite;
+    if (process.versions.bun) {
+      const { Database } = await import("bun:sqlite");
+      const native = new Database(path, { create: true });
+      native.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
+      sqlite = {
+        close: () => native.close(),
+        prepare: (query) => {
+          const stmt = native.prepare(query);
+          return {
+            reader: stmt.columnNames.length > 0,
+            all: (params) => stmt.all(...params),
+            run: (params) => stmt.run(...params),
+            iterate: (params) => stmt.iterate(...params)
+          };
+        }
+      };
+    } else {
+      const { default: Database } = await import("better-sqlite3");
+      const native = new Database(path);
+      native.pragma("journal_mode = WAL");
+      native.pragma("foreign_keys = ON");
+      native.pragma("busy_timeout = 5000");
+      native.pragma("synchronous = FULL");
+      sqlite = native;
+    }
+    dialect = new SqliteDialect({ database: sqlite });
+  }
+  const db = new Kysely({ dialect });
+  return { db, backend, close: () => db.destroy() };
 }
 
 // src/http/oidc.ts
@@ -8182,7 +10514,34 @@ async function createHttpServer(config) {
   const vault = await SecretVault.open(config.dataDir);
   const providers = new ProviderService(identityService, vault);
   const forge = new ForgeService(storage, config.dataDir, config.token, config.policy);
-  const worker = new ForgeWorker(forge.queue, productionHandler(storage, config.dataDir, vault, config.profile !== "server"), { postgresUrl: config.postgresUrl });
+  const memoryRoot = vaultRoot(config.dataDir);
+  const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryCommits = new MemoryCommitService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory
+  });
+  const memorySources = new MemorySourceService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory
+  });
+  const memoryAudit = async (identity, kind2, detail, projectId = null) => {
+    await storage.db.insertInto("audit_events").values({
+      tenant_id: identity.tenantId,
+      id: randomUUID30(),
+      user_id: identity.userId,
+      project_id: projectId,
+      kind: kind2,
+      detail: JSON.stringify(detail),
+      created_at: Date.now()
+    }).execute();
+  };
+  const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
+  const worker = new ForgeWorker(memoryQueue, productionHandler(storage, config.dataDir, vault, config.profile !== "server"), {
+    postgresUrl: config.postgresUrl,
+    handlers: memoryJobHandlers(memory, memoryCommits)
+  });
   const localOwner = config.profile !== "server" ? await identityService.bootstrapLocal() : null;
   const oidc2 = config.oidc ? await OidcIdentity.create(config.oidc, identityService) : null;
   const github = config.github ? new GithubIdentity(config.github, identityService) : null;
@@ -8285,7 +10644,7 @@ async function createHttpServer(config) {
           sessionOnly = true;
           identity = await identityService.sessionIdentity(sessionToken);
         }
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash16("sha256").update(sessionToken).digest("hex")))
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash18("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
         if (sessionOnly && ![
           "/api/my-memberships",
@@ -8356,12 +10715,12 @@ async function createHttpServer(config) {
     publicThrottle.check(request, "auth-pair");
     if (!localOwner)
       throw new ForgeError("pairing_disabled", "Sunucu profilinde OIDC girişini kullanın.", 403);
-    const { code } = z15.object({ code: z15.string().min(20).max(200) }).strict().parse(request.body);
+    const { code } = z17.object({ code: z17.string().min(20).max(200) }).strict().parse(request.body);
     const token = await identityService.redeemPairing(code);
     reply.setCookie("forge_session", token, cookieOptions);
     return {
       authenticated: true,
-      csrf: createHash16("sha256").update(token).digest("hex")
+      csrf: createHash18("sha256").update(token).digest("hex")
     };
   });
   app.post("/api/pairing", async (request) => {
@@ -8445,7 +10804,7 @@ async function createHttpServer(config) {
     identity: requestIdentity(request),
     role: await identityService.authorize(requestIdentity(request), "read"),
     projects: await identityService.listProjects(requestIdentity(request)),
-    csrf: request.cookies.forge_session ? createHash16("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash18("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/logout", async (request, reply) => {
     if (request.cookies.forge_session)
@@ -8458,7 +10817,7 @@ async function createHttpServer(config) {
   }));
   app.put("/api/providers", async (request) => providers.update(requestIdentity(request), request.body));
   app.get("/api/projects", async (request) => {
-    const query = z15.object({ after: z15.string().max(200).optional() }).parse(request.query);
+    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
     const page = await identityService.listProjectsPage(requestIdentity(request), query.after);
     if (query.after !== undefined && !page.items.length && page.next === null) {
       const probe = await identityService.listProjectsPage(requestIdentity(request), undefined);
@@ -8468,30 +10827,30 @@ async function createHttpServer(config) {
     return page;
   });
   app.post("/api/projects", async (request) => {
-    const body = z15.object({
-      name: z15.string().min(1).max(200),
-      environment_id: z15.string().min(1).max(100).optional()
+    const body = z17.object({
+      name: z17.string().min(1).max(200),
+      environment_id: z17.string().min(1).max(100).optional()
     }).parse(request.body);
     return identityService.createProject(requestIdentity(request), body.name, body.environment_id);
   });
   app.get("/api/settings", async (request) => {
-    const query = z15.object({ scope: z15.string().default("workspace") }).parse(request.query);
+    const query = z17.object({ scope: z17.string().default("workspace") }).parse(request.query);
     return settings.get(requestIdentity(request), query.scope);
   });
   app.put("/api/settings", async (request) => {
-    const body = z15.object({
-      scope: z15.string(),
-      base_revision: z15.number().int().min(0),
-      values: z15.unknown()
+    const body = z17.object({
+      scope: z17.string(),
+      base_revision: z17.number().int().min(0),
+      values: z17.unknown()
     }).strict().parse(request.body);
     return settings.update(requestIdentity(request), body.scope, body.base_revision, body.values);
   });
   app.get("/api/settings/effective", async (request) => {
-    const query = z15.object({ project_ref: z15.string().optional() }).parse(request.query);
+    const query = z17.object({ project_ref: z17.string().optional() }).parse(request.query);
     return settings.effective(requestIdentity(request), query.project_ref);
   });
   app.post("/api/projects/:id/bindings", async (request) => {
-    const { id } = z15.object({ id: z15.string() }).parse(request.params);
+    const { id } = z17.object({ id: z17.string() }).parse(request.params);
     return bindings.bind(requestIdentity(request), {
       ...request.body,
       project_id: id
@@ -8509,9 +10868,9 @@ async function createHttpServer(config) {
   const bindings = new BindingService(storage.db);
   const agentPrompts = new AgentPromptService(storage.db);
   app.get("/api/members", async (request) => {
-    const q = z15.object({
-      project_ref: z15.string(),
-      after: z15.string().max(100).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(100).optional()
     }).parse(request.query);
     return members.list(requestIdentity(request), q.project_ref, q.after);
   });
@@ -8520,10 +10879,10 @@ async function createHttpServer(config) {
   app.get("/api/tenants", async (request) => organizations.listTenants(requestIdentity(request).userId));
   app.get("/api/my-memberships", async (request) => ({
     items: await organizations.listTenants(requestIdentity(request).userId),
-    csrf: request.cookies.forge_session ? createHash16("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash18("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/tenants/switch", async (request, reply) => {
-    const body = z15.object({ tenant_id: z15.string().min(1) }).parse(request.body);
+    const body = z17.object({ tenant_id: z17.string().min(1) }).parse(request.body);
     const identity = requestIdentity(request);
     const mine = await organizations.listTenants(identity.userId);
     if (!mine.some((m) => m.tenant_id === body.tenant_id && !m.disabled))
@@ -8532,7 +10891,7 @@ async function createHttpServer(config) {
     return { tenant_id: body.tenant_id };
   });
   app.post("/api/organizations", async (request) => {
-    const body = z15.object({ name: z15.string().min(1).max(200) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1).max(200) }).parse(request.body);
     return organizations.createOrganization(requestIdentity(request).userId, body.name);
   });
   app.post("/api/invitations", async (request) => organizations.createInvite(requestIdentity(request), request.body));
@@ -8543,16 +10902,16 @@ async function createHttpServer(config) {
     return organizations.acceptInvite(request.body);
   });
   app.post("/api/organization/transfer", async (request) => {
-    const body = z15.object({ to_user_id: z15.string().min(1) }).parse(request.body);
+    const body = z17.object({ to_user_id: z17.string().min(1) }).parse(request.body);
     return organizations.offerTransfer(requestIdentity(request), body.to_user_id);
   });
   app.post("/api/organization/transfer/:id/accept", async (request) => organizations.acceptTransfer(requestIdentity(request), request.params.id));
   app.post("/api/organization/deletion/request", async (request) => {
-    const body = z15.object({ name: z15.string().min(1) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
     return organizations.requestDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/confirm", async (request) => {
-    const body = z15.object({ name: z15.string().min(1) }).parse(request.body);
+    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
     return organizations.confirmDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/cancel", async (request) => organizations.cancelDeletion(requestIdentity(request)));
@@ -8563,9 +10922,9 @@ async function createHttpServer(config) {
   app.delete("/api/roles/:name", async (request) => roles.remove(requestIdentity(request), request.params.name));
   app.post("/api/roles/:name/restore", async (request) => roles.restore(requestIdentity(request), request.params.name));
   app.get("/api/agent-prompts", async (request) => {
-    const q = z15.object({
-      scope: z15.string().min(1).max(200),
-      profile: z15.string().max(64).optional()
+    const q = z17.object({
+      scope: z17.string().min(1).max(200),
+      profile: z17.string().max(64).optional()
     }).parse(request.query);
     const actor = requestIdentity(request);
     return {
@@ -8576,17 +10935,17 @@ async function createHttpServer(config) {
   app.put("/api/agent-prompts", async (request) => agentPrompts.update(requestIdentity(request), request.body));
   app.post("/api/agent-prompts/rollback", async (request) => agentPrompts.rollback(requestIdentity(request), request.body));
   app.get("/api/packages/integrity", async (request) => {
-    const query = z15.object({
-      after_skill: z15.string().optional(),
-      after_revision: z15.string().regex(/^[a-f0-9]{64}$/).optional()
+    const query = z17.object({
+      after_skill: z17.string().optional(),
+      after_revision: z17.string().regex(/^[a-f0-9]{64}$/).optional()
     }).parse(request.query);
     if (Boolean(query.after_skill) !== Boolean(query.after_revision))
       throw new ForgeError("invalid_cursor", "İki cursor alanı birlikte gerekiyor.", 400);
     return new PackageStore(storage, config.dataDir).reconcile(requestIdentity(request), query.after_skill ? { skill_id: query.after_skill, revision: query.after_revision } : undefined, { reclaim: false });
   });
   app.post("/api/packages/integrity", async (request) => {
-    const body = z15.object({
-      recover_ownerless_before: z15.number().int().positive().optional()
+    const body = z17.object({
+      recover_ownerless_before: z17.number().int().positive().optional()
     }).strict().parse(request.body ?? {});
     return new PackageStore(storage, config.dataDir).reclaim(requestIdentity(request), {
       recoverOwnerlessBefore: body.recover_ownerless_before,
@@ -8626,34 +10985,34 @@ async function createHttpServer(config) {
       clearInterval(retentionTimer);
     await retentionWork;
   });
-  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z15.object({ project_ref: z15.string() }).parse(request.query).project_ref));
-  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z15.object({ project_ref: z15.string() }).strict().parse(request.body).project_ref));
+  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z17.object({ project_ref: z17.string() }).parse(request.query).project_ref));
+  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z17.object({ project_ref: z17.string() }).strict().parse(request.body).project_ref));
   const maintenance = new MaintenanceService(storage, config.dataDir);
   const deletions = new DeletionService(storage, config.dataDir);
   app.get("/api/maintenance/deletions", async (request) => {
-    const q = z15.object({
-      project_ref: z15.string(),
-      after: z15.string().max(100).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(100).optional()
     }).strict().parse(request.query);
     return deletions.pending(requestIdentity(request), q.project_ref, q.after);
   });
   app.post("/api/maintenance/deletions/resume", async (request) => {
-    const q = z15.object({ project_ref: z15.string(), skill_id: z15.string().max(100) }).strict().parse(request.body);
+    const q = z17.object({ project_ref: z17.string(), skill_id: z17.string().max(100) }).strict().parse(request.body);
     return deletions.resume(requestIdentity(request), q.project_ref, q.skill_id);
   });
   app.get("/api/maintenance", async (request) => {
-    const q = z15.object({
-      project_ref: z15.string(),
-      days: z15.coerce.number().int().min(1).max(365).optional(),
-      after: z15.string().max(100).optional(),
-      state: z15.enum(["active", "archived", "all"]).optional()
+    const q = z17.object({
+      project_ref: z17.string(),
+      days: z17.coerce.number().int().min(1).max(365).optional(),
+      after: z17.string().max(100).optional(),
+      state: z17.enum(["active", "archived", "all"]).optional()
     }).parse(request.query);
     return maintenance.report(requestIdentity(request), q.project_ref, q);
   });
   app.post("/api/maintenance/preview", async (request) => maintenance.preview(requestIdentity(request), request.body));
   app.post("/api/maintenance/apply", async (request) => maintenance.apply(requestIdentity(request), request.body));
   app.get("/api/overview", async (request) => {
-    const actor = requestIdentity(request), { project_ref } = z15.object({ project_ref: z15.string() }).parse(request.query);
+    const actor = requestIdentity(request), { project_ref } = z17.object({ project_ref: z17.string() }).parse(request.query);
     await identityService.authorize(actor, "read", project_ref);
     const scope = await visibleScopes(storage.db, actor, project_ref);
     const [
@@ -8699,8 +11058,8 @@ async function createHttpServer(config) {
     };
   });
   app.post("/api/budget/reservations/:id/reconcile", async (request) => {
-    const { id } = z15.object({ id: z15.string().min(1).max(200) }).parse(request.params);
-    const body = z15.object({ actual_micros: z15.number().int().min(0) }).strict().parse(request.body);
+    const { id } = z17.object({ id: z17.string().min(1).max(200) }).parse(request.params);
+    const body = z17.object({ actual_micros: z17.number().int().min(0) }).strict().parse(request.body);
     const actor = requestIdentity(request);
     const budget = new BudgetService(storage);
     const resolved = await budget.resolveReservation(actor, id, body.actual_micros);
@@ -8713,10 +11072,10 @@ async function createHttpServer(config) {
     };
   });
   app.get("/api/logs", async (request) => {
-    const actor = requestIdentity(request), query = z15.object({
-      project_ref: z15.string(),
-      kind: z15.string().max(100).optional(),
-      after: z15.string().max(200).optional()
+    const actor = requestIdentity(request), query = z17.object({
+      project_ref: z17.string(),
+      kind: z17.string().max(100).optional(),
+      after: z17.string().max(200).optional()
     }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
     let selected = storage.db.selectFrom("audit_events").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where((eb) => eb.or([
@@ -8727,10 +11086,10 @@ async function createHttpServer(config) {
       selected = selected.where("kind", "=", query.kind);
     let next = null;
     if (query.after) {
-      const sep = query.after.indexOf(":");
-      const at = Number(query.after.slice(0, sep));
-      const id = query.after.slice(sep + 1);
-      if (sep <= 0 || !id || !Number.isSafeInteger(at))
+      const sep3 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep3));
+      const id = query.after.slice(sep3 + 1);
+      if (sep3 <= 0 || !id || !Number.isSafeInteger(at))
         throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
       selected = selected.where((eb) => eb.or([
         eb("created_at", "<", at),
@@ -8752,9 +11111,9 @@ async function createHttpServer(config) {
     };
   });
   app.get("/api/installations", async (request) => {
-    const actor = requestIdentity(request), query = z15.object({
-      project_ref: z15.string(),
-      after: z15.string().max(200).optional()
+    const actor = requestIdentity(request), query = z17.object({
+      project_ref: z17.string(),
+      after: z17.string().max(200).optional()
     }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
     let selected = storage.db.selectFrom("client_installations").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", query.project_ref);
@@ -8777,13 +11136,13 @@ async function createHttpServer(config) {
     };
   });
   app.post("/api/installations", async (request) => {
-    const actor = requestIdentity(request), body = z15.object({
-      id: z15.string().regex(/^[a-f0-9]{64}$/),
-      project_ref: z15.string(),
-      client: z15.enum(["codex", "claude", "chatgpt"]),
-      version: z15.string().max(100).nullable().default(null),
-      directory: z15.string().max(2000),
-      event: z15.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
+    const actor = requestIdentity(request), body = z17.object({
+      id: z17.string().regex(/^[a-f0-9]{64}$/),
+      project_ref: z17.string(),
+      client: z17.enum(["codex", "claude", "chatgpt"]),
+      version: z17.string().max(100).nullable().default(null),
+      directory: z17.string().max(2000),
+      event: z17.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
     }).strict().parse(request.body);
     await identityService.authorize(actor, "run", body.project_ref);
     const existing = await storage.db.selectFrom("client_installations").select(["user_id", "project_id"]).where("tenant_id", "=", actor.tenantId).where("id", "=", body.id).executeTakeFirst();
@@ -8817,7 +11176,7 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/revisions", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const query = z15.object({ after: z15.string().max(200).optional() }).parse(request.query);
+    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
     let selected = storage.db.selectFrom("skill_revisions").select([
       "revision",
       "created_at",
@@ -8827,10 +11186,10 @@ async function createHttpServer(config) {
       "validation_json"
     ]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id);
     if (query.after) {
-      const sep = query.after.indexOf(":");
-      const at = Number(query.after.slice(0, sep));
-      const rev = query.after.slice(sep + 1);
-      if (sep <= 0 || !rev || !Number.isSafeInteger(at))
+      const sep3 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep3));
+      const rev = query.after.slice(sep3 + 1);
+      if (sep3 <= 0 || !rev || !Number.isSafeInteger(at))
         throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
       selected = selected.where((eb) => eb.or([
         eb("created_at", "<", at),
@@ -8853,9 +11212,9 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/manifest", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const query = z15.object({
-      revision: z15.string().regex(/^[a-f0-9]{64}$/),
-      after: z15.coerce.number().int().min(0).max(256).default(0)
+    const query = z17.object({
+      revision: z17.string().regex(/^[a-f0-9]{64}$/),
+      after: z17.coerce.number().int().min(0).max(256).default(0)
     }).parse(request.query);
     const row = await storage.db.selectFrom("skill_revisions").select(["manifest_json", "validation_json"]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id).where("revision", "=", query.revision).executeTakeFirst();
     if (!row)
@@ -8877,10 +11236,10 @@ async function createHttpServer(config) {
   });
   app.put("/api/skills/:id", async (request) => packageManager(requestIdentity(request)).configure(requestIdentity(request), request.params.id, request.body));
   app.put("/api/skills/:id/scope", async (request) => {
-    const body = z15.object({
-      scope: z15.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z15.string().min(1).max(100).optional(),
-      expected_revision: z15.string().nullable()
+    const body = z17.object({
+      scope: z17.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z17.string().min(1).max(100).optional(),
+      expected_revision: z17.string().nullable()
     }).strict().parse(request.body);
     return forge.packages.setScope(requestIdentity(request), request.params.id, {
       scope: body.scope,
@@ -8889,31 +11248,31 @@ async function createHttpServer(config) {
     });
   });
   app.post("/api/skills/import", { bodyLimit: 8 * 1024 * 1024 }, async (request) => {
-    const body = z15.object({
-      archive: z15.string().max(7 * 1024 * 1024),
-      scope: z15.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z15.string(),
-      base_revision: z15.string().nullable().default(null)
+    const body = z17.object({
+      archive: z17.string().max(7 * 1024 * 1024),
+      scope: z17.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z17.string(),
+      base_revision: z17.string().nullable().default(null)
     }).strict().parse(request.body);
     return packageManager(requestIdentity(request), body.project_ref).import(requestIdentity(request), Buffer.from(body.archive, "base64"), body.scope, body.project_ref, body.base_revision);
   });
   app.get("/api/skills/:id/export", async (request, reply) => {
-    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z15.object({ revision: z15.string() }).parse(request.query).revision);
+    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z17.object({ revision: z17.string() }).parse(request.query).revision);
     return reply.type("application/zip").header("content-disposition", `attachment; filename="${value.name}"`).send(value.bytes);
   });
   app.post("/api/skills/:id/rollback", async (request) => {
-    const body = z15.object({ target_revision: z15.string(), base_revision: z15.string() }).strict().parse(request.body);
+    const body = z17.object({ target_revision: z17.string(), base_revision: z17.string() }).strict().parse(request.body);
     const skill = await forge.packages.authorizedSkill(requestIdentity(request), request.params.id, true);
     return packageManager(requestIdentity(request), skill.project_id ?? undefined).rollback(requestIdentity(request), request.params.id, body.target_revision, body.base_revision);
   });
   app.get("/api/runs", async (request) => forge.reports.report(requestIdentity(request), toolSchemas.forge_report.parse(decodeQueryToolInput(request.query))));
   app.get("/api/runs/:id/attempts", async (request) => {
-    const query = z15.object({ after: z15.coerce.number().int().nonnegative().default(0) }).parse(request.query);
+    const query = z17.object({ after: z17.coerce.number().int().nonnegative().default(0) }).parse(request.query);
     return forge.queue.attempts(requestIdentity(request), request.params.id, query.after);
   });
   app.post("/api/runs/:id/cancel", async (request) => forge.queue.cancel(requestIdentity(request), request.params.id));
   app.get("/api/artifacts/:id", async (request, reply) => {
-    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z15.object({ reference: z15.string().max(3000) }).parse(request.query).reference);
+    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z17.object({ reference: z17.string().max(3000) }).parse(request.query).reference);
     return reply.type("application/octet-stream").header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(basename4(artifact.path))}`).send(artifact.bytes);
   });
   app.post("/api/tools/:name", async (request) => {
@@ -8921,6 +11280,170 @@ async function createHttpServer(config) {
     if (!Object.hasOwn(toolSchemas, name))
       throw new ForgeError("tool_unavailable", "Araç bulunamadı.", 404);
     return forge.invoke(name, requestIdentity(request), request.body);
+  });
+  app.get("/api/memory/spaces", async (request) => {
+    const query = z17.object({
+      after: z17.string().max(200).optional(),
+      limit: z17.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memory.listSpaces(requestIdentity(request), {
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.get("/api/memory/notes", async (request) => {
+    const query = z17.object({
+      space_id: z17.string().min(1).max(200),
+      after: z17.string().max(200).optional(),
+      limit: z17.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memory.listNotes(requestIdentity(request), {
+      spaceId: query.space_id,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.get("/api/memory/notes/:id", async (request) => {
+    const query = z17.object({ space_id: z17.string().min(1).max(200) }).strict().parse(request.query);
+    return memory.readNote(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: request.params.id
+    });
+  });
+  app.get("/api/memory/events", async (request) => {
+    const query = z17.object({
+      space_id: z17.string().min(1).max(200),
+      source_event_key: z17.string().min(1).max(200)
+    }).strict().parse(request.query);
+    return memoryCommits.receipt(requestIdentity(request), query.space_id, query.source_event_key);
+  });
+  app.post("/api/memory/ingest", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z17.object({
+      space_id: z17.string().min(1).max(200),
+      source_event_key: z17.string().min(1).max(200),
+      source_kind: z17.string().min(1).max(40),
+      content: z17.string().min(1).max(MEMORY_INGEST_CONTENT_MAX),
+      note_id: z17.string().min(1).max(200).optional(),
+      base_revision: z17.number().int().min(0).optional(),
+      kind: z17.enum(MEMORY_KINDS).optional()
+    }).strict().parse(request.body);
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const contentHash = sha256Hex(body.content);
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_ingest",
+      key: sha256Hex(`${body.space_id}\x00${body.source_event_key}`),
+      payload: {
+        spaceId: body.space_id,
+        sourceEventKey: body.source_event_key,
+        sourceKind: body.source_kind,
+        contentHash,
+        content: body.content,
+        ...body.note_id ? { noteId: body.note_id } : {},
+        ...body.base_revision !== undefined ? { baseRevision: body.base_revision } : {},
+        ...body.kind ? { kind: body.kind } : {}
+      }
+    });
+    await memoryAudit(identity, "memory.ingest.accepted", {
+      space_id: body.space_id,
+      run_id: accepted.run.id,
+      source_event_key: body.source_event_key,
+      duplicate: accepted.status === "duplicate"
+    }, space.kind === "project" ? space.project_id : null);
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state
+    };
+  });
+  app.get("/api/memory/sources", async (request) => {
+    const query = z17.object({ space_id: z17.string().min(1).max(200).optional() }).strict().parse(request.query);
+    return {
+      items: await memorySources.listSources(requestIdentity(request), {
+        spaceId: query.space_id
+      })
+    };
+  });
+  app.post("/api/memory/sources", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z17.object({
+      space_id: z17.string().min(1).max(200),
+      root_path: z17.string().min(1).max(4000),
+      mode: z17.enum(["read_only", "managed"])
+    }).strict().parse(request.body);
+    const source = await memorySources.registerSource(identity, {
+      spaceId: body.space_id,
+      rootPath: body.root_path,
+      mode: body.mode
+    });
+    await memoryAudit(identity, "memory.source.registered", {
+      space_id: body.space_id,
+      source_id: source.id,
+      root_path: source.root_path,
+      mode: source.mode
+    });
+    return source;
+  });
+  app.post("/api/memory/sources/:id/scan", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z17.object({ limit: z17.number().int().min(1).max(1000).optional() }).strict().parse(request.body ?? {});
+    const report = await memorySources.scan(identity, {
+      sourceId: request.params.id,
+      limit: body.limit ?? MEMORY_SCAN_DEFAULT_LIMIT
+    });
+    await memoryAudit(identity, "memory.source.scanned", {
+      space_id: report.space_id,
+      source_id: request.params.id,
+      scanned: report.scanned,
+      read: report.read,
+      candidates: report.candidates,
+      conflicts: report.conflicts,
+      done: report.done
+    });
+    return report;
+  });
+  app.get("/api/memory/conflicts", async (request) => {
+    const query = z17.object({
+      space_id: z17.string().min(1).max(200).optional(),
+      source_id: z17.string().min(1).max(200).optional(),
+      state: z17.enum(["candidate", "conflict", "applied", "rejected", "quarantined"]).optional(),
+      after: z17.string().max(200).optional(),
+      limit: z17.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memorySources.listCandidates(requestIdentity(request), {
+      spaceId: query.space_id,
+      sourceId: query.source_id,
+      state: query.state,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.post("/api/memory/notes/:id/archive", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z17.object({ space_id: z17.string().min(1).max(200) }).strict().parse(request.body);
+    const result = await memory.archiveNote(identity, {
+      spaceId: body.space_id,
+      noteId: request.params.id
+    });
+    await memoryAudit(identity, "memory.note.archived", {
+      space_id: body.space_id,
+      note_id: result.noteId
+    });
+    return result;
+  });
+  app.post("/api/memory/notes/:id/restore", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z17.object({ space_id: z17.string().min(1).max(200) }).strict().parse(request.body);
+    const result = await memory.restoreNote(identity, {
+      spaceId: body.space_id,
+      noteId: request.params.id
+    });
+    await memoryAudit(identity, "memory.note.restored", {
+      space_id: body.space_id,
+      note_id: result.noteId
+    });
+    return result;
   });
   app.route({
     method: ["GET", "POST", "DELETE"],
@@ -8942,7 +11465,7 @@ async function createHttpServer(config) {
     }
   });
   const bundledWeb = fileURLToPath2(new URL("./web/", import.meta.url));
-  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve11("dist/web");
+  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve13("dist/web");
   if (existsSync2(webRoot))
     await app.register(staticFiles, {
       root: webRoot,

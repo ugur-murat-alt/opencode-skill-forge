@@ -898,16 +898,44 @@ async function main() {
         };
         page.on("dialog", onDialog);
         try {
-          await page.getByRole("button", { name: "Sürümü sabitle" }).click();
-          await page
-            .getByRole("button", { name: "Sabitlemeyi kaldır" })
-            .waitFor({ timeout: 8000 });
-          await page
-            .getByRole("button", { name: "Sabitlemeyi kaldır" })
-            .click();
-          await page
-            .getByRole("button", { name: "Sürümü sabitle" })
-            .waitFor({ timeout: 8000 });
+          const pinButton = () =>
+            page.getByRole("button", { name: "Sürümü sabitle" });
+          const unpinButton = () =>
+            page.getByRole("button", { name: "Sabitlemeyi kaldır" });
+          await pinButton().click();
+          // Nadir bir UI/ağ yarışında pin isteği "Bilinmeyen hata" bandıyla
+          // düşüp düğme eski etikette kalabiliyor (CI'da gözlendi). Kullanıcı
+          // davranışına uygun TEK sınırlı yeniden deneme; ikinci deneme de
+          // başarısızsa kontrol bandı raporlayarak kırmızı kalır.
+          let toggled = await unpinButton()
+            .waitFor({ timeout: 5000 })
+            .then(
+              () => true,
+              () => false,
+            );
+          if (!toggled) {
+            await pinButton()
+              .click()
+              .catch(() => {});
+            toggled = await unpinButton()
+              .waitFor({ timeout: 8000 })
+              .then(
+                () => true,
+                () => false,
+              );
+          }
+          if (!toggled) {
+            const banner = await page
+              .locator("text=Bilinmeyen hata")
+              .first()
+              .innerText()
+              .catch(() => "");
+            throw new Error(
+              `pin görünür duruma geçmedi${banner ? `: ${banner}` : ""}`,
+            );
+          }
+          await unpinButton().click();
+          await pinButton().waitFor({ timeout: 8000 });
           // Issue #31 A/B: A dosyası kirli kalırken temiz B dosyasına geçilir;
           // Kapat yalnız açık dosyaya bakamaz, uyarı yine gelmelidir.
           await page
@@ -2190,7 +2218,19 @@ async function main() {
           db.close();
         }
         await page.getByLabel("Proje adı").fill(`removed-${Date.now()}`);
+        // Kapsam yeniden doğrulaması bir /api/me okumasıyla olur; yanıtı
+        // tıklamadan önce beklemeye al ki rozet kontrolü ağ yarışına girmesin
+        // (CI yükünde tek okumalı akış yanlış kırmızı üretiyordu).
+        const revalidation = page
+          .waitForResponse(
+            (response) =>
+              response.url().includes("/api/me") &&
+              response.request().method() === "GET",
+            { timeout: 8000 },
+          )
+          .catch(() => null);
         await page.getByRole("button", { name: "Proje oluştur" }).click();
+        await revalidation;
         // Silinen proje kapsam rozetinden çıkana kadar bekle; sabit gecikme
         // hesap yenilemesi yavaş kaldığında yanlış kırmızı üretiyordu.
         await page

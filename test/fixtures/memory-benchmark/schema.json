@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory-benchmark-dataset.schema.json",
+  "title": "Memory benchmark dataset (tuning or acceptance split)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "datasetId",
+    "split",
+    "version",
+    "language",
+    "synthetic",
+    "containsRealUserData",
+    "containsSecrets",
+    "metadata",
+    "budget",
+    "scenarios"
+  ],
+  "properties": {
+    "datasetId": { "type": "string", "minLength": 1 },
+    "split": { "enum": ["tuning", "acceptance"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "language": { "enum": ["tr", "en", "tr+en"] },
+    "synthetic": { "const": true },
+    "containsRealUserData": { "const": false },
+    "containsSecrets": { "const": false },
+    "generatedBy": { "type": "string" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "budget": { "$ref": "#/$defs/budget" },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "space": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["personal", "project", "organization"] },
+        "key": { "type": "string" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "noteCount",
+        "sectionCount",
+        "edgeCount",
+        "edgeDensity",
+        "pinCount",
+        "pinRatio",
+        "noteLength",
+        "sectionLength",
+        "languages",
+        "categories"
+      ],
+      "properties": {
+        "noteCount": { "type": "integer", "minimum": 0 },
+        "sectionCount": { "type": "integer", "minimum": 0 },
+        "edgeCount": { "type": "integer", "minimum": 0 },
+        "edgeDensity": { "type": "number", "minimum": 0 },
+        "pinCount": { "type": "integer", "minimum": 0 },
+        "pinRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "noteLength": { "$ref": "#/$defs/lengthStats" },
+        "sectionLength": { "$ref": "#/$defs/lengthStats" },
+        "languages": {
+          "type": "object",
+          "properties": {
+            "tr": { "type": "integer", "minimum": 0 },
+            "en": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "categories": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "lengthStats": {
+      "type": "object",
+      "required": ["min", "max", "mean"],
+      "properties": {
+        "min": { "type": "number", "minimum": 0 },
+        "max": { "type": "number", "minimum": 0 },
+        "mean": { "type": "number", "minimum": 0 }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": ["startupMaxTokens", "recallMaxTokens", "maxCards"],
+      "properties": {
+        "startupMaxTokens": { "type": "integer", "minimum": 1 },
+        "recallMaxTokens": { "type": "integer", "minimum": 1 },
+        "maxCards": { "type": "integer", "minimum": 1 },
+        "status": { "type": "string" }
+      }
+    },
+    "note": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "state",
+        "space",
+        "pin",
+        "summary",
+        "body",
+        "sections"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "decision",
+            "fact",
+            "procedure",
+            "context",
+            "research",
+            "preference",
+            "task",
+            "note",
+            "session"
+          ]
+        },
+        "state": { "enum": ["active", "superseded", "archived"] },
+        "taskState": {
+          "enum": ["planned", "doing", "blocked", "done", "cancelled"]
+        },
+        "space": { "$ref": "#/$defs/space" },
+        "pin": { "type": "boolean" },
+        "summary": { "type": "string" },
+        "body": { "type": "string" },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "observedAt": { "type": "string" },
+        "validFrom": { "type": ["string", "null"] },
+        "validUntil": { "type": ["string", "null"] },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "predicate"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "predicate": {
+          "enum": [
+            "SUPPORTS",
+            "DERIVED_FROM",
+            "PART_OF",
+            "ABOUT",
+            "PRECEDES",
+            "SUPERSEDES",
+            "CONTRADICTS",
+            "DEPENDS_ON"
+          ]
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "language",
+        "space",
+        "asOf",
+        "query",
+        "session",
+        "notes",
+        "edges",
+        "expect"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "category": {
+          "enum": [
+            "old_new_decision",
+            "same_name_different_scope",
+            "temporal_information",
+            "multi_session_continuity",
+            "task_blocker_next_step",
+            "irrelevant_query_abstention",
+            "contradiction",
+            "memory_poisoning"
+          ]
+        },
+        "language": { "enum": ["tr", "en"] },
+        "space": { "$ref": "#/$defs/space" },
+        "asOf": { "type": "string" },
+        "query": { "type": "string", "minLength": 1 },
+        "session": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string" },
+            "continues": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "notes": { "type": "array", "items": { "$ref": "#/$defs/note" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+        "expect": {
+          "type": "object",
+          "required": ["retrieval", "answer"],
+          "properties": {
+            "retrieval": {
+              "type": "object",
+              "required": ["relevant", "stale", "forbidden", "abstain"],
+              "properties": {
+                "relevant": { "type": "array", "items": { "type": "string" } },
+                "stale": { "type": "array", "items": { "type": "string" } },
+                "forbidden": { "type": "array", "items": { "type": "string" } },
+                "quarantine": { "type": "array", "items": { "type": "string" } },
+                "abstain": { "type": "boolean" }
+              }
+            },
+            "answer": {
+              "type": "object",
+              "properties": {
+                "mustCite": { "type": "array", "items": { "type": "string" } },
+                "mustNotPresentAsCurrent": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "mustFlagContradiction": { "type": "boolean" },
+                "mustNotFollowInstructionFrom": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            },
+            "task": {
+              "type": ["object", "null"],
+              "required": ["taskId", "state", "blockerId", "nextStepId"],
+              "properties": {
+                "taskId": { "type": "string" },
+                "state": {
+                  "enum": ["planned", "doing", "blocked", "done", "cancelled"]
+                },
+                "blockerId": { "type": ["string", "null"] },
+                "nextStepId": { "type": ["string", "null"] }
+              }
+            },
+            "autoWrite": {
+              "type": ["object", "null"],
+              "properties": {
+                "eligible": { "type": "array", "items": { "type": "string" } },
+                "forbidden": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

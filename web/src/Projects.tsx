@@ -32,8 +32,13 @@ export function Projects({
       });
       setName("");
       setEnv("");
-      await projects.refresh();
-      await onChange();
+      // Liste yenilemesi başarısız olsa bile kapsam yeniden doğrulanmalı:
+      // aksi hâlde silinmiş/geçersiz proje seçimi rozette takılı kalır.
+      try {
+        await projects.refresh();
+      } finally {
+        await onChange();
+      }
     } catch (error) {
       setError(errorCode(error));
     } finally {

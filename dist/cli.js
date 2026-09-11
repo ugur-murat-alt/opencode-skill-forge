@@ -49,6 +49,7 @@ import { randomBytes as randomBytes4 } from "node:crypto";
 import { z } from "zod";
 var settingsSchema = z.object({
   evolutionEnabled: z.boolean().optional(),
+  memoryEnabled: z.boolean().optional(),
   retentionDays: z.number().int().min(1).max(3650).optional(),
   searchMinScore: z.number().min(0).max(1).optional(),
   searchMaxResults: z.number().int().min(1).max(20).optional(),
@@ -64,6 +65,7 @@ var settingsSchema = z.object({
 var storedSettingsSchema = settingsSchema.strip();
 var defaultSettings = {
   evolutionEnabled: true,
+  memoryEnabled: false,
   retentionDays: 30,
   searchMinScore: 0,
   searchMaxResults: 20,
@@ -100,7 +102,7 @@ function resolveSettings(policy, layers) {
         next = Math.min(result.values[key], incoming);
       if (key === "searchMinScore")
         next = Math.max(result.values[key], incoming);
-      if (key === "allowPaid" || key === "dependencyInstall")
+      if (key === "allowPaid" || key === "dependencyInstall" || key === "memoryEnabled")
         next = result.values[key] && Boolean(incoming);
       if (key === "allowedOrigins" || key === "scriptAllowedOrigins")
         next = result.values[key].filter((origin) => incoming.includes(origin));
@@ -2324,6 +2326,31 @@ var terminalStates = [
   "unchanged",
   "fallback"
 ];
+function resolveJobScope(input) {
+  if (input.projectId !== undefined && input.scope !== undefined)
+    throw new ForgeError("invalid_scope", "İş kapsamı projectId ve scope ile birlikte verilemez.", 422);
+  if (input.scope !== undefined) {
+    const scope = input.scope;
+    if (scope.type === "project") {
+      if (typeof scope.projectId !== "string" || !scope.projectId)
+        throw new ForgeError("invalid_scope", "Proje kapsamı gerçek bir projectId gerektirir.", 422);
+      return { type: "project", projectId: scope.projectId };
+    }
+    if (scope.type === "personal" || scope.type === "organization")
+      return { type: scope.type };
+    throw new ForgeError("invalid_scope", "Tanımsız iş kapsamı.", 422);
+  }
+  if (typeof input.projectId === "string" && input.projectId)
+    return { type: "project", projectId: input.projectId };
+  throw new ForgeError("invalid_scope", "İş kapsamı (proje veya kişisel/organizasyon) zorunlu.", 422);
+}
+function jobScopeKey(scope, identity) {
+  if (scope.type === "project")
+    return scope.projectId;
+  if (scope.type === "personal")
+    return identity.userId;
+  return "organization";
+}
 
 class JobQueue {
   storage;
@@ -2338,6 +2365,10 @@ class JobQueue {
     const definition = this.kinds[input.kind];
     if (!definition)
       throw new ForgeError("invalid_kind", "Desteklenmeyen iş türü.");
+    const scope = resolveJobScope(input);
+    const memoryKind = definition.scope === "memory";
+    if (!memoryKind && scope.type !== "project")
+      throw new ForgeError("invalid_scope", "Bu iş türü proje kapsamı gerektirir.", 422);
     if (!input.key || input.key.length > 200 || Buffer.byteLength(JSON.stringify(input.payload)) > 65536)
       throw new ForgeError("invalid_handoff", "İş kimliği veya girdi boyutu geçersiz.");
     let payload;
@@ -2350,17 +2381,23 @@ class JobQueue {
     if (typeof inputJson !== "string" || Buffer.byteLength(inputJson) > 65536)
       throw new ForgeError("invalid_handoff", "İş girdisi serileştirilemedi.");
     const inputHash = createHash8("sha256").update(inputJson).digest("hex");
+    const scopeKey = jobScopeKey(scope, identity);
     return this.storage.db.transaction().execute(async (tx) => {
       await tx.updateTable("memberships").set({ role: sql5`role` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const auth = new IdentityService(tx);
-      await auth.authorize(identity, "run", input.projectId);
-      const old = await tx.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", input.projectId).where("kind", "=", input.kind).where("idempotency_key", "=", input.key).executeTakeFirst();
+      if (scope.type === "project")
+        await auth.authorize(identity, "run", scope.projectId);
+      else
+        await auth.authorize(identity, "run");
+      const old = await tx.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("scope_kind", "=", scope.type).where("scope_key", "=", scopeKey).where("kind", "=", input.kind).where("idempotency_key", "=", input.key).executeTakeFirst();
       if (old) {
         if (old.input_hash !== inputHash)
           throw new ForgeError("idempotency_conflict", "Aynı idempotency anahtarı farklı girdiye ait.", 409);
         return { status: "duplicate", run: old };
       }
-      const effective = await new SettingsService(auth, this.policy).effective(identity, input.projectId, {});
+      const effective = await new SettingsService(auth, this.policy).effective(identity, scope.type === "project" ? scope.projectId : undefined, {});
+      if (memoryKind && !effective.values.memoryEnabled)
+        throw new ForgeError("memory_disabled", "Hafıza bu kapsamda kapalı.", 422);
       let config = { ...effective };
       if (definition.skillProfile) {
         const providerProfile = await tx.selectFrom("provider_profiles").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("role", "=", "skill").orderBy("revision", "desc").limit(1).executeTakeFirst();
@@ -2377,7 +2414,7 @@ class JobQueue {
         tenant_id: identity.tenantId,
         id: sessionId,
         user_id: identity.userId,
-        project_id: input.projectId,
+        project_id: scope.type === "project" ? scope.projectId : null,
         created_at: now
       }).execute();
       const run = {
@@ -2385,7 +2422,9 @@ class JobQueue {
         id: runId,
         session_id: sessionId,
         user_id: identity.userId,
-        project_id: input.projectId,
+        project_id: scope.type === "project" ? scope.projectId : null,
+        scope_kind: scope.type,
+        scope_key: scopeKey,
         kind: input.kind,
         state: "queued",
         idempotency_key: input.key,
@@ -2407,7 +2446,9 @@ class JobQueue {
       await tx.insertInto("runs").values(run).execute();
       await this.audit(tx, run, "job.accepted", {
         run_id: runId,
-        kind: input.kind
+        kind: input.kind,
+        scope_kind: scope.type,
+        scope_key: scopeKey
       }, now);
       await tx.insertInto("outbox").values({ tenant_id: identity.tenantId, run_id: runId, delivered: 0 }).execute();
       await tx.insertInto("queue_fairness").values({
@@ -2511,18 +2552,34 @@ class JobQueue {
     const result = await this.storage.db.updateTable("runs").set({ lease_until: now + leaseMs, updated_at: now }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("state", "=", "running").where("fence", "=", run.fence).where("worker_id", "=", run.worker_id).where("lease_until", ">", now).executeTakeFirst();
     return Number(result.numUpdatedRows) === 1;
   }
-  async assertLease(db, run) {
+  async assertLeaseFence(db, run) {
     const now = await this.now(db);
     const current = await db.updateTable("runs").set({ fence: sql5`fence` }).where("tenant_id", "=", run.tenant_id).where("id", "=", run.id).where("state", "=", "running").where("fence", "=", run.fence).where("worker_id", "=", run.worker_id).where("lease_until", ">", now).returning("id").executeTakeFirst();
     if (!current)
       throw new ForgeError("stale_worker", "İşin lease sahipliği değişti.", 409);
-    await new IdentityService(db).authorize({ userId: run.user_id, tenantId: run.tenant_id }, "run", run.project_id);
   }
-  async finish(run, state, result, errorCode = null) {
+  async assertLease(db, run) {
+    await this.assertLeaseFence(db, run);
+    await this.authorizeRun(db, { userId: run.user_id, tenantId: run.tenant_id }, run, "run");
+  }
+  async authorizeRun(db, identity, run, permission) {
+    const auth = new IdentityService(db);
+    if (run.scope_kind === "project") {
+      if (!run.project_id)
+        throw new ForgeError("run_unavailable", "İş kapsamı tutarsız.", 404);
+      await auth.authorize(identity, permission, run.project_id);
+    } else {
+      await auth.authorize(identity, permission);
+    }
+  }
+  async finish(run, state, result, errorCode = null, options = {}) {
     if (!terminalStates.includes(state))
       throw new ForgeError("invalid_transition", "Terminal iş durumu gerekiyor.");
     return this.storage.db.transaction().execute(async (tx) => {
-      await this.assertLease(tx, run);
+      if (options.requireAuthorization === false)
+        await this.assertLeaseFence(tx, run);
+      else
+        await this.assertLease(tx, run);
       const now = await this.now(tx);
       await tx.updateTable("runs").set({
         state,
@@ -2543,7 +2600,9 @@ class JobQueue {
   async fail(run, code, retryable) {
     const now = await this.storage.now();
     if (!retryable || run.attempt >= run.max_attempts || run.deadline_at <= now)
-      return this.finish(run, "failed", null, code);
+      return this.finish(run, "failed", null, code, {
+        requireAuthorization: false
+      });
     await this.storage.db.transaction().execute(async (tx) => {
       await this.assertLease(tx, run);
       await tx.updateTable("runs").set({
@@ -2566,7 +2625,7 @@ class JobQueue {
     const run = await this.storage.db.selectFrom("runs").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", runId).executeTakeFirst();
     if (!run)
       throw new ForgeError("run_unavailable", "İş bulunamadı veya yetkiniz yok.", 404);
-    await new IdentityService(this.storage.db).authorize(identity, "read", run.project_id);
+    await this.authorizeRun(this.storage.db, identity, run, "read");
     return run;
   }
   async attempts(identity, runId, after = 0) {
@@ -2580,7 +2639,7 @@ class JobQueue {
   }
   async cancel(identity, runId) {
     const run = await this.get(identity, runId);
-    await new IdentityService(this.storage.db).authorize(identity, "run", run.project_id);
+    await this.authorizeRun(this.storage.db, identity, run, "run");
     await this.storage.db.transaction().execute(async (tx) => {
       const now = await this.now(tx);
       const updated = await tx.updateTable("runs").set({
@@ -4719,7 +4778,7 @@ async function discoverLegacy(input) {
 }
 
 // src/cli/main.ts
-import { writeFile as writeFile5, realpath as realpath4 } from "node:fs/promises";
+import { writeFile as writeFile6, realpath as realpath6 } from "node:fs/promises";
 
 // src/clients/installer.ts
 import { parse as parseToml } from "@iarna/toml";
@@ -5635,17 +5694,227 @@ var jobMigration = {
   }
 };
 
+// src/storage/memory-migration.ts
+import { sql as sql9 } from "kysely";
+function memoryMigration(backend) {
+  return {
+    up: async (db) => {
+      if (backend === "sqlite")
+        await migrateSqlite(db);
+      else
+        await migratePostgres(db);
+      await createMemoryTables(db);
+    }
+  };
+}
+async function migrateSqlite(db) {
+  await sql9`pragma foreign_keys = off`.execute(db);
+  try {
+    await db.transaction().execute(async (trx) => {
+      await trx.schema.createTable("forge_sessions_new").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("fs_pk", ["tenant_id", "id"]).addForeignKeyConstraint("fs_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("fs_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
+      await sql9`insert into forge_sessions_new (tenant_id, id, user_id, project_id, created_at)
+        select tenant_id, id, user_id, project_id, created_at from forge_sessions`.execute(trx);
+      await trx.schema.dropTable("forge_sessions").execute();
+      await trx.schema.alterTable("forge_sessions_new").renameTo("forge_sessions").execute();
+      await trx.schema.createTable("runs_new").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("session_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("scope_kind", "text", (c) => c.notNull().defaultTo("project")).addColumn("scope_key", "text", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("state", "text", (c) => c.notNull()).addColumn("idempotency_key", "text", (c) => c.notNull()).addColumn("input_hash", "text", (c) => c.notNull()).addColumn("input_json", "text", (c) => c.notNull()).addColumn("config_json", "text", (c) => c.notNull()).addColumn("result_json", "text").addColumn("error_code", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("available_at", "bigint", (c) => c.notNull()).addColumn("deadline_at", "bigint", (c) => c.notNull()).addColumn("lease_until", "bigint", (c) => c.notNull().defaultTo(0)).addColumn("worker_id", "text").addColumn("fence", "integer", (c) => c.notNull().defaultTo(0)).addColumn("attempt", "integer", (c) => c.notNull().defaultTo(0)).addColumn("max_attempts", "integer", (c) => c.notNull().defaultTo(3)).addPrimaryKeyConstraint("run_pk", ["tenant_id", "id"]).addUniqueConstraint("run_dedup", [
+        "tenant_id",
+        "user_id",
+        "scope_kind",
+        "scope_key",
+        "kind",
+        "idempotency_key"
+      ]).addForeignKeyConstraint("run_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("run_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).addForeignKeyConstraint("run_session", ["tenant_id", "session_id"], "forge_sessions", ["tenant_id", "id"]).execute();
+      await sql9`insert into runs_new (
+        tenant_id, id, session_id, user_id, project_id, scope_kind, scope_key,
+        kind, state, idempotency_key, input_hash, input_json, config_json,
+        result_json, error_code, created_at, updated_at, available_at,
+        deadline_at, lease_until, worker_id, fence, attempt, max_attempts
+      ) select
+        tenant_id, id, session_id, user_id, project_id, 'project', project_id,
+        kind, state, idempotency_key, input_hash, input_json, config_json,
+        result_json, error_code, created_at, updated_at, available_at,
+        deadline_at, lease_until, worker_id, fence, attempt, max_attempts
+      from runs`.execute(trx);
+      await trx.schema.dropTable("runs").execute();
+      await trx.schema.alterTable("runs_new").renameTo("runs").execute();
+      await trx.schema.createIndex("run_claim").on("runs").columns(["state", "available_at", "lease_until", "created_at"]).execute();
+      await trx.schema.createIndex("run_user_state").on("runs").columns(["tenant_id", "user_id", "state"]).execute();
+      const check = await sql9`pragma foreign_key_check`.execute(trx);
+      if (check.rows.length > 0)
+        throw new Error(`memory migration left ${check.rows.length} foreign key violation(s)`);
+    });
+  } finally {
+    await sql9`pragma foreign_keys = on`.execute(db);
+  }
+}
+async function migratePostgres(db) {
+  await sql9`alter table forge_sessions alter column project_id drop not null`.execute(db);
+  await sql9`alter table runs drop constraint run_dedup`.execute(db);
+  await sql9`alter table runs alter column project_id drop not null`.execute(db);
+  await sql9`alter table runs add column scope_kind text not null default 'project'`.execute(db);
+  await sql9`alter table runs add column scope_key text`.execute(db);
+  await sql9`update runs set scope_key = project_id where scope_key is null`.execute(db);
+  await sql9`alter table runs alter column scope_key set not null`.execute(db);
+  await sql9`alter table runs add constraint run_dedup unique (
+    tenant_id, user_id, scope_kind, scope_key, kind, idempotency_key
+  )`.execute(db);
+}
+async function createMemoryTables(db) {
+  await db.schema.createTable("memory_spaces").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("owner_user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_space_pk", ["tenant_id", "id"]).addForeignKeyConstraint("memory_space_owner", ["tenant_id", "owner_user_id"], "memberships", ["tenant_id", "user_id"]).addForeignKeyConstraint("memory_space_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).execute();
+  await sql9`create unique index memory_space_personal_unique
+    on memory_spaces (tenant_id, owner_user_id) where kind = 'personal'`.execute(db);
+  await sql9`create unique index memory_space_project_unique
+    on memory_spaces (tenant_id, project_id) where project_id is not null`.execute(db);
+  await db.schema.createIndex("memory_space_tenant_kind").on("memory_spaces").columns(["tenant_id", "kind"]).execute();
+  await db.schema.createTable("memory_notes").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("lifecycle", "text", (c) => c.notNull().defaultTo("active")).addColumn("pinned", "integer", (c) => c.notNull().defaultTo(0)).addColumn("task_status", "text").addColumn("current_revision", "integer").addColumn("format_version", "integer", (c) => c.notNull().defaultTo(1)).addColumn("title", "text", (c) => c.notNull()).addColumn("summary", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("superseded_by", "text").addPrimaryKeyConstraint("memory_note_pk", ["tenant_id", "space_id", "id"]).addForeignKeyConstraint("memory_note_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).execute();
+  await db.schema.createIndex("memory_note_lifecycle").on("memory_notes").columns(["tenant_id", "space_id", "lifecycle"]).execute();
+  await db.schema.createTable("memory_note_revisions").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("note_id", "text", (c) => c.notNull()).addColumn("revision", "integer", (c) => c.notNull()).addColumn("format_version", "integer", (c) => c.notNull()).addColumn("kind", "text", (c) => c.notNull()).addColumn("title", "text", (c) => c.notNull()).addColumn("summary", "text").addColumn("body_md", "text", (c) => c.notNull()).addColumn("metadata_json", "text", (c) => c.notNull()).addColumn("sources_json", "text", (c) => c.notNull()).addColumn("base_revision", "integer").addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_revision_pk", [
+    "tenant_id",
+    "space_id",
+    "note_id",
+    "revision"
+  ]).addForeignKeyConstraint("memory_revision_note", ["tenant_id", "space_id", "note_id"], "memory_notes", ["tenant_id", "space_id", "id"]).execute();
+  await db.schema.createTable("memory_events").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("source_event_key", "text", (c) => c.notNull()).addColumn("source_kind", "text", (c) => c.notNull()).addColumn("content_hash", "text", (c) => c.notNull()).addColumn("state", "text", (c) => c.notNull().defaultTo("pending")).addColumn("observed_at", "bigint").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addColumn("committed_revision", "integer").addPrimaryKeyConstraint("memory_event_pk", ["tenant_id", "id"]).addUniqueConstraint("memory_event_source", [
+    "tenant_id",
+    "space_id",
+    "source_event_key"
+  ]).addForeignKeyConstraint("memory_event_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).execute();
+  await db.schema.createIndex("memory_event_state").on("memory_events").columns(["tenant_id", "space_id", "state"]).execute();
+}
+
+// src/storage/memory-pipeline-migration.ts
+var memoryPipelineMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("memory_notes").addColumn("source_id", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_path", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_hash", "text").execute();
+    await db.schema.alterTable("memory_notes").addColumn("source_state", "text", (c) => c.notNull().defaultTo("present")).execute();
+    await db.schema.alterTable("memory_notes").addColumn("deleted_at", "bigint").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("file_path", "text").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("content_hash", "text").execute();
+    await db.schema.alterTable("memory_note_revisions").addColumn("byte_size", "integer").execute();
+    await db.schema.alterTable("memory_events").addColumn("error_code", "text").execute();
+    await db.schema.alterTable("memory_events").addColumn("receipt_json", "text").execute();
+    await db.schema.alterTable("memory_events").addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0)).execute();
+    await db.schema.alterTable("memory_events").addColumn("indexed_at", "bigint").execute();
+    await db.schema.createTable("memory_sources").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("space_id", "text", (c) => c.notNull()).addColumn("root_path", "text", (c) => c.notNull()).addColumn("mode", "text", (c) => c.notNull()).addColumn("cursor_json", "text").addColumn("checkpoint", "text").addColumn("last_scan_at", "bigint").addColumn("status", "text", (c) => c.notNull().defaultTo("active")).addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_source_pk", ["tenant_id", "id"]).addUniqueConstraint("memory_source_root", [
+      "tenant_id",
+      "space_id",
+      "root_path"
+    ]).addForeignKeyConstraint("memory_source_space", ["tenant_id", "space_id"], "memory_spaces", ["tenant_id", "id"]).addForeignKeyConstraint("memory_source_creator", ["tenant_id", "created_by"], "memberships", ["tenant_id", "user_id"]).execute();
+    await db.schema.createIndex("memory_source_space").on("memory_sources").columns(["tenant_id", "space_id", "status"]).execute();
+    await db.schema.createTable("memory_change_candidates").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("id", "text", (c) => c.notNull()).addColumn("source_id", "text").addColumn("path", "text", (c) => c.notNull()).addColumn("note_id", "text").addColumn("previous_hash", "text").addColumn("observed_hash", "text").addColumn("base_revision", "integer").addColumn("state", "text", (c) => c.notNull()).addColumn("reason", "text").addColumn("created_at", "bigint", (c) => c.notNull()).addColumn("updated_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("memory_candidate_pk", ["tenant_id", "id"]).addForeignKeyConstraint("memory_candidate_source", ["tenant_id", "source_id"], "memory_sources", ["tenant_id", "id"]).execute();
+    await db.schema.createIndex("memory_candidate_state").on("memory_change_candidates").columns(["tenant_id", "state", "created_at"]).execute();
+    await db.schema.createIndex("memory_candidate_source_path").on("memory_change_candidates").columns(["tenant_id", "source_id", "path"]).execute();
+  }
+};
+
+// src/storage/memory-event-note-migration.ts
+var memoryEventNoteMigration = {
+  up: async (db) => {
+    await db.schema.alterTable("memory_events").addColumn("note_id", "text").execute();
+  }
+};
+
 // src/storage/database.ts
 import { Migrator } from "kysely/migration";
 import {
   Kysely,
   SqliteDialect,
   PostgresDialect,
-  sql as sql9
+  sql as sql10
 } from "kysely";
 import { Pool, types } from "pg";
 import { join as join13 } from "node:path";
+function migrationsFor(backend) {
+  return {
+    "031_outbox_delivery": outboxDeliveryMigration,
+    "028_environment_uniqueness": environmentUniquenessMigration,
+    "027_agent_prompts": agentPromptMigration,
+    "026_binding_identity": bindingIdentityMigration,
+    "025_environments": environmentMigration,
+    "024_role_registry": roleRegistryMigration,
+    "023_org_lifecycle": orgLifecycleMigration,
+    "022_role_rename": roleRenameMigration,
+    "021_invitations": inviteMigration,
+    "020_prompt_drain": promptDrainMigration,
+    "019_package_deletion": deletionMigration,
+    "018_revision_readers": readerMigration,
+    "029_reader_liveness": readerLivenessMigration,
+    "030_file_lifecycle": fileLifecycleMigration,
+    "017_run_pins": runPinMigration,
+    "016_execution_pins": executionPinMigration,
+    "015_flag_import": flagImportMigration,
+    "014_session_preferences": sessionPreferenceMigration,
+    "013_rewrite_import": rewriteImportMigration,
+    "012_learning_import": learningImportMigration,
+    "011_learning_history": learningHistoryMigration,
+    "010_import_receipts": importMigration,
+    "009_memberships": membershipMigration,
+    "008_observations": observationMigration,
+    "007_installations": installationMigration,
+    "006_learning": learningMigration,
+    "005_executions": executionMigration,
+    "002_jobs": jobMigration,
+    "003_providers": providerMigration,
+    "004_skills": skillMigration(backend),
+    "032_memory": memoryMigration(backend),
+    "033_memory_pipeline": memoryPipelineMigration,
+    "034_memory_event_note": memoryEventNoteMigration,
+    "001_identity": {
+      up: async (database) => {
+        await database.schema.createTable("tenants").addColumn("id", "text", (c) => c.primaryKey()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
+        await database.schema.createTable("users").addColumn("id", "text", (c) => c.primaryKey()).addColumn("subject", "text", (c) => c.unique().notNull()).addColumn("display_name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
+        await database.schema.createTable("memberships").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("user_id", "text", (c) => c.notNull().references("users.id")).addColumn("role", "text", (c) => c.notNull()).addPrimaryKeyConstraint("membership_pk", ["tenant_id", "user_id"]).execute();
+        await database.schema.createTable("projects").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("project_pk", ["tenant_id", "id"]).execute();
+        await database.schema.createTable("project_members").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("project_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("role", "text", (c) => c.notNull()).addPrimaryKeyConstraint("project_member_pk", [
+          "tenant_id",
+          "project_id",
+          "user_id"
+        ]).addForeignKeyConstraint("pm_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("pm_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
+        await database.schema.createTable("project_bindings").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("project_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("client_id", "text", (c) => c.notNull()).addColumn("path", "text", (c) => c.notNull()).addPrimaryKeyConstraint("binding_pk", [
+          "tenant_id",
+          "user_id",
+          "client_id",
+          "path"
+        ]).addForeignKeyConstraint("binding_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("binding_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
+        await database.schema.createTable("config_revisions").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("scope_key", "text", (c) => c.notNull()).addColumn("revision", "integer", (c) => c.notNull()).addColumn("payload", "text", (c) => c.notNull()).addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("config_pk", ["tenant_id", "id"]).addUniqueConstraint("config_scope_revision", [
+          "tenant_id",
+          "scope_key",
+          "revision"
+        ]).addForeignKeyConstraint("config_member", ["tenant_id", "created_by"], "memberships", ["tenant_id", "user_id"]).execute();
+        await database.schema.createTable("auth_sessions").addColumn("id", "text", (c) => c.primaryKey()).addColumn("user_id", "text", (c) => c.notNull().references("users.id")).addColumn("token_hash", "text", (c) => c.notNull().unique()).addColumn("expires_at", "bigint", (c) => c.notNull()).addColumn("revoked", "integer", (c) => c.notNull().defaultTo(0)).addColumn("kind", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
+        await database.schema.createTable("audit_events").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("kind", "text", (c) => c.notNull()).addColumn("detail", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("audit_pk", ["tenant_id", "id"]).addForeignKeyConstraint("audit_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
+        await database.schema.createIndex("audit_time").on("audit_events").columns(["tenant_id", "created_at", "id"]).execute();
+        await database.schema.createIndex("auth_expiry").on("auth_sessions").columns(["expires_at", "revoked"]).execute();
+      }
+    }
+  };
+}
 async function openDatabase(options) {
+  const handle = await openDatabaseConnection(options);
+  const migrations = migrationsFor(handle.backend);
+  const migrator = new Migrator({
+    db: handle.db,
+    provider: { getMigrations: async () => migrations }
+  });
+  const result = await migrator.migrateToLatest();
+  if (result.error) {
+    await handle.close();
+    throw result.error;
+  }
+  const { db, backend } = handle;
+  return {
+    db,
+    backend,
+    close: () => handle.close(),
+    now: async () => {
+      const result2 = backend === "postgres" ? await sql10`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as now`.execute(db) : await sql10`select cast((julianday('now') - 2440587.5) * 86400000 as integer) as now`.execute(db);
+      return Number(result2.rows[0].now);
+    }
+  };
+}
+async function openDatabaseConnection(options) {
   let dialect;
   const backend = options.postgresUrl ? "postgres" : "sqlite";
   if (options.postgresUrl) {
@@ -5689,90 +5958,13 @@ async function openDatabase(options) {
     dialect = new SqliteDialect({ database: sqlite });
   }
   const db = new Kysely({ dialect });
-  const migrations = {
-    "031_outbox_delivery": outboxDeliveryMigration,
-    "028_environment_uniqueness": environmentUniquenessMigration,
-    "027_agent_prompts": agentPromptMigration,
-    "026_binding_identity": bindingIdentityMigration,
-    "025_environments": environmentMigration,
-    "024_role_registry": roleRegistryMigration,
-    "023_org_lifecycle": orgLifecycleMigration,
-    "022_role_rename": roleRenameMigration,
-    "021_invitations": inviteMigration,
-    "020_prompt_drain": promptDrainMigration,
-    "019_package_deletion": deletionMigration,
-    "018_revision_readers": readerMigration,
-    "029_reader_liveness": readerLivenessMigration,
-    "030_file_lifecycle": fileLifecycleMigration,
-    "017_run_pins": runPinMigration,
-    "016_execution_pins": executionPinMigration,
-    "015_flag_import": flagImportMigration,
-    "014_session_preferences": sessionPreferenceMigration,
-    "013_rewrite_import": rewriteImportMigration,
-    "012_learning_import": learningImportMigration,
-    "011_learning_history": learningHistoryMigration,
-    "010_import_receipts": importMigration,
-    "009_memberships": membershipMigration,
-    "008_observations": observationMigration,
-    "007_installations": installationMigration,
-    "006_learning": learningMigration,
-    "005_executions": executionMigration,
-    "002_jobs": jobMigration,
-    "003_providers": providerMigration,
-    "004_skills": skillMigration(backend),
-    "001_identity": {
-      up: async (database) => {
-        await database.schema.createTable("tenants").addColumn("id", "text", (c) => c.primaryKey()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
-        await database.schema.createTable("users").addColumn("id", "text", (c) => c.primaryKey()).addColumn("subject", "text", (c) => c.unique().notNull()).addColumn("display_name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
-        await database.schema.createTable("memberships").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("user_id", "text", (c) => c.notNull().references("users.id")).addColumn("role", "text", (c) => c.notNull()).addPrimaryKeyConstraint("membership_pk", ["tenant_id", "user_id"]).execute();
-        await database.schema.createTable("projects").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("name", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("project_pk", ["tenant_id", "id"]).execute();
-        await database.schema.createTable("project_members").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("project_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("role", "text", (c) => c.notNull()).addPrimaryKeyConstraint("project_member_pk", [
-          "tenant_id",
-          "project_id",
-          "user_id"
-        ]).addForeignKeyConstraint("pm_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("pm_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
-        await database.schema.createTable("project_bindings").addColumn("tenant_id", "text", (c) => c.notNull()).addColumn("project_id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("client_id", "text", (c) => c.notNull()).addColumn("path", "text", (c) => c.notNull()).addPrimaryKeyConstraint("binding_pk", [
-          "tenant_id",
-          "user_id",
-          "client_id",
-          "path"
-        ]).addForeignKeyConstraint("binding_project", ["tenant_id", "project_id"], "projects", ["tenant_id", "id"]).addForeignKeyConstraint("binding_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
-        await database.schema.createTable("config_revisions").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("scope_key", "text", (c) => c.notNull()).addColumn("revision", "integer", (c) => c.notNull()).addColumn("payload", "text", (c) => c.notNull()).addColumn("created_by", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("config_pk", ["tenant_id", "id"]).addUniqueConstraint("config_scope_revision", [
-          "tenant_id",
-          "scope_key",
-          "revision"
-        ]).addForeignKeyConstraint("config_member", ["tenant_id", "created_by"], "memberships", ["tenant_id", "user_id"]).execute();
-        await database.schema.createTable("auth_sessions").addColumn("id", "text", (c) => c.primaryKey()).addColumn("user_id", "text", (c) => c.notNull().references("users.id")).addColumn("token_hash", "text", (c) => c.notNull().unique()).addColumn("expires_at", "bigint", (c) => c.notNull()).addColumn("revoked", "integer", (c) => c.notNull().defaultTo(0)).addColumn("kind", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).execute();
-        await database.schema.createTable("audit_events").addColumn("tenant_id", "text", (c) => c.notNull().references("tenants.id")).addColumn("id", "text", (c) => c.notNull()).addColumn("user_id", "text", (c) => c.notNull()).addColumn("project_id", "text").addColumn("kind", "text", (c) => c.notNull()).addColumn("detail", "text", (c) => c.notNull()).addColumn("created_at", "bigint", (c) => c.notNull()).addPrimaryKeyConstraint("audit_pk", ["tenant_id", "id"]).addForeignKeyConstraint("audit_member", ["tenant_id", "user_id"], "memberships", ["tenant_id", "user_id"]).execute();
-        await database.schema.createIndex("audit_time").on("audit_events").columns(["tenant_id", "created_at", "id"]).execute();
-        await database.schema.createIndex("auth_expiry").on("auth_sessions").columns(["expires_at", "revoked"]).execute();
-      }
-    }
-  };
-  const migrator = new Migrator({
-    db,
-    provider: { getMigrations: async () => migrations }
-  });
-  const result = await migrator.migrateToLatest();
-  if (result.error) {
-    await db.destroy();
-    throw result.error;
-  }
-  return {
-    db,
-    backend,
-    close: () => db.destroy(),
-    now: async () => {
-      const result2 = backend === "postgres" ? await sql9`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as now`.execute(db) : await sql9`select cast((julianday('now') - 2440587.5) * 86400000 as integer) as now`.execute(db);
-      return Number(result2.rows[0].now);
-    }
-  };
+  return { db, backend, close: () => db.destroy() };
 }
 
 // src/jobs/worker.ts
 import { randomUUID as randomUUID15 } from "node:crypto";
 import { PgBoss } from "pg-boss";
-import { sql as sql10 } from "kysely";
+import { sql as sql11 } from "kysely";
 class ForgeWorker {
   queue;
   handler;
@@ -5946,7 +6138,7 @@ class ForgeWorker {
       await storage.db.updateTable("outbox").set({
         delivered: 1,
         delivered_at: now,
-        delivery_attempts: sql10`delivery_attempts + 1`,
+        delivery_attempts: sql11`delivery_attempts + 1`,
         dispatch_owner: null,
         dispatch_until: 0
       }).where("tenant_id", "=", candidate.tenant_id).where("run_id", "=", candidate.run_id).execute();
@@ -6024,7 +6216,7 @@ class ForgeWorker {
 import { createAssistantMessageEventStream as createAssistantMessageEventStream2 } from "@earendil-works/pi-ai";
 
 // src/application/providers.ts
-import { sql as sql11 } from "kysely";
+import { sql as sql12 } from "kysely";
 import { randomUUID as randomUUID16 } from "node:crypto";
 import { z as z9 } from "zod";
 var providerProfileSchema = z9.object({
@@ -6069,7 +6261,7 @@ class ProviderService {
     }).strict().parse(input);
     try {
       return await this.identity.db.transaction().execute(async (tx) => {
-        await tx.updateTable("tenants").set({ name: sql11`name` }).where("id", "=", identity.tenantId).execute();
+        await tx.updateTable("tenants").set({ name: sql12`name` }).where("id", "=", identity.tenantId).execute();
         const auth = new IdentityService(tx);
         await auth.authorize(identity, "write");
         const current = await new ProviderService(auth, this.vault).latest(identity, body.role);
@@ -6114,7 +6306,7 @@ class ProviderService {
 }
 
 // src/jobs/budgets.ts
-import { sql as sql12 } from "kysely";
+import { sql as sql13 } from "kysely";
 import { randomUUID as randomUUID17 } from "node:crypto";
 class BudgetService {
   storage;
@@ -6141,8 +6333,8 @@ class BudgetService {
       const run = await tx.selectFrom("runs").select(["user_id", "project_id"]).where("tenant_id", "=", identity.tenantId).where("id", "=", runId).executeTakeFirst();
       if (!run || run.user_id !== identity.userId)
         throw new ForgeError("run_unavailable", "Rezervasyon işi bu kullanıcıya ait değil.", 404);
-      await new IdentityService(tx).authorize(identity, "run", run.project_id);
-      const account = await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).returningAll().executeTakeFirst();
+      await new IdentityService(tx).authorize(identity, "run", run.project_id ?? undefined);
+      const account = await tx.updateTable("budget_accounts").set({ reserved_micros: sql13`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).returningAll().executeTakeFirst();
       if (!account)
         throw new ForgeError("budget_unconfigured", "Kullanıcı bütçesi tanımlanmamış.", 422);
       const existing = await tx.selectFrom("budget_reservations").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).where("user_id", "=", identity.userId).executeTakeFirst();
@@ -6152,7 +6344,7 @@ class BudgetService {
         return existing;
       }
       const jobLimit = jobLimitMicros ?? account.limit_micros;
-      const heldRow = await tx.selectFrom("budget_reservations").select(sql12`coalesce(sum(case when state = 'settled' then coalesce(actual_micros, 0) else reserved_micros end), 0)`.as("held")).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("run_id", "=", runId).executeTakeFirstOrThrow();
+      const heldRow = await tx.selectFrom("budget_reservations").select(sql13`coalesce(sum(case when state = 'settled' then coalesce(actual_micros, 0) else reserved_micros end), 0)`.as("held")).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("run_id", "=", runId).executeTakeFirstOrThrow();
       const runHeld = Number(heldRow.held);
       if (runHeld + micros > jobLimit)
         throw new ForgeError("budget_exhausted", "İş bütçesi yetersiz.", 429, undefined, {
@@ -6160,7 +6352,7 @@ class BudgetService {
           run_held_micros: runHeld,
           requested_micros: micros
         });
-      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros + ${micros}` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql13`reserved_micros + ${micros}` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const record2 = {
         tenant_id: identity.tenantId,
         id: reservationId,
@@ -6178,7 +6370,7 @@ class BudgetService {
     if (actualMicros !== null && (!Number.isSafeInteger(actualMicros) || actualMicros < 0))
       throw new ForgeError("invalid_usage", "Maliyet ölçümü geçersiz.");
     return this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql13`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const reservation = await tx.selectFrom("budget_reservations").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("id", "=", reservationId).executeTakeFirstOrThrow();
       if (reservation.state === "settled") {
         if (actualMicros !== reservation.actual_micros)
@@ -6190,8 +6382,8 @@ class BudgetService {
         return;
       }
       await tx.updateTable("budget_accounts").set({
-        reserved_micros: sql12`reserved_micros - ${reservation.reserved_micros}`,
-        spent_micros: sql12`spent_micros + ${actualMicros}`
+        reserved_micros: sql13`reserved_micros - ${reservation.reserved_micros}`,
+        spent_micros: sql13`spent_micros + ${actualMicros}`
       }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       await tx.updateTable("budget_reservations").set({ state: "settled", actual_micros: actualMicros }).where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).execute();
     });
@@ -6200,7 +6392,7 @@ class BudgetService {
     if (!Number.isSafeInteger(actualMicros) || actualMicros < 0)
       throw new ForgeError("invalid_usage", "Maliyet ölçümü geçersiz.");
     return this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("budget_accounts").set({ reserved_micros: sql12`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
+      await tx.updateTable("budget_accounts").set({ reserved_micros: sql13`reserved_micros` }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       const reservation = await tx.selectFrom("budget_reservations as b").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select([
         "b.run_id",
         "b.reserved_micros",
@@ -6210,7 +6402,7 @@ class BudgetService {
       ]).where("b.tenant_id", "=", identity.tenantId).where("b.user_id", "=", identity.userId).where("b.id", "=", reservationId).executeTakeFirst();
       if (!reservation)
         throw new ForgeError("reservation_unavailable", "Rezervasyon bulunamadı veya yetkiniz yok.", 404);
-      await new IdentityService(tx).authorize(identity, "run", reservation.project_id);
+      await new IdentityService(tx).authorize(identity, "run", reservation.project_id ?? undefined);
       if (reservation.state === "settled") {
         if (reservation.actual_micros !== actualMicros)
           throw new ForgeError("settlement_conflict", "Çağrı daha önce farklı maliyetle uzlaştırıldı.", 409);
@@ -6224,8 +6416,8 @@ class BudgetService {
         };
       }
       await tx.updateTable("budget_accounts").set({
-        reserved_micros: sql12`reserved_micros - ${reservation.reserved_micros}`,
-        spent_micros: sql12`spent_micros + ${actualMicros}`
+        reserved_micros: sql13`reserved_micros - ${reservation.reserved_micros}`,
+        spent_micros: sql13`spent_micros + ${actualMicros}`
       }).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).execute();
       await tx.updateTable("budget_reservations").set({ state: "settled", actual_micros: actualMicros }).where("tenant_id", "=", identity.tenantId).where("id", "=", reservationId).execute();
       await tx.insertInto("audit_events").values({
@@ -6257,8 +6449,8 @@ class BudgetService {
     const [account, held, uncertain] = await Promise.all([
       this.storage.db.selectFrom("budget_accounts").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).executeTakeFirst(),
       this.storage.db.selectFrom("budget_reservations").select([
-        sql12`coalesce(sum(case when state = 'reserved' then reserved_micros else 0 end), 0)`.as("in_flight"),
-        sql12`coalesce(sum(case when state = 'unknown' then reserved_micros else 0 end), 0)`.as("uncertain")
+        sql13`coalesce(sum(case when state = 'reserved' then reserved_micros else 0 end), 0)`.as("in_flight"),
+        sql13`coalesce(sum(case when state = 'unknown' then reserved_micros else 0 end), 0)`.as("uncertain")
       ]).where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).executeTakeFirstOrThrow(),
       this.storage.db.selectFrom("budget_reservations as b").innerJoin("runs as r", (join14) => join14.onRef("r.tenant_id", "=", "b.tenant_id").onRef("r.id", "=", "b.run_id")).select(["b.id", "b.run_id", "b.reserved_micros", "r.project_id"]).where("b.tenant_id", "=", identity.tenantId).where("b.user_id", "=", identity.userId).where("b.state", "=", "unknown").orderBy("b.id").limit(20).execute()
     ]);
@@ -6492,7 +6684,7 @@ async function resolveProvider(profile, secret, policy) {
 
 // src/runner/staging.ts
 import { Type } from "@earendil-works/pi-ai";
-import { sql as sql13 } from "kysely";
+import { sql as sql14 } from "kysely";
 class EvolutionStaging {
   store;
   identity;
@@ -6576,7 +6768,7 @@ class EvolutionStaging {
           if (skill.scope_key !== expected || skill.name !== args.name || !skill.active_revision)
             throw new ForgeError("owner_mismatch", "Kanonik ad/kapsam/sürüm eşleşmiyor.");
           await this.store.storage.db.transaction().execute(async (tx) => {
-            await tx.updateTable("tenants").set({ name: sql13`name` }).where("id", "=", this.identity.tenantId).execute();
+            await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", this.identity.tenantId).execute();
             await new JobQueue(this.store.storage).assertLease(tx, this.run);
             await new IdentityService(tx).authorize(this.identity, skill.scope_key === "workspace" ? "admin" : "write", skill.project_id ?? undefined);
             await tx.insertInto("run_revision_pins").values({
@@ -6732,7 +6924,7 @@ import { readFile as readFile5 } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { resolve as resolve13 } from "node:path";
-import { sql as sql14 } from "kysely";
+import { sql as sql15 } from "kysely";
 var AGENT_PROMPT_MAX_CHARS = 32768;
 var AGENT_PROMPT_ANCHORS = [
   "create",
@@ -6815,7 +7007,7 @@ class AgentPromptService {
     const content = validateContent(raw.content);
     const scope = await this.checkedScope(actor, raw.scope);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const current = await tx.selectFrom("agent_prompts").select("version").where("tenant_id", "=", actor.tenantId).where("profile", "=", profile).where("scope", "=", scope).orderBy("version", "desc").limit(1).executeTakeFirst();
       if ((current?.version ?? 0) !== raw.base_version)
@@ -6857,7 +7049,7 @@ class AgentPromptService {
     const profile = raw.profile ?? "skill_evolve";
     const scope = await this.checkedScope(actor, raw.scope);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql14`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const source = await tx.selectFrom("agent_prompts").selectAll().where("tenant_id", "=", actor.tenantId).where("profile", "=", profile).where("scope", "=", scope).where("version", "=", raw.version).executeTakeFirst();
       if (!source)
@@ -7038,36 +7230,1676 @@ function productionHandler(storage, dataDir, vault, local, overrides = {}) {
   };
 }
 
+// src/memory/service.ts
+import { randomUUID as randomUUID20 } from "node:crypto";
+
+// src/memory/files.ts
+import { createHash as createHash14, randomUUID as randomUUID19 } from "node:crypto";
+import { constants as constants3 } from "node:fs";
+import { hostname } from "node:os";
+import { dirname as dirname8, isAbsolute as isAbsolute4, join as join15, relative as relative6, sep as sep3 } from "node:path";
+import {
+  lstat as lstat9,
+  mkdir as mkdir9,
+  open as open7,
+  readFile as readFile6,
+  readdir as readdir4,
+  realpath as realpath3,
+  rename as rename4,
+  rm as rm5,
+  stat
+} from "node:fs/promises";
+
+// src/memory/paths.ts
+import { isAbsolute as isAbsolute3, join as join14, relative as relative5, resolve as resolve14, sep as sep2 } from "node:path";
+var MEMORY_VAULT_DIRNAME = "memory";
+var SEGMENT = /^[A-Za-z0-9._-]{1,128}$/;
+var HASH = /^[0-9a-f]{64}$/;
+function invalidPath(message) {
+  throw new ForgeError("invalid_memory_path", message, 422);
+}
+function assertPathSegment(segment, label = "yol parçası") {
+  if (typeof segment !== "string" || !SEGMENT.test(segment) || segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))
+    invalidPath(`Geçersiz ${label}.`);
+  return segment;
+}
+function safeJoin(root, ...segments) {
+  const resolvedRoot = resolve14(root);
+  for (const segment of segments)
+    assertPathSegment(segment);
+  const candidate = resolve14(resolvedRoot, ...segments);
+  const rel = relative5(resolvedRoot, candidate);
+  if (rel === "" || rel.startsWith("..") || isAbsolute3(rel))
+    invalidPath("Yol vault kökünün dışında.");
+  return candidate;
+}
+function vaultRoot(dataDir) {
+  return join14(resolve14(dataDir), MEMORY_VAULT_DIRNAME);
+}
+function noteWorkingPath(root, spaceId, noteId) {
+  return safeJoin(root, "spaces", spaceId, "notes", `${noteId}.md`);
+}
+function revisionDir(root, spaceId, noteId) {
+  return safeJoin(root, "spaces", spaceId, "revisions", noteId);
+}
+function revisionPath(root, spaceId, noteId, revision, contentHash) {
+  if (!Number.isInteger(revision) || revision < 1)
+    invalidPath("Revision numarası geçersiz.");
+  if (!HASH.test(contentHash))
+    invalidPath("İçerik hash'i geçersiz.");
+  return safeJoin(root, "spaces", spaceId, "revisions", noteId, `${revision}-${contentHash}.md`);
+}
+function tempDir(root) {
+  return safeJoin(root, ".tmp");
+}
+function quarantineDir(root) {
+  return safeJoin(root, ".quarantine");
+}
+function writerLockPath(root) {
+  return safeJoin(root, ".writer.lock");
+}
+function resolveVaultRelative(root, relativePath) {
+  if (typeof relativePath !== "string" || !relativePath || relativePath.startsWith("/") || relativePath.includes("\\"))
+    invalidPath("Vault göreli yol geçersiz.");
+  return safeJoin(root, ...relativePath.split("/"));
+}
+function relativeVaultPath(root, absolute) {
+  const rel = relative5(resolve14(root), resolve14(absolute));
+  if (rel === "" || rel.startsWith("..") || isAbsolute3(rel))
+    return null;
+  return rel.split(sep2).join("/");
+}
+var KIND_FOLDERS = {
+  decision: "decisions",
+  task: "tasks",
+  session: "sessions",
+  preference: "preferences",
+  research: "research",
+  procedure: "procedures",
+  context: "context",
+  fact: "facts",
+  note: "notes"
+};
+function kindFolder(kind) {
+  return KIND_FOLDERS[kind] ?? "notes";
+}
+function slugify(title) {
+  const map = {
+    ç: "c",
+    ğ: "g",
+    ı: "i",
+    İ: "i",
+    ö: "o",
+    ş: "s",
+    ü: "u",
+    Ç: "c",
+    Ğ: "g",
+    Ö: "o",
+    Ş: "s",
+    Ü: "u"
+  };
+  const slug = title.split("").map((char) => map[char] ?? char).join("").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  return slug || "not";
+}
+function noteDisplayPath(spaceId, kind, title, noteId) {
+  return `spaces/${spaceId}/${kindFolder(kind)}/${slugify(title)}-${noteId}.md`;
+}
+
+// src/memory/files.ts
+function sha256Hex(content) {
+  return createHash14("sha256").update(content).digest("hex");
+}
+function byteSize(content) {
+  return Buffer.byteLength(content, "utf8");
+}
+async function ensureDir(path, mode = 448) {
+  await mkdir9(path, { recursive: true, mode });
+}
+async function fileExists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readTextIfExists(path) {
+  try {
+    return await readFile6(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+function hostToken(host = hostname()) {
+  return host.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "unknown";
+}
+function tempFileName(pid, host = hostname(), id = randomUUID19()) {
+  return `${pid}.${hostToken(host)}.${id}.tmp`;
+}
+function parseTempFileName(name) {
+  const match = /^(\d+)\.([A-Za-z0-9._-]+)\.([0-9a-f-]{36})\.tmp$/.exec(name);
+  if (!match)
+    return null;
+  return { pid: Number(match[1]), host: match[2] };
+}
+async function syncDir(dir) {
+  try {
+    const handle = await open7(dir, constants3.O_RDONLY);
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {}
+}
+function pathEscape(message = "Yol vault kökünün dışına çıkıyor.") {
+  throw new ForgeError("memory_path_escape", message, 422);
+}
+async function assertSafeWriteTarget(root, target) {
+  const rootResolved = root;
+  const rel = relative6(rootResolved, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute4(rel))
+    pathEscape();
+  await ensureDir(root);
+  await assertNoSymlinkComponents(root, target);
+  await ensureDir(dirname8(target));
+  await assertNoSymlinkComponents(root, target);
+  const rootReal = await realpath3(root);
+  const parentReal = await realpath3(dirname8(target));
+  if (parentReal !== rootReal && !parentReal.startsWith(rootReal + sep3))
+    pathEscape("Hedef dizin vault kökünün dışında.");
+  const targetInfo = await lstat9(target).catch((error) => {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  });
+  if (targetInfo?.isSymbolicLink())
+    pathEscape("Mevcut hedef symlink; yazma reddedildi.");
+}
+async function assertNoSymlinkComponents(root, target) {
+  const rel = relative6(root, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute4(rel))
+    pathEscape();
+  const segments = rel.split(sep3).slice(0, -1);
+  let current = root;
+  for (const segment of segments) {
+    current = join15(current, segment);
+    const info = await lstat9(current).catch((error) => {
+      if (error.code === "ENOENT")
+        return null;
+      throw error;
+    });
+    if (!info)
+      break;
+    if (info.isSymbolicLink())
+      pathEscape("Symlink bileşen üzerinden yazma reddedildi.");
+  }
+}
+async function atomicWriteFile(path, content, options = {}) {
+  const directory = options.tempDir ?? dirname8(path);
+  const temp = join15(directory, tempFileName(process.pid));
+  if (options.vaultRoot) {
+    await assertSafeWriteTarget(options.vaultRoot, path);
+    await assertSafeWriteTarget(options.vaultRoot, temp);
+  }
+  await ensureDir(directory);
+  await ensureDir(dirname8(path));
+  const handle = await open7(temp, "wx", options.mode ?? 384);
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => {
+      return;
+    });
+    await rm5(temp, { force: true }).catch(() => {
+      return;
+    });
+    throw error;
+  }
+  await handle.close();
+  try {
+    await rename4(temp, path);
+  } catch (error) {
+    await rm5(temp, { force: true }).catch(() => {
+      return;
+    });
+    throw error;
+  }
+  await syncDir(dirname8(path));
+}
+async function readStableText(path, options) {
+  const before = await stat(path);
+  if (before.size > options.maxBytes)
+    throw new ForgeError("memory_file_too_large", "Kaynak dosya boyut sınırını aşıyor.", 422, undefined, { size: before.size, limit: options.maxBytes });
+  const content = await readFile6(path, "utf8");
+  const after = await stat(path);
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+    throw new ForgeError("memory_file_changed", "Dosya okuma sırasında değişti; sonraki taramada yeniden denenecek.", 409);
+  return { content, hash: sha256Hex(content), size: byteSize(content) };
+}
+async function publishRevisionFile(root, spaceId, noteId, revision, contentHash, content) {
+  const path = revisionPath(root, spaceId, noteId, revision, contentHash);
+  const relativePath = relativeVaultPath(root, path);
+  if (!relativePath)
+    throw new ForgeError("invalid_memory_path", "Revision yolu geçersiz.", 422);
+  await assertSafeWriteTarget(root, path);
+  if (await fileExists(path)) {
+    const existing = await readFile6(path, "utf8");
+    if (sha256Hex(existing) !== contentHash)
+      throw new ForgeError("memory_revision_file_conflict", "Aynı revision yolu farklı içerikle dolu; dosya ezilmedi.", 409);
+    return { path, relativePath, created: false };
+  }
+  await atomicWriteFile(path, content, {
+    tempDir: tempDir(root),
+    vaultRoot: root
+  });
+  return { path, relativePath, created: true };
+}
+async function readWorkingCopy(root, spaceId, noteId) {
+  const path = noteWorkingPath(root, spaceId, noteId);
+  const content = await readTextIfExists(path);
+  if (content === null)
+    return null;
+  return { content, hash: sha256Hex(content), size: byteSize(content) };
+}
+async function listRevisionFiles(root, spaceId, noteId) {
+  const dir = revisionDir(root, spaceId, noteId);
+  try {
+    const entries = await readdir4(dir);
+    return entries.filter((name) => name.endsWith(".md")).sort().map((name) => join15(dir, name));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return [];
+    throw error;
+  }
+}
+async function removeFileIfExists(path) {
+  try {
+    await rm5(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+}
+async function gcTempFiles(root, options) {
+  const dir = tempDir(root);
+  let entries;
+  try {
+    entries = await readdir4(dir);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return [];
+    throw error;
+  }
+  const host = options.host ?? hostname();
+  const ownToken = hostToken(host);
+  const now = options.now ?? Date.now;
+  const minAgeMs = options.minAgeMs ?? 5000;
+  const removed = [];
+  for (const name of entries) {
+    const parsed = parseTempFileName(name);
+    if (!parsed)
+      continue;
+    if (parsed.host !== ownToken)
+      continue;
+    if (options.isPidAlive(parsed.pid))
+      continue;
+    const path = join15(dir, name);
+    const info = await stat(path);
+    if (now() - info.mtimeMs < minAgeMs)
+      continue;
+    await rm5(path, { force: true });
+    removed.push(name);
+  }
+  return removed;
+}
+async function writeQuarantine(root, entry) {
+  const dir = quarantineDir(root);
+  await ensureDir(dir);
+  const id = entry.id ?? randomUUID19();
+  const record2 = {
+    id,
+    reason: entry.reason.slice(0, 200),
+    hash: entry.hash ?? null,
+    path: entry.path ?? null,
+    summary: entry.summary ? entry.summary.slice(0, 500) : null,
+    created_at: Date.now()
+  };
+  const path = join15(dir, `${id}.json`);
+  await atomicWriteFile(path, JSON.stringify(record2), {
+    tempDir: dir,
+    vaultRoot: root
+  });
+  return path;
+}
+
+// src/memory/service.ts
+var HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+class MemoryService {
+  db;
+  identities;
+  vaultRoot;
+  constructor(db, identities = new IdentityService(db), vaultRoot2) {
+    this.db = db;
+    this.identities = identities;
+    this.vaultRoot = vaultRoot2;
+  }
+  async ensureSpace(identity, scope) {
+    if (scope.type === "personal")
+      return this.ensurePersonal(identity);
+    if (scope.type === "project")
+      return this.ensureProject(identity, scope.projectId);
+    throw new ForgeError("invalid_scope", "Organizasyon alanı adıyla açıkça oluşturulur.", 422);
+  }
+  async ensurePersonal(identity) {
+    await this.identities.authorize(identity, "read");
+    const existing = await this.findSpace(identity.tenantId, {
+      kind: "personal",
+      ownerUserId: identity.userId
+    });
+    if (existing)
+      return existing;
+    await this.identities.authorize(identity, "write");
+    return this.insertSpace(identity, {
+      kind: "personal",
+      owner_user_id: identity.userId,
+      project_id: null,
+      name: "Kişisel hafıza"
+    });
+  }
+  async ensureProject(identity, projectId) {
+    await this.identities.authorize(identity, "read", projectId);
+    const existing = await this.findSpace(identity.tenantId, {
+      kind: "project",
+      projectId
+    });
+    if (existing)
+      return existing;
+    await this.identities.authorize(identity, "write", projectId);
+    const project = await this.db.selectFrom("projects").select(["name"]).where("tenant_id", "=", identity.tenantId).where("id", "=", projectId).executeTakeFirstOrThrow();
+    return this.insertSpace(identity, {
+      kind: "project",
+      owner_user_id: identity.userId,
+      project_id: projectId,
+      name: project.name
+    });
+  }
+  findSpace(tenantId, scope) {
+    const query = this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", tenantId);
+    return scope.kind === "personal" ? query.where("kind", "=", "personal").where("owner_user_id", "=", scope.ownerUserId).executeTakeFirst() : query.where("kind", "=", "project").where("project_id", "=", scope.projectId).executeTakeFirst();
+  }
+  async createOrganizationSpace(identity, name) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 200)
+      throw new ForgeError("invalid_memory_space", "Alan adı 1–200 karakter olmalıdır.", 422);
+    await this.identities.authorize(identity, "write");
+    return this.insertSpace(identity, {
+      kind: "organization",
+      owner_user_id: identity.userId,
+      project_id: null,
+      name: trimmed
+    });
+  }
+  async insertSpace(identity, values) {
+    const now = Date.now();
+    const space = {
+      tenant_id: identity.tenantId,
+      id: randomUUID20(),
+      created_at: now,
+      updated_at: now,
+      ...values
+    };
+    try {
+      return await this.db.insertInto("memory_spaces").values(space).returningAll().executeTakeFirstOrThrow();
+    } catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+      const existing = await this.findSpace(identity.tenantId, space.kind === "personal" ? { kind: "personal", ownerUserId: space.owner_user_id } : { kind: "project", projectId: space.project_id });
+      if (existing)
+        return existing;
+      throw error;
+    }
+  }
+  async authorizeSpace(identity, spaceId, access) {
+    const space = await this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", spaceId).executeTakeFirst();
+    if (!space)
+      throw new ForgeError("memory_space_unavailable", "Hafıza alanı bulunamadı veya yetkiniz yok.", 404);
+    if (space.kind === "personal") {
+      await this.identities.authorize(identity, "read");
+      if (space.owner_user_id !== identity.userId)
+        throw new ForgeError("forbidden", "Bu kişisel hafıza alanı başka bir kullanıcıya ait.", 403);
+      if (access === "write")
+        await this.identities.authorize(identity, "write");
+      return space;
+    }
+    if (space.kind === "project") {
+      if (!space.project_id)
+        throw new ForgeError("memory_space_unavailable", "Proje alanı tutarsız.", 404);
+      await this.identities.authorize(identity, access, space.project_id);
+      return space;
+    }
+    await this.identities.authorize(identity, access);
+    return space;
+  }
+  async authorizeRunSpace(run, spaceId, access) {
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    const space = await this.authorizeSpace(identity, spaceId, access);
+    const mismatch = () => new ForgeError("memory_scope_mismatch", "İş kapsamı ile hedef alan uyuşmuyor.", 422);
+    if (run.scope_kind === "personal") {
+      if (space.kind !== "personal" || space.owner_user_id !== run.user_id)
+        throw mismatch();
+    } else if (run.scope_kind === "project") {
+      if (space.kind !== "project" || !run.project_id || space.project_id !== run.project_id)
+        throw mismatch();
+    } else if (run.scope_kind === "organization") {
+      if (space.kind !== "organization")
+        throw mismatch();
+    } else {
+      throw mismatch();
+    }
+    return space;
+  }
+  async recordEvent(identity, input) {
+    if (!input.spaceId || input.spaceId.length > 200 || !input.sourceEventKey || input.sourceEventKey.length > 200 || !input.sourceKind || input.sourceKind.length > 40 || !HASH_PATTERN.test(input.contentHash) || input.observedAt !== undefined && (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0))
+      throw new ForgeError("invalid_memory_event", "Kaynak olay sözleşmesi geçersiz.", 422);
+    return this.db.transaction().execute(async (tx) => {
+      const service = new MemoryService(tx);
+      await service.authorizeSpace(identity, input.spaceId, "write");
+      const existing = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("source_event_key", "=", input.sourceEventKey).executeTakeFirst();
+      if (existing)
+        return service.duplicateOrThrow(existing, input.contentHash);
+      const now = Date.now();
+      const event = {
+        tenant_id: identity.tenantId,
+        space_id: input.spaceId,
+        id: randomUUID20(),
+        source_event_key: input.sourceEventKey,
+        source_kind: input.sourceKind,
+        content_hash: input.contentHash,
+        state: "pending",
+        observed_at: input.observedAt ?? null,
+        created_at: now,
+        updated_at: now,
+        committed_revision: null,
+        note_id: null,
+        error_code: null,
+        receipt_json: null,
+        attempts: 0,
+        indexed_at: null
+      };
+      const inserted = await tx.insertInto("memory_events").values(event).onConflict((oc) => oc.columns(["tenant_id", "space_id", "source_event_key"]).doNothing()).returningAll().executeTakeFirst();
+      if (inserted)
+        return { status: "recorded", event: inserted };
+      const raced = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("source_event_key", "=", input.sourceEventKey).executeTakeFirst();
+      if (!raced)
+        throw new ForgeError("memory_event_unavailable", "Kaynak olayı kaydedilemedi.", 409);
+      return service.duplicateOrThrow(raced, input.contentHash);
+    });
+  }
+  duplicateOrThrow(existing, contentHash) {
+    if (existing.content_hash !== contentHash)
+      throw new ForgeError("memory_event_conflict", "Aynı kaynak anahtarı farklı içerikle daha önce kaydedildi.", 409);
+    return { status: "duplicate", event: existing };
+  }
+  async reconcile(identity, input = {}) {
+    const limit2 = input.limit ?? 20;
+    if (!Number.isInteger(limit2) || limit2 < 1 || limit2 > 100)
+      throw new ForgeError("invalid_memory_reconcile", "Uzlaştırma limiti 1–100 olmalıdır.", 422);
+    return this.db.transaction().execute(async (tx) => {
+      const service = new MemoryService(tx);
+      let spaceIds;
+      if (input.spaceId) {
+        const space = await service.authorizeSpace(identity, input.spaceId, "read");
+        spaceIds = [space.id];
+      } else {
+        const role = await service.identities.authorize(identity, "read");
+        const administrator = role === "founder" || role === "admin";
+        const rows = await tx.selectFrom("memory_spaces").select(["id"]).where("tenant_id", "=", identity.tenantId).where((eb) => eb.or([
+          eb.and([
+            eb("kind", "=", "personal"),
+            eb("owner_user_id", "=", identity.userId)
+          ]),
+          eb("kind", "=", "organization"),
+          eb.and([
+            eb("kind", "=", "project"),
+            administrator ? eb("project_id", "is not", null) : eb("project_id", "in", (sub) => sub.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId))
+          ])
+        ])).execute();
+        spaceIds = rows.map((row) => row.id);
+      }
+      if (spaceIds.length === 0)
+        return {
+          checked: 0,
+          pending: 0,
+          committed: 0,
+          rejected: 0,
+          conflicts: 0
+        };
+      const events = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "in", spaceIds).orderBy("created_at").orderBy("id").limit(limit2).execute();
+      const report = {
+        checked: events.length,
+        pending: 0,
+        committed: 0,
+        rejected: 0,
+        conflicts: 0
+      };
+      const seen = new Map;
+      for (const event of events) {
+        if (event.state === "pending")
+          report.pending += 1;
+        else if (event.state === "committed")
+          report.committed += 1;
+        else if (event.state === "rejected")
+          report.rejected += 1;
+        const key = `${event.space_id}\x00${event.source_event_key}`;
+        const previous = seen.get(key);
+        if (previous === undefined)
+          seen.set(key, event.content_hash);
+        else if (previous !== event.content_hash)
+          report.conflicts += 1;
+      }
+      return report;
+    });
+  }
+  async listSpaces(identity, options = {}) {
+    const limit2 = Math.min(Math.max(options.limit ?? 50, 1), 100);
+    const role = await this.identities.authorize(identity, "read");
+    const administrator = role === "founder" || role === "admin";
+    let query = this.db.selectFrom("memory_spaces").selectAll().where("tenant_id", "=", identity.tenantId).where((eb) => eb.or([
+      eb.and([
+        eb("kind", "=", "personal"),
+        eb("owner_user_id", "=", identity.userId)
+      ]),
+      eb("kind", "=", "organization"),
+      eb.and([
+        eb("kind", "=", "project"),
+        administrator ? eb("project_id", "is not", null) : eb("project_id", "in", (sub) => sub.selectFrom("project_members").select("project_id").where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId))
+      ])
+    ]));
+    if (options.after)
+      query = query.where("id", ">", options.after);
+    const rows = await query.orderBy("id").limit(limit2 + 1).execute();
+    return {
+      items: rows.slice(0, limit2).map((space) => ({
+        ...space,
+        scope: jobScopeForSpace(space)
+      })),
+      next: rows.length > limit2 ? rows[limit2 - 1].id : null
+    };
+  }
+  async listNotes(identity, input) {
+    const limit2 = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    let query = this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id);
+    if (input.after)
+      query = query.where("id", ">", input.after);
+    const rows = await query.orderBy("id").limit(limit2 + 1).execute();
+    const items = rows.slice(0, limit2);
+    const kinds = new Map;
+    if (items.length > 0) {
+      const revisions = await this.db.selectFrom("memory_note_revisions").select(["note_id", "kind", "revision"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("note_id", "in", items.map((note) => note.id)).execute();
+      for (const revision of revisions)
+        if (!kinds.has(revision.note_id))
+          kinds.set(revision.note_id, revision.kind);
+    }
+    return {
+      space: { id: space.id, kind: space.kind, name: space.name },
+      items: items.map((note) => ({
+        ...note,
+        display_path: noteDisplayPath(space.id, kinds.get(note.id) ?? "note", note.title, note.id)
+      })),
+      next: rows.length > limit2 ? rows[limit2 - 1].id : null
+    };
+  }
+  async readNote(identity, input) {
+    const space = await this.authorizeSpace(identity, input.spaceId, "read");
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("id", "=", input.noteId).executeTakeFirst();
+    if (!note)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    const revision = note.current_revision === null ? null : await this.db.selectFrom("memory_note_revisions").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", space.id).where("note_id", "=", note.id).where("revision", "=", note.current_revision).executeTakeFirst() ?? null;
+    let content = null;
+    if (this.vaultRoot && revision?.file_path) {
+      content = await readTextIfExists(resolveVaultRelative(this.vaultRoot, revision.file_path));
+    }
+    return {
+      note,
+      revision,
+      content,
+      display_path: noteDisplayPath(space.id, revision?.kind ?? "note", note.title, note.id)
+    };
+  }
+  async archiveNote(identity, input) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db.updateTable("memory_notes").set({ deleted_at: now, lifecycle: "archived", updated_at: now }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.noteId).where("deleted_at", "is", null).executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: now, lifecycle: "archived" };
+  }
+  async restoreNote(identity, input) {
+    await this.authorizeSpace(identity, input.spaceId, "write");
+    const now = Date.now();
+    const updated = await this.db.updateTable("memory_notes").set({ deleted_at: null, lifecycle: "active", updated_at: now }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.noteId).where("deleted_at", "is not", null).executeTakeFirst();
+    if (Number(updated.numUpdatedRows) !== 1)
+      throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
+    return { noteId: input.noteId, deleted_at: null, lifecycle: "active" };
+  }
+}
+function jobScopeForSpace(space) {
+  if (space.kind === "project") {
+    if (!space.project_id)
+      throw new ForgeError("memory_space_unavailable", "Proje alanı tutarsız.", 404);
+    return { type: "project", projectId: space.project_id };
+  }
+  if (space.kind === "personal")
+    return { type: "personal" };
+  return { type: "organization" };
+}
+function isUniqueViolation(error) {
+  const code = error.code;
+  if (code === "23505" || code === "SQLITE_CONSTRAINT_UNIQUE")
+    return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /unique constraint failed/i.test(message);
+}
+
+// src/memory/commit.ts
+import { randomUUID as randomUUID22 } from "node:crypto";
+import { sql as sql16 } from "kysely";
+
+// src/domain/memory.ts
+import { createHash as createHash15 } from "node:crypto";
+import { z as z10 } from "zod";
+var MEMORY_FORMAT_VERSION = 1;
+var MEMORY_KINDS = [
+  "decision",
+  "fact",
+  "procedure",
+  "context",
+  "research",
+  "preference",
+  "task",
+  "note",
+  "session"
+];
+var MEMORY_RELATIONS = [
+  "SUPPORTS",
+  "DERIVED_FROM",
+  "PART_OF",
+  "ABOUT",
+  "PRECEDES",
+  "SUPERSEDES",
+  "CONTRADICTS",
+  "DEPENDS_ON"
+];
+var MEMORY_LIFECYCLES = ["active", "superseded", "archived"];
+var TASK_STATUSES = [
+  "planned",
+  "doing",
+  "blocked",
+  "done",
+  "cancelled"
+];
+var MEMORY_VERIFICATIONS = [
+  "declared",
+  "verified",
+  "proposed"
+];
+var memorySourceSchema = z10.object({
+  id: z10.string().min(1).max(200),
+  kind: z10.string().min(1).max(40).optional(),
+  revision: z10.string().min(1).max(200).optional(),
+  hash: z10.string().min(1).max(200).optional(),
+  url: z10.string().min(1).max(2000).optional()
+}).strict();
+var memoryEdgeSchema = z10.object({
+  relation: z10.enum(MEMORY_RELATIONS),
+  target: z10.string().min(1).max(200)
+}).strict();
+var memoryFrontmatterSchema = z10.object({
+  format_version: z10.number().int().min(1).max(1000),
+  note_id: z10.string().min(1).max(200),
+  memory_space_id: z10.string().min(1).max(200),
+  kind: z10.enum(MEMORY_KINDS),
+  title: z10.string().min(1).max(500),
+  summary: z10.string().max(8000).optional(),
+  lifecycle: z10.enum(MEMORY_LIFECYCLES).optional(),
+  pinned: z10.boolean().optional(),
+  task_status: z10.enum(TASK_STATUSES).optional(),
+  verification: z10.enum(MEMORY_VERIFICATIONS).optional(),
+  stale: z10.boolean().optional(),
+  sources: z10.array(memorySourceSchema).max(100).optional(),
+  edges: z10.array(memoryEdgeSchema).max(200).optional(),
+  created_at: z10.number().int().min(0).optional(),
+  observed_at: z10.number().int().min(0).optional(),
+  valid_from: z10.number().int().min(0).optional(),
+  valid_until: z10.number().int().min(0).optional(),
+  base_revision: z10.number().int().min(0).optional(),
+  revision: z10.number().int().min(0).optional()
+});
+var KNOWN_FRONTMATTER_KEYS = new Set([
+  "format_version",
+  "note_id",
+  "memory_space_id",
+  "kind",
+  "title",
+  "summary",
+  "lifecycle",
+  "pinned",
+  "task_status",
+  "verification",
+  "stale",
+  "sources",
+  "edges",
+  "created_at",
+  "observed_at",
+  "valid_from",
+  "valid_until",
+  "base_revision",
+  "revision"
+]);
+function splitFrontmatter(source) {
+  const open8 = /^---[ \t]*\r?\n/.exec(source);
+  if (!open8)
+    return { error: "missing_frontmatter" };
+  const rest = source.slice(open8[0].length);
+  const close = /(?:^|\n)---[ \t]*(?=\r?\n|$)/.exec(rest);
+  if (!close)
+    return { error: "missing_frontmatter" };
+  const delimiterStart = close.index + (close[0].startsWith(`
+`) ? 1 : 0);
+  const delimiterEnd = close.index + close[0].length;
+  const after = rest.slice(delimiterEnd);
+  const lineEnd = /^\r?\n/.exec(after);
+  return {
+    raw: rest.slice(0, delimiterStart),
+    body: lineEnd ? after.slice(lineEnd[0].length) : after
+  };
+}
+function parseScalar(raw) {
+  const value = raw.trim();
+  if (value === "" || value === "~" || value === "null")
+    return null;
+  if (value === "true")
+    return true;
+  if (value === "false")
+    return false;
+  if (/^-?\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : value;
+  }
+  if (/^-?\d+\.\d+$/.test(value))
+    return Number(value);
+  if (value.startsWith("[") || value.startsWith("{") || value.startsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {}
+  }
+  if (value.startsWith("'") && value.endsWith("'") || value.startsWith('"') && value.endsWith('"'))
+    return value.slice(1, -1);
+  return value;
+}
+function parseFrontmatterLines(raw) {
+  const values = {};
+  for (const line of raw.split(`
+`)) {
+    const trimmed = line.replace(/\r$/, "");
+    const text = trimmed.trimStart();
+    if (!text || text.startsWith("#"))
+      continue;
+    const colon = text.indexOf(":");
+    if (colon <= 0)
+      continue;
+    const key = text.slice(0, colon).trim();
+    if (!key)
+      continue;
+    values[key] = parseScalar(text.slice(colon + 1));
+  }
+  return values;
+}
+function parseMemoryDocument(source) {
+  const split = splitFrontmatter(source);
+  if ("error" in split)
+    return { status: "invalid", issues: [split.error] };
+  const values = parseFrontmatterLines(split.raw);
+  const rawVersion = values.format_version;
+  if (typeof rawVersion === "number" && Number.isInteger(rawVersion) && rawVersion > MEMORY_FORMAT_VERSION)
+    return { status: "unsupported_format", formatVersion: rawVersion };
+  const parsed = memoryFrontmatterSchema.safeParse(values);
+  if (!parsed.success)
+    return {
+      status: "invalid",
+      issues: parsed.error.issues.map((issue) => `${issue.path.length ? issue.path.join(".") : "frontmatter"}: ${issue.message}`)
+    };
+  const fm = parsed.data;
+  const unknown = {};
+  for (const [key, value] of Object.entries(values))
+    if (!KNOWN_FRONTMATTER_KEYS.has(key))
+      unknown[key] = value;
+  return {
+    status: "ok",
+    record: {
+      formatVersion: fm.format_version,
+      noteId: fm.note_id,
+      spaceId: fm.memory_space_id,
+      kind: fm.kind,
+      title: fm.title,
+      summary: fm.summary ?? null,
+      lifecycle: fm.lifecycle ?? "active",
+      pinned: fm.pinned ?? false,
+      taskStatus: fm.task_status ?? null,
+      verification: fm.verification ?? "declared",
+      stale: fm.stale ?? null,
+      sources: fm.sources ?? [],
+      edges: fm.edges ?? [],
+      createdAt: fm.created_at ?? null,
+      observedAt: fm.observed_at ?? null,
+      validFrom: fm.valid_from ?? null,
+      validUntil: fm.valid_until ?? null,
+      baseRevision: fm.base_revision ?? null,
+      revision: fm.revision ?? null,
+      unknown,
+      body: split.body
+    }
+  };
+}
+function stableValue(value) {
+  if (Array.isArray(value))
+    return value.map(stableValue);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [
+      key,
+      stableValue(value[key])
+    ]));
+  return value;
+}
+function formatScalar(value) {
+  if (typeof value === "string")
+    return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  if (value === null || value === undefined)
+    return "null";
+  return JSON.stringify(stableValue(value));
+}
+function serializeMemoryDocument(record2, options = {}) {
+  const lines = [];
+  const push = (key, value) => lines.push(`${key}: ${formatScalar(value)}`);
+  push("format_version", record2.formatVersion);
+  push("note_id", record2.noteId);
+  push("memory_space_id", record2.spaceId);
+  push("kind", record2.kind);
+  push("title", record2.title);
+  if (record2.summary !== null)
+    push("summary", record2.summary);
+  push("lifecycle", record2.lifecycle);
+  push("pinned", record2.pinned);
+  if (record2.taskStatus !== null)
+    push("task_status", record2.taskStatus);
+  push("verification", record2.verification);
+  if (record2.stale !== null)
+    push("stale", record2.stale);
+  push("sources", record2.sources);
+  push("edges", record2.edges);
+  if (record2.createdAt !== null)
+    push("created_at", record2.createdAt);
+  if (record2.observedAt !== null)
+    push("observed_at", record2.observedAt);
+  if (record2.validFrom !== null)
+    push("valid_from", record2.validFrom);
+  if (record2.validUntil !== null)
+    push("valid_until", record2.validUntil);
+  if (record2.baseRevision !== null)
+    push("base_revision", record2.baseRevision);
+  if (options.includeRevision !== false && record2.revision !== null)
+    push("revision", record2.revision);
+  for (const key of Object.keys(record2.unknown).sort()) {
+    if (KNOWN_FRONTMATTER_KEYS.has(key))
+      continue;
+    push(key, record2.unknown[key]);
+  }
+  const body = record2.body.replace(/\r\n?/g, `
+`);
+  return `---
+${lines.join(`
+`)}
+---
+${body}`;
+}
+function canonicalMemoryText(record2) {
+  return serializeMemoryDocument(record2, { includeRevision: false });
+}
+function memoryRecordHash(record2) {
+  return createHash15("sha256").update(canonicalMemoryText(record2)).digest("hex");
+}
+
+// src/memory/writer.ts
+import { randomUUID as randomUUID21 } from "node:crypto";
+import { hostname as hostname2 } from "node:os";
+import { open as open8, readFile as readFile7, rename as rename5, rm as rm6, writeFile as writeFile5 } from "node:fs/promises";
+function defaultIsPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+class VaultWriterLease {
+  writer;
+  writerId;
+  constructor(writer, writerId) {
+    this.writer = writer;
+    this.writerId = writerId;
+  }
+  async heartbeat() {
+    return this.writer.heartbeat(this.writerId);
+  }
+  async release() {
+    await this.writer.release(this.writerId);
+  }
+}
+
+class VaultWriter {
+  root;
+  leaseMs;
+  now;
+  pid;
+  host;
+  isPidAlive;
+  maxAcquireAttempts;
+  constructor(root, options = {}) {
+    this.root = root;
+    this.leaseMs = options.leaseMs ?? 15000;
+    this.now = options.now ?? (() => Date.now());
+    this.pid = options.pid ?? process.pid;
+    this.host = options.host ?? hostname2();
+    this.isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
+    this.maxAcquireAttempts = options.maxAcquireAttempts ?? 5;
+  }
+  async readRecord() {
+    try {
+      const raw = await readFile7(writerLockPath(this.root), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed?.version !== 1 || typeof parsed.writerId !== "string" || typeof parsed.pid !== "number" || typeof parsed.host !== "string" || typeof parsed.heartbeatAt !== "number")
+        return null;
+      return parsed;
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return null;
+      return null;
+    }
+  }
+  busy(record2, reason) {
+    const retryAfter = record2 ? Math.max(1, Math.ceil((this.leaseMs - (this.now() - record2.heartbeatAt)) / 1000)) : 5;
+    return new ForgeError("memory_writer_busy", "Vault yazıcısı başka bir süreçte etkin.", 409, retryAfter, record2 ? {
+      host: record2.host,
+      pid: record2.pid,
+      heartbeat_at: record2.heartbeatAt
+    } : { reason });
+  }
+  async steal(record2) {
+    const path = writerLockPath(this.root);
+    const trash = `${path}.stale.${randomUUID21()}`;
+    try {
+      await rename5(path, trash);
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    await rm6(trash, { force: true });
+  }
+  async acquire(input = {}) {
+    await ensureDir(this.root);
+    const path = writerLockPath(this.root);
+    const writerId = input.writerId ?? randomUUID21();
+    for (let attempt = 0;attempt < this.maxAcquireAttempts; attempt += 1) {
+      const record2 = {
+        version: 1,
+        writerId,
+        pid: this.pid,
+        host: this.host,
+        startedAt: this.now(),
+        heartbeatAt: this.now()
+      };
+      try {
+        const handle = await open8(path, "wx", 384);
+        try {
+          await handle.writeFile(JSON.stringify(record2));
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        return new VaultWriterLease(this, writerId);
+      } catch (error) {
+        if (error.code !== "EEXIST")
+          throw error;
+      }
+      const current = await this.readRecord();
+      if (!current) {
+        if (!input.force)
+          throw this.busy(null, "unreadable_lock");
+        await this.steal(null);
+        continue;
+      }
+      const fresh2 = this.now() - current.heartbeatAt < this.leaseMs;
+      if (fresh2)
+        throw this.busy(current, "heartbeat_fresh");
+      if (current.host === this.host) {
+        if (this.isPidAlive(current.pid))
+          throw this.busy(current, "live_pid");
+        await this.steal(current);
+        continue;
+      }
+      if (!input.force)
+        throw new ForgeError("memory_writer_foreign", "Vault kilidi başka makinede; açık kurtarma gerekir.", 409, undefined, {
+          host: current.host,
+          pid: current.pid,
+          heartbeat_at: current.heartbeatAt
+        });
+      await this.steal(current);
+    }
+    throw this.busy(null, "acquire_attempts_exhausted");
+  }
+  async heartbeat(writerId) {
+    const path = writerLockPath(this.root);
+    const current = await this.readRecord();
+    if (!current || current.writerId !== writerId)
+      return false;
+    current.heartbeatAt = this.now();
+    try {
+      await writeFile5(path, JSON.stringify(current), { mode: 384 });
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  async release(writerId) {
+    const path = writerLockPath(this.root);
+    const current = await this.readRecord();
+    if (!current || current.writerId !== writerId)
+      return;
+    await rm6(path, { force: true });
+  }
+  async inspect() {
+    return this.readRecord();
+  }
+}
+
+class SpaceSerialQueue {
+  chains = new Map;
+  async run(key, fn) {
+    const previous = this.chains.get(key) ?? Promise.resolve();
+    const next = previous.then(fn, fn);
+    const guarded = next.catch(() => {
+      return;
+    });
+    this.chains.set(key, guarded);
+    try {
+      return await next;
+    } finally {
+      if (this.chains.get(key) === guarded)
+        this.chains.delete(key);
+    }
+  }
+}
+
+// src/memory/commit.ts
+var MEMORY_CONTENT_MAX_BYTES = 48 * 1024;
+var TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui"]);
+
+class MemoryCommitService {
+  deps;
+  writer;
+  service;
+  hooks;
+  spaces = new SpaceSerialQueue;
+  constructor(deps) {
+    this.deps = deps;
+    this.writer = deps.writer ?? new VaultWriter(deps.vaultRoot);
+    this.service = deps.service ?? new MemoryService(deps.db);
+    this.hooks = deps.hooks;
+  }
+  get db() {
+    return this.deps.db;
+  }
+  async commit(input) {
+    const size = byteSize(input.content);
+    if (size > MEMORY_CONTENT_MAX_BYTES)
+      throw new ForgeError("memory_content_limit", "İçerik boyut sınırını aşıyor.", 422, undefined, { size, limit: MEMORY_CONTENT_MAX_BYTES });
+    if (input.run)
+      await this.service.authorizeRunSpace(input.run, input.spaceId, "write");
+    else
+      await this.service.authorizeSpace(input.identity, input.spaceId, "write");
+    const clientHash = sha256Hex(input.content);
+    const event = await this.loadEvent(input);
+    if (!event)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    if (event.content_hash !== clientHash)
+      throw new ForgeError("memory_content_mismatch", "Teslim edilen içerik kabul edilen hash ile eşleşmiyor.", 409);
+    const trusted = TRUSTED_SOURCE_KINDS.has(input.sourceKind ?? "manual");
+    const sanitized = sanitizeUntrustedText(input.content, MEMORY_CONTENT_MAX_BYTES);
+    let storedContent = input.content;
+    let redacted = false;
+    if (sanitized !== input.content) {
+      if (trusted)
+        throw new ForgeError("memory_unsafe_content", "İçerik güvenli olmayan veri taşıyor; açık inceleme gerekir.", 422);
+      storedContent = sanitized;
+      redacted = true;
+    }
+    const { record: record2, noteId } = this.buildRecord({
+      ...input,
+      content: storedContent
+    });
+    const lease = await this.writer.acquire();
+    try {
+      await gcTempFiles(this.deps.vaultRoot, {
+        isPidAlive: defaultIsPidAlive
+      }).catch(() => {
+        process.stderr.write(`Hafıza geçici dosya temizliği ertelendi
+`);
+      });
+      return await this.spaces.run(input.spaceId, () => this.commitLocked(input, event, noteId, record2, redacted));
+    } finally {
+      await lease.release();
+    }
+  }
+  async loadEvent(input) {
+    return this.db.selectFrom("memory_events").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).executeTakeFirst();
+  }
+  buildRecord(input) {
+    const parsed = parseMemoryDocument(input.content);
+    if (parsed.status === "unsupported_format")
+      throw new ForgeError("memory_format_unsupported", "Desteklenmeyen format sürümü; içerik değiştirilmedi.", 422, undefined, { formatVersion: parsed.formatVersion });
+    if (parsed.status === "invalid") {
+      if (input.content.trimStart().startsWith("---"))
+        throw new ForgeError("invalid_memory_document", "Frontmatter geçersiz; içerik değiştirilmedi.", 422, undefined, { issues: parsed.issues.slice(0, 10) });
+      const noteId = input.noteId?.trim() || randomUUID22();
+      return {
+        noteId,
+        record: {
+          formatVersion: 1,
+          noteId,
+          spaceId: input.spaceId,
+          kind: input.kind ?? "note",
+          title: deriveTitle(input.content),
+          summary: null,
+          lifecycle: "active",
+          pinned: false,
+          taskStatus: null,
+          verification: "declared",
+          stale: null,
+          sources: [],
+          edges: [],
+          createdAt: Date.now(),
+          observedAt: null,
+          validFrom: null,
+          validUntil: null,
+          baseRevision: input.baseRevision ?? null,
+          revision: null,
+          unknown: {},
+          body: input.content.endsWith(`
+`) ? input.content : `${input.content}
+`
+        }
+      };
+    }
+    const record2 = parsed.record;
+    if (record2.spaceId !== input.spaceId)
+      throw new ForgeError("memory_space_mismatch", "Belge hedef alanla eşleşmiyor.", 422);
+    if (input.noteId && input.noteId !== record2.noteId)
+      throw new ForgeError("memory_note_id_mismatch", "Belge note_id hedefle eşleşmiyor.", 422);
+    return { record: record2, noteId: record2.noteId };
+  }
+  async commitLocked(input, event, noteId, record2, redacted) {
+    const current = await this.loadEvent(input);
+    if (!current)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    if (current.state === "committed")
+      return this.completeReplay(current);
+    if (current.state === "rejected")
+      throw new ForgeError("memory_event_rejected", "Olay reddedilmiş.", 409);
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).executeTakeFirst();
+    if (note?.deleted_at)
+      throw new ForgeError("memory_note_deleted", "Not arşivlenmiş/silinmiş; önce açık restore gerekir.", 409);
+    let expected;
+    if (note) {
+      if (input.baseRevision === undefined || input.baseRevision === null)
+        throw new ForgeError("memory_revision_required", "Güncelleme için base_revision zorunludur.", 422, undefined, { current_revision: note.current_revision });
+      expected = note.current_revision;
+      if (expected === null || input.baseRevision !== expected)
+        throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409, undefined, {
+          current_revision: note.current_revision,
+          base_revision: input.baseRevision
+        });
+    } else {
+      if (input.baseRevision !== undefined && input.baseRevision !== null)
+        throw new ForgeError("memory_revision_conflict", "Not henüz yok; base_revision gönderilmemeli.", 409, undefined, { base_revision: input.baseRevision });
+      expected = null;
+    }
+    const newRevision = (expected ?? 0) + 1;
+    const canonical = {
+      ...record2,
+      baseRevision: expected,
+      revision: newRevision
+    };
+    const canonicalParsed = parseMemoryDocument(serializeMemoryDocument(canonical));
+    const finalRecord = canonicalParsed.status === "ok" ? canonicalParsed.record : canonical;
+    const fileContent = serializeMemoryDocument(finalRecord);
+    const recordHash = memoryRecordHash(finalRecord);
+    const fileHash = sha256Hex(fileContent);
+    const size = byteSize(fileContent);
+    const published = await publishRevisionFile(this.deps.vaultRoot, input.spaceId, noteId, newRevision, fileHash, fileContent);
+    await this.hooks?.afterPublish?.();
+    const workingPath = noteWorkingPath(this.deps.vaultRoot, input.spaceId, noteId);
+    const existingWorking = await readWorkingCopy(this.deps.vaultRoot, input.spaceId, noteId);
+    let workingConflict = null;
+    let expectedWorkingHash = null;
+    if (note?.current_revision != null) {
+      const previousRevision = await this.db.selectFrom("memory_note_revisions").select(["content_hash"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).where("revision", "=", note.current_revision).executeTakeFirst();
+      expectedWorkingHash = previousRevision?.content_hash ?? null;
+    }
+    if (!existingWorking || existingWorking.hash === expectedWorkingHash || existingWorking.hash === fileHash) {
+      if (!existingWorking || existingWorking.hash !== fileHash) {
+        await atomicWriteFile(workingPath, fileContent, {
+          tempDir: tempDir(this.deps.vaultRoot),
+          vaultRoot: this.deps.vaultRoot
+        });
+      }
+    } else {
+      workingConflict = {
+        previous: expectedWorkingHash,
+        observed: existingWorking.hash
+      };
+    }
+    const now = Date.now();
+    const receipt = {
+      status: "committed",
+      noteId,
+      revision: newRevision,
+      recordHash,
+      fileHash,
+      filePath: published.relativePath,
+      byteSize: size,
+      redacted,
+      indexed: false
+    };
+    try {
+      await this.db.transaction().execute(async (tx) => {
+        const fresh2 = await tx.selectFrom("memory_events").selectAll().where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).executeTakeFirst();
+        if (!fresh2 || fresh2.state !== "pending")
+          throw new ForgeError(fresh2?.state === "committed" ? "memory_event_conflict" : "memory_event_unavailable", "Olay durumu commit sırasında değişti.", 409);
+        const freshNote = await tx.selectFrom("memory_notes").select(["current_revision", "deleted_at"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).executeTakeFirst();
+        if (freshNote?.deleted_at)
+          throw new ForgeError("memory_note_deleted", "Not arşivlenmiş/silinmiş; önce açık restore gerekir.", 409);
+        if ((freshNote?.current_revision ?? null) !== expected)
+          throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+        if (freshNote) {
+          const updated = await tx.updateTable("memory_notes").set({
+            current_revision: newRevision,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            format_version: finalRecord.formatVersion,
+            updated_at: now
+          }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", noteId).where("current_revision", "=", expected).executeTakeFirst();
+          if (Number(updated.numUpdatedRows) !== 1)
+            throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+        } else {
+          await tx.insertInto("memory_notes").values({
+            tenant_id: input.identity.tenantId,
+            space_id: input.spaceId,
+            id: noteId,
+            lifecycle: finalRecord.lifecycle,
+            pinned: finalRecord.pinned ? 1 : 0,
+            task_status: finalRecord.taskStatus,
+            current_revision: newRevision,
+            format_version: finalRecord.formatVersion,
+            title: finalRecord.title,
+            summary: finalRecord.summary,
+            created_at: now,
+            updated_at: now,
+            superseded_by: null,
+            source_id: null,
+            source_path: null,
+            source_hash: null,
+            source_state: "present",
+            deleted_at: null
+          }).execute();
+        }
+        await tx.insertInto("memory_note_revisions").values({
+          tenant_id: input.identity.tenantId,
+          space_id: input.spaceId,
+          note_id: noteId,
+          revision: newRevision,
+          format_version: finalRecord.formatVersion,
+          kind: finalRecord.kind,
+          title: finalRecord.title,
+          summary: finalRecord.summary,
+          body_md: finalRecord.body,
+          metadata_json: JSON.stringify({
+            record_hash: recordHash,
+            client_hash: event.content_hash,
+            redacted
+          }),
+          sources_json: JSON.stringify(finalRecord.sources),
+          base_revision: expected,
+          created_by: input.identity.userId,
+          created_at: now,
+          file_path: published.relativePath,
+          content_hash: fileHash,
+          byte_size: size
+        }).execute();
+        const committedReceipt = {
+          ...receipt,
+          indexed: false
+        };
+        await tx.updateTable("memory_events").set({
+          state: "committed",
+          committed_revision: newRevision,
+          note_id: noteId,
+          receipt_json: JSON.stringify(committedReceipt),
+          error_code: null,
+          attempts: sql16`attempts + 1`,
+          updated_at: now
+        }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).where("state", "=", "pending").execute();
+      });
+    } catch (error) {
+      if (error instanceof ForgeError) {
+        if (error.code === "memory_revision_conflict")
+          await this.removeUnreferencedCandidate(input, noteId, published.relativePath, published.path);
+        throw error;
+      }
+      if (isUniqueViolation(error)) {
+        await this.removeUnreferencedCandidate(input, noteId, published.relativePath, published.path);
+        throw new ForgeError("memory_revision_conflict", "Not başka bir değişiklikle ilerlemiş; güncel sürümü okuyun.", 409);
+      }
+      throw error;
+    }
+    if (workingConflict) {
+      const candidateId = randomUUID22();
+      await this.db.insertInto("memory_change_candidates").values({
+        tenant_id: input.identity.tenantId,
+        id: candidateId,
+        source_id: null,
+        path: workingPath,
+        note_id: noteId,
+        previous_hash: workingConflict.previous,
+        observed_hash: workingConflict.observed,
+        base_revision: expected,
+        state: "conflict",
+        reason: "working_copy_changed",
+        created_at: now,
+        updated_at: now
+      }).execute();
+    }
+    await this.hooks?.afterCommitBeforeIndex?.();
+    let indexed = true;
+    try {
+      await this.markIndexed(input, now);
+    } catch {
+      indexed = false;
+    }
+    await this.cleanupOrphanRevisions(input, noteId).catch(() => {
+      process.stderr.write(`Hafıza yetim revision temizliği ertelendi
+`);
+    });
+    return { ...receipt, status: "committed", indexed };
+  }
+  async markIndexed(input, now) {
+    await this.db.updateTable("memory_events").set({ indexed_at: now, updated_at: now }).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("id", "=", input.eventId).where("indexed_at", "is", null).execute();
+  }
+  async completeReplay(event) {
+    const stored = event.receipt_json ? JSON.parse(event.receipt_json) : null;
+    const receipt = stored ?? await this.reconstructReceipt(event);
+    if (!receipt.filePath)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı.", 409);
+    const absolute = resolveVaultRelative(this.deps.vaultRoot, receipt.filePath);
+    const content = await readTextIfExists(absolute);
+    if (content === null || sha256Hex(content) !== receipt.fileHash)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı veya bozulmuş.", 409);
+    let indexed = event.indexed_at !== null;
+    if (!indexed) {
+      const now = Date.now();
+      try {
+        await this.db.updateTable("memory_events").set({ indexed_at: now, updated_at: now }).where("tenant_id", "=", event.tenant_id).where("space_id", "=", event.space_id).where("id", "=", event.id).where("indexed_at", "is", null).execute();
+        indexed = true;
+      } catch {
+        indexed = false;
+      }
+    }
+    return { ...receipt, status: "duplicate", indexed };
+  }
+  async reconstructReceipt(event) {
+    const revision = event.committed_revision;
+    if (!event.note_id)
+      throw new ForgeError("memory_receipt_unavailable", "Kabul edilmiş receipt yeniden kurulamıyor; olay not bağı taşımıyor.", 409);
+    const row = revision ? await this.db.selectFrom("memory_note_revisions").selectAll().where("tenant_id", "=", event.tenant_id).where("space_id", "=", event.space_id).where("note_id", "=", event.note_id).where("revision", "=", revision).executeTakeFirst() : undefined;
+    if (!row)
+      throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision kaydı bulunamadı.", 409);
+    const metadata = JSON.parse(row.metadata_json);
+    return {
+      status: "committed",
+      noteId: row.note_id,
+      revision: row.revision,
+      recordHash: metadata.record_hash ?? row.content_hash ?? "",
+      fileHash: row.content_hash ?? "",
+      filePath: row.file_path ?? "",
+      byteSize: row.byte_size ?? 0,
+      redacted: false,
+      indexed: event.indexed_at !== null
+    };
+  }
+  async removeUnreferencedCandidate(input, noteId, relativePath, absolutePath) {
+    const referenced = await this.db.selectFrom("memory_note_revisions").select(["revision"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).where("file_path", "=", relativePath).executeTakeFirst();
+    if (!referenced)
+      await removeFileIfExists(absolutePath);
+  }
+  async cleanupOrphanRevisions(input, noteId) {
+    const files = await listRevisionFiles(this.deps.vaultRoot, input.spaceId, noteId);
+    if (files.length === 0)
+      return;
+    const rows = await this.db.selectFrom("memory_note_revisions").select(["file_path"]).where("tenant_id", "=", input.identity.tenantId).where("space_id", "=", input.spaceId).where("note_id", "=", noteId).execute();
+    const referenced = new Set(rows.map((row) => row.file_path).filter((path) => !!path));
+    let cleaned = 0;
+    for (const absolute of files) {
+      if (cleaned >= 50)
+        break;
+      const relative7 = relativeVaultPath(this.deps.vaultRoot, absolute);
+      if (!relative7 || referenced.has(relative7))
+        continue;
+      const content = await readTextIfExists(absolute);
+      await writeQuarantine(this.deps.vaultRoot, {
+        reason: "orphan_revision",
+        hash: content !== null ? sha256Hex(content) : null,
+        path: relative7,
+        summary: "Referanssız revision dosyası karantinaya alındı."
+      });
+      await removeFileIfExists(absolute);
+      cleaned += 1;
+    }
+  }
+  async receipt(identity, spaceId, sourceEventKey) {
+    await this.service.authorizeSpace(identity, spaceId, "read");
+    const event = await this.db.selectFrom("memory_events").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", spaceId).where("source_event_key", "=", sourceEventKey).executeTakeFirst();
+    if (!event)
+      throw new ForgeError("memory_event_unavailable", "Olay bulunamadı.", 404);
+    const payload = event.receipt_json ? JSON.parse(event.receipt_json) : null;
+    if (event.state === "committed") {
+      if (!payload?.filePath)
+        throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı.", 409);
+      const content = await readTextIfExists(resolveVaultRelative(this.deps.vaultRoot, payload.filePath));
+      if (content === null || sha256Hex(content) !== payload.fileHash)
+        throw new ForgeError("memory_revision_file_missing", "Kabul edilmiş revision dosyası bulunamadı veya bozulmuş.", 409);
+    }
+    return {
+      event_id: event.id,
+      state: event.state,
+      indexed: event.indexed_at !== null,
+      committed_revision: event.committed_revision,
+      error_code: event.error_code,
+      receipt: payload
+    };
+  }
+}
+function deriveTitle(content) {
+  for (const line of content.split(`
+`)) {
+    const trimmed = line.trim();
+    if (!trimmed)
+      continue;
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+    const title = (heading ? heading[1] : trimmed).trim();
+    return title.slice(0, 200) || "Not";
+  }
+  return "Not";
+}
+
+// src/memory/job-kinds.ts
+import { z as z11 } from "zod";
+var MEMORY_INGEST_CONTENT_MAX = 48 * 1024;
+var memoryIngestPayloadSchema = z11.object({
+  spaceId: z11.string().min(1).max(200),
+  sourceEventKey: z11.string().min(1).max(200),
+  sourceKind: z11.string().min(1).max(40),
+  contentHash: z11.string().regex(/^[0-9a-f]{64}$/),
+  observedAt: z11.number().int().min(0).optional(),
+  content: z11.string().min(1).max(MEMORY_INGEST_CONTENT_MAX).optional(),
+  noteId: z11.string().min(1).max(200).optional(),
+  baseRevision: z11.number().int().min(0).optional(),
+  kind: z11.enum(MEMORY_KINDS).optional()
+}).strict();
+var memoryReconcilePayloadSchema = z11.object({
+  spaceId: z11.string().min(1).max(200).optional(),
+  limit: z11.number().int().min(1).max(100).default(20)
+}).strict();
+var memoryIngestJobKind = {
+  kind: "memory_ingest",
+  payload: memoryIngestPayloadSchema,
+  skillProfile: false,
+  scope: "memory"
+};
+var memoryReconcileJobKind = {
+  kind: "memory_reconcile",
+  payload: memoryReconcilePayloadSchema,
+  skillProfile: false,
+  scope: "memory"
+};
+var memoryJobKinds = {
+  memory_ingest: memoryIngestJobKind,
+  memory_reconcile: memoryReconcileJobKind
+};
+var productionJobKinds = {
+  ...defaultJobKinds,
+  ...memoryJobKinds
+};
+
+// src/memory/worker.ts
+function memoryIngestHandler(service, commits) {
+  return async (run, signal) => {
+    throwIfAborted(signal);
+    const payload = memoryIngestJobKind.payload.parse(JSON.parse(run.input_json));
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    await service.authorizeRunSpace(run, payload.spaceId, "write");
+    const outcome = await service.recordEvent(identity, payload);
+    if (payload.content !== undefined) {
+      if (!commits)
+        throw new ForgeError("memory_commit_unavailable", "Hafıza commit servisi yapılandırılmadı.", 503);
+      const receipt = await commits.commit({
+        identity,
+        run,
+        spaceId: payload.spaceId,
+        eventId: outcome.event.id,
+        sourceKind: payload.sourceKind,
+        content: payload.content,
+        noteId: payload.noteId ?? null,
+        baseRevision: payload.baseRevision ?? null,
+        kind: payload.kind
+      });
+      throwIfAborted(signal);
+      return {
+        state: "completed",
+        result: { eventId: outcome.event.id, ...receipt }
+      };
+    }
+    throwIfAborted(signal);
+    return {
+      state: "completed",
+      result: { status: outcome.status, eventId: outcome.event.id }
+    };
+  };
+}
+function memoryReconcileHandler(service) {
+  return async (run, signal) => {
+    throwIfAborted(signal);
+    const payload = memoryReconcileJobKind.payload.parse(JSON.parse(run.input_json));
+    const identity = {
+      tenantId: run.tenant_id,
+      userId: run.user_id
+    };
+    if (payload.spaceId)
+      await service.authorizeRunSpace(run, payload.spaceId, "read");
+    const report = await service.reconcile(identity, payload);
+    throwIfAborted(signal);
+    return { state: "completed", result: report };
+  };
+}
+function memoryJobHandlers(service, commits) {
+  return {
+    memory_ingest: memoryIngestHandler(service, commits),
+    memory_reconcile: memoryReconcileHandler(service)
+  };
+}
+function throwIfAborted(signal) {
+  if (signal.aborted)
+    throw new ForgeError("aborted", "Hafıza işi iptal edildi.", 499);
+}
+
 // src/cli/main.ts
 import { parseArgs } from "node:util";
 import {
-  resolve as resolve17,
-  dirname as dirname8,
+  resolve as resolve19,
+  dirname as dirname10,
   basename as basename6,
-  relative as relative5,
-  isAbsolute as isAbsolute3,
-  sep as sep2
+  relative as relative8,
+  isAbsolute as isAbsolute6,
+  sep as sep4
 } from "node:path";
 
 // src/application/deletion.ts
-import { createHash as createHash15, randomUUID as randomUUID19 } from "node:crypto";
-import { sql as sql15 } from "kysely";
+import { createHash as createHash17, randomUUID as randomUUID23 } from "node:crypto";
+import { sql as sql17 } from "kysely";
 
 // src/skills/remove.ts
-import { constants as constants3 } from "node:fs";
-import { open as open7, lstat as lstat9, readdir as readdir4, unlink as unlink3, rmdir as rmdir2 } from "node:fs/promises";
-import { resolve as resolve14, join as join14, basename as basename3 } from "node:path";
-import { createHash as createHash14 } from "node:crypto";
+import { constants as constants4 } from "node:fs";
+import { open as open9, lstat as lstat10, readdir as readdir5, unlink as unlink3, rmdir as rmdir2 } from "node:fs/promises";
+import { resolve as resolve15, join as join16, basename as basename3 } from "node:path";
+import { createHash as createHash16 } from "node:crypto";
 async function removeRevision(root, tenant, path, skillId, revision) {
   if (process.platform !== "linux")
     throw new ForgeError("safe_delete_unavailable", "Bu platformda güvenli kalıcı silme adapter'ı hazır değil.", 503);
   validatePackagePath(path);
-  if (!path.startsWith(`tenants/${createHash14("sha256").update(tenant).digest("hex")}/packages/`))
+  if (!path.startsWith(`tenants/${createHash16("sha256").update(tenant).digest("hex")}/packages/`))
     throw new ForgeError("unsafe_path", "Silme yolu tenant paket köküne ait değil.");
   const parts = path.split("/");
   if (parts.length !== 8 || !/^[a-f0-9]{20}$/.test(parts[3]) || parts[4] !== skillId || parts[5] !== "revisions" || parts[6] !== revision || !/^[a-f0-9]{64}$/.test(revision))
     throw new ForgeError("unsafe_path", "Silme yolu beklenen skill/revision kimliğiyle eşleşmiyor.");
-  root = resolve14(root);
+  root = resolve15(root);
   const handles = [];
   try {
     let current = "/";
@@ -7077,29 +8909,29 @@ async function removeRevision(root, tenant, path, skillId, revision) {
       ...path.split("/").slice(0, -1)
     ]) {
       if (segment)
-        current = join14(current, segment);
-      const handle = await open7(current, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
+        current = join16(current, segment);
+      const handle = await open9(current, constants4.O_RDONLY | constants4.O_DIRECTORY | constants4.O_NOFOLLOW);
       handles.push(handle);
       current = `/proc/self/fd/${handle.fd}`;
     }
-    const target = join14(current, basename3(path));
-    const stat = await lstat9(target);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
+    const target = join16(current, basename3(path));
+    const stat2 = await lstat10(target);
+    if (!stat2.isDirectory() || stat2.isSymbolicLink())
       throw new ForgeError("unsafe_path", "Revision dizini yönlendirilmiş.");
     let visited = 0;
     async function erase(parent, name) {
       if (++visited > 1e4)
         throw new ForgeError("cleanup_limit", "Revision temizlik sınırı aşıldı.");
       try {
-        const child = join14(parent, name), info = await lstat9(child);
+        const child = join16(parent, name), info = await lstat10(child);
         if (!info.isDirectory() || info.isSymbolicLink()) {
           await unlink3(child);
           return;
         }
-        const handle = await open7(child, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
+        const handle = await open9(child, constants4.O_RDONLY | constants4.O_DIRECTORY | constants4.O_NOFOLLOW);
         try {
           const anchor = `/proc/self/fd/${handle.fd}`;
-          for (const entry of await readdir4(anchor))
+          for (const entry of await readdir5(anchor))
             await erase(anchor, entry);
         } finally {
           await handle.close();
@@ -7178,7 +9010,7 @@ class DeletionService {
     for (const item of input.items)
       try {
         const row = await this.check(this.storage.db, actor, input.project_ref, item, now);
-        const count = await this.storage.db.selectFrom("skill_revisions").select(sql15`count(*)`.as("n")).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).executeTakeFirstOrThrow();
+        const count = await this.storage.db.selectFrom("skill_revisions").select(sql17`count(*)`.as("n")).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).executeTakeFirstOrThrow();
         items.push({
           revision_count: Number(count.n),
           skill_id: row.id,
@@ -7247,10 +9079,10 @@ class DeletionService {
     const items = [];
     for (const item of input.items)
       try {
-        const hash3 = createHash15("sha256").update(JSON.stringify({ action: "delete", item })).digest("hex");
+        const hash3 = createHash17("sha256").update(JSON.stringify({ action: "delete", item })).digest("hex");
         const dbNow = await this.storage.now();
         await this.storage.db.transaction().execute(async (tx) => {
-          await tx.updateTable("tenants").set({ name: sql15`name` }).where("id", "=", actor.tenantId).execute();
+          await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
           await new IdentityService(tx).authorize(actor, "write", input.project_ref);
           const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
           if (receipt) {
@@ -7265,7 +9097,7 @@ class DeletionService {
           if (!changed)
             throw new ForgeError("revision_conflict", "Paket başka işlemle değişti.", 409);
           const now = Date.now();
-          await sql15`INSERT INTO package_gc (tenant_id, skill_id, revision, package_path, state, updated_at) SELECT tenant_id, skill_id, revision, package_path, 'pending', ${now} FROM skill_revisions WHERE tenant_id=${actor.tenantId} AND skill_id=${row.id}`.execute(tx);
+          await sql17`INSERT INTO package_gc (tenant_id, skill_id, revision, package_path, state, updated_at) SELECT tenant_id, skill_id, revision, package_path, 'pending', ${now} FROM skill_revisions WHERE tenant_id=${actor.tenantId} AND skill_id=${row.id}`.execute(tx);
           await tx.deleteFrom("skill_revisions").where("tenant_id", "=", actor.tenantId).where("skill_id", "=", row.id).execute();
           await tx.deleteFrom("skills").where("tenant_id", "=", actor.tenantId).where("id", "=", row.id).execute();
           await tx.insertInto("package_deletions").values({
@@ -7290,7 +9122,7 @@ class DeletionService {
           }).execute();
           await tx.insertInto("audit_events").values({
             tenant_id: actor.tenantId,
-            id: randomUUID19(),
+            id: randomUUID23(),
             user_id: actor.userId,
             project_id: input.project_ref,
             kind: "maintenance.delete",
@@ -7379,9 +9211,9 @@ class Throttle {
 }
 
 // src/migration/http.ts
-import { z as z10 } from "zod";
-var sha2 = z10.string().regex(/^[a-f0-9]{64}$/);
-var kind = z10.enum(["package"]);
+import { z as z12 } from "zod";
+var sha2 = z12.string().regex(/^[a-f0-9]{64}$/);
+var kind = z12.enum(["package"]);
 function decode(text, max) {
   if (text.length > Math.ceil(max / 3) * 4 || text.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(text))
     throw new ForgeError("invalid_transfer", "Aktarım base64 kodlaması veya boyutu geçersiz.");
@@ -7392,17 +9224,17 @@ function decode(text, max) {
 }
 function registerMigrationHttp(app, storage, identity, store) {
   app.post("/api/migrations/import", { bodyLimit: 24 * 1024 * 1024 }, async (request) => {
-    const body = z10.object({
+    const body = z12.object({
       kind,
-      project_ref: z10.string().min(1),
+      project_ref: z12.string().min(1),
       source_id: sha2,
       checksum: sha2,
-      content_base64: z10.string().max(23 * 1024 * 1024),
-      scope: z10.enum(["personal", "project"]).optional(),
-      flags: z10.object({
-        managed: z10.boolean(),
-        protected: z10.boolean(),
-        pinned: z10.boolean()
+      content_base64: z12.string().max(23 * 1024 * 1024),
+      scope: z12.enum(["personal", "project"]).optional(),
+      flags: z12.object({
+        managed: z12.boolean(),
+        protected: z12.boolean(),
+        pinned: z12.boolean()
       }).strict().optional()
     }).strict().parse(request.body);
     const actor = identity(request);
@@ -7419,15 +9251,15 @@ function registerMigrationHttp(app, storage, identity, store) {
     }, bytes);
   });
   app.post("/api/migrations/:kind/:id/rollback", async (request) => {
-    const params = z10.object({ kind, id: sha2 }).parse(request.params), actor = identity(request);
+    const params = z12.object({ kind, id: sha2 }).parse(request.params), actor = identity(request);
     return new MigrationImporter(store(actor, "")).rollback(actor, params.id);
   });
 }
 
 // src/application/members.ts
-import { randomUUID as randomUUID20 } from "node:crypto";
-import { sql as sql16 } from "kysely";
-import { z as z11 } from "zod";
+import { randomUUID as randomUUID24 } from "node:crypto";
+import { sql as sql18 } from "kysely";
+import { z as z13 } from "zod";
 class MemberService {
   db;
   constructor(db) {
@@ -7450,17 +9282,17 @@ class MemberService {
     };
   }
   async create(actor, raw) {
-    const input = z11.object({
-      subject: z11.string().min(1).max(1000),
-      display_name: z11.string().min(1).max(200),
-      role: z11.string().min(1).max(64)
+    const input = z13.object({
+      subject: z13.string().min(1).max(1000),
+      display_name: z13.string().min(1).max(200),
+      role: z13.string().min(1).max(64)
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
       const actorRole = await new IdentityService(tx).authorize(actor, "admin");
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
       await tx.insertInto("users").values({
-        id: randomUUID20(),
+        id: randomUUID24(),
         subject: input.subject,
         display_name: input.display_name,
         created_at: Date.now()
@@ -7475,7 +9307,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: null,
-        id: randomUUID20(),
+        id: randomUUID24(),
         kind: "member.provisioned",
         detail: JSON.stringify({
           target_user_id: user.id,
@@ -7487,16 +9319,16 @@ class MemberService {
     });
   }
   async update(actor, target, raw) {
-    const input = z11.object({
-      project_ref: z11.string().min(1).max(100),
-      generation: z11.number().int().nonnegative(),
-      project_generation: z11.number().int().nonnegative().nullable(),
-      role: z11.string().min(1).max(64),
-      disabled: z11.boolean(),
-      project_role: z11.enum(["writer", "reader"]).nullable()
+    const input = z13.object({
+      project_ref: z13.string().min(1).max(100),
+      generation: z13.number().int().nonnegative(),
+      project_generation: z13.number().int().nonnegative().nullable(),
+      role: z13.string().min(1).max(64),
+      disabled: z13.boolean(),
+      project_role: z13.enum(["writer", "reader"]).nullable()
     }).strict().parse(raw);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql16`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
       const actorRole = await new IdentityService(tx).authorize(actor, "admin", input.project_ref);
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
       const member = await tx.selectFrom("memberships").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).executeTakeFirst();
@@ -7531,7 +9363,7 @@ class MemberService {
         state: "cancelled",
         error_code: "permission_revoked",
         lease_until: 0,
-        fence: sql16`fence + 1`,
+        fence: sql18`fence + 1`,
         updated_at: Date.now()
       }).where("tenant_id", "=", actor.tenantId).where("user_id", "=", target).where("state", "not in", terminalStates);
       let cancelled = [];
@@ -7547,7 +9379,7 @@ class MemberService {
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: input.project_ref,
-        id: randomUUID20(),
+        id: randomUUID24(),
         kind: "member.updated",
         detail: JSON.stringify({
           target_user_id: target,
@@ -7564,9 +9396,9 @@ class MemberService {
 }
 
 // src/application/organization.ts
-import { randomBytes as randomBytes6, randomUUID as randomUUID21, createHash as createHash16 } from "node:crypto";
-import { sql as sql17 } from "kysely";
-import { z as z12 } from "zod";
+import { randomBytes as randomBytes6, randomUUID as randomUUID25, createHash as createHash18 } from "node:crypto";
+import { sql as sql19 } from "kysely";
+import { z as z14 } from "zod";
 var INVITE_TTL_MAX_MS = 30 * 86400000;
 var INVITE_TTL_DEFAULT_MS = 7 * 86400000;
 var INVITE_PENDING_LIMIT = 50;
@@ -7619,7 +9451,7 @@ var TENANT_TABLES = [
 function audit(tx, entry) {
   return tx.insertInto("audit_events").values({
     tenant_id: entry.tenant_id,
-    id: randomUUID21(),
+    id: randomUUID25(),
     user_id: entry.user_id,
     project_id: entry.project_id ?? null,
     kind: entry.kind,
@@ -7642,7 +9474,7 @@ class OrganizationService {
       throw new ForgeError("invalid_organization", "Organizasyon adı 1–200 karakter olmalıdır.");
     return this.db.transaction().execute(async (tx) => {
       const tenant = {
-        id: randomUUID21(),
+        id: randomUUID25(),
         name: clean,
         created_at: Date.now()
       };
@@ -7664,12 +9496,12 @@ class OrganizationService {
     });
   }
   async createInvite(actor, raw) {
-    const input = z12.object({
-      role: z12.string().min(1).max(64),
-      ttlMs: z12.number().int().positive().max(INVITE_TTL_MAX_MS).optional()
+    const input = z14.object({
+      role: z14.string().min(1).max(64),
+      ttlMs: z14.number().int().positive().max(INVITE_TTL_MAX_MS).optional()
     }).strict().parse({ role: raw.role, ttlMs: raw.ttlMs });
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const actorRole = await auth.authorize(actor, "admin");
       await RoleService.assertGrantable(tx, actor.tenantId, actorRole, input.role);
@@ -7683,8 +9515,8 @@ class OrganizationService {
       const token = randomBytes6(32).toString("base64url");
       const invite = {
         tenant_id: actor.tenantId,
-        id: randomUUID21(),
-        token_hash: createHash16("sha256").update(token).digest("hex"),
+        id: randomUUID25(),
+        token_hash: createHash18("sha256").update(token).digest("hex"),
         role: input.role,
         invited_by: actor.userId,
         expires_at: now + (input.ttlMs ?? INVITE_TTL_DEFAULT_MS),
@@ -7743,7 +9575,7 @@ class OrganizationService {
   }
   async revokeInvite(actor, id) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       await new IdentityService(tx).authorize(actor, "admin");
       const updated = await tx.updateTable("invitations").set({ revoked: 1 }).where("tenant_id", "=", actor.tenantId).where("id", "=", id).where("revoked", "=", 0).where("accepted_at", "is", null).executeTakeFirst();
       if (Number(updated.numUpdatedRows ?? 0) < 1)
@@ -7758,12 +9590,12 @@ class OrganizationService {
     });
   }
   async acceptInvite(raw) {
-    const input = z12.object({
-      token: z12.string().min(20).max(200),
-      subject: z12.string().min(1).max(1000),
-      display_name: z12.string().min(1).max(200)
+    const input = z14.object({
+      token: z14.string().min(20).max(200),
+      subject: z14.string().min(1).max(1000),
+      display_name: z14.string().min(1).max(200)
     }).strict().parse(raw);
-    const tokenHash = createHash16("sha256").update(input.token).digest("hex");
+    const tokenHash = createHash18("sha256").update(input.token).digest("hex");
     return this.db.transaction().execute(async (tx) => {
       const invite = await tx.selectFrom("invitations").selectAll().where("token_hash", "=", tokenHash).executeTakeFirst();
       if (!invite)
@@ -7775,7 +9607,7 @@ class OrganizationService {
       if (invite.expires_at <= Date.now())
         throw new ForgeError("invite_expired", "Davetin süresi dolmuş.", 410);
       await tx.insertInto("users").values({
-        id: randomUUID21(),
+        id: randomUUID25(),
         subject: input.subject,
         display_name: input.display_name,
         created_at: Date.now()
@@ -7822,7 +9654,7 @@ class OrganizationService {
     if (toUserId === actor.userId)
       throw new ForgeError("transfer_self_denied", "Devir kendine yapılamaz.");
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -7837,7 +9669,7 @@ class OrganizationService {
       const now = Date.now();
       const offer = {
         tenant_id: actor.tenantId,
-        id: randomUUID21(),
+        id: randomUUID25(),
         to_user_id: toUserId,
         created_by: actor.userId,
         expires_at: now + TRANSFER_TTL_MS,
@@ -7856,7 +9688,7 @@ class OrganizationService {
   }
   async acceptTransfer(actor, offerId) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const offer = await tx.selectFrom("transfer_offers").selectAll().where("tenant_id", "=", actor.tenantId).where("id", "=", offerId).executeTakeFirst();
       if (!offer || offer.accepted_at)
         throw new ForgeError("transfer_invalid", "Devir teklifi geçersiz.", 404);
@@ -7890,7 +9722,7 @@ class OrganizationService {
   async requestDeletion(actor, name) {
     const clean = name.trim();
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -7919,7 +9751,7 @@ class OrganizationService {
         state: "cancelled",
         error_code: "deletion_frozen",
         lease_until: 0,
-        fence: sql17`fence + 1`,
+        fence: sql19`fence + 1`,
         updated_at: now
       }).where("tenant_id", "=", actor.tenantId).where("state", "not in", terminalStates).returning("id").execute();
       if (cancelled.length)
@@ -7933,7 +9765,7 @@ class OrganizationService {
   }
   async cancelDeletion(actor) {
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -7951,7 +9783,7 @@ class OrganizationService {
   async confirmDeletion(actor, name) {
     const clean = name.trim();
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql17`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       const role = await auth.authorize(actor, "read");
       if (role !== "founder")
@@ -7974,26 +9806,26 @@ class OrganizationService {
 }
 
 // src/application/bindings.ts
-import { stat, realpath as realpath3 } from "node:fs/promises";
-import { basename as basename4, resolve as resolve15 } from "node:path";
-import { z as z13 } from "zod";
-import { sql as sql18 } from "kysely";
-var inputSchema = z13.object({
-  project_id: z13.string().min(1).max(100),
-  client_id: z13.string().min(1).max(200),
-  path: z13.string().min(1).max(4096),
-  local_name: z13.string().min(1).max(200).optional()
+import { stat as stat2, realpath as realpath4 } from "node:fs/promises";
+import { basename as basename4, resolve as resolve16 } from "node:path";
+import { z as z15 } from "zod";
+import { sql as sql20 } from "kysely";
+var inputSchema = z15.object({
+  project_id: z15.string().min(1).max(100),
+  client_id: z15.string().min(1).max(200),
+  path: z15.string().min(1).max(4096),
+  local_name: z15.string().min(1).max(200).optional()
 });
 async function fingerprint(path) {
   let canonical;
   try {
-    canonical = await realpath3(path);
+    canonical = await realpath4(path);
   } catch {
     throw new ForgeError("binding_unavailable", "Yerel dizin okunamadı.", 422);
   }
   let info;
   try {
-    info = await stat(canonical);
+    info = await stat2(canonical);
   } catch {
     throw new ForgeError("binding_unavailable", "Yerel dizin okunamadı.", 422);
   }
@@ -8012,10 +9844,10 @@ class BindingService {
   }
   async bind(actor, raw) {
     const input = inputSchema.strict().parse(raw);
-    const { canonical, print } = await fingerprint(resolve15(input.path));
+    const { canonical, print } = await fingerprint(resolve16(input.path));
     const localName = input.local_name ?? basename4(canonical);
     return this.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql18`name` }).where("id", "=", actor.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql20`name` }).where("id", "=", actor.tenantId).execute();
       const auth = new IdentityService(tx);
       await auth.authorize(actor, "write", input.project_id);
       await tx.insertInto("project_bindings").values({
@@ -8038,19 +9870,19 @@ class BindingService {
     });
   }
   async verify(actor, raw) {
-    const input = z13.object({
-      client_id: z13.string().min(1).max(200),
-      path: z13.string().min(1).max(4096)
+    const input = z15.object({
+      client_id: z15.string().min(1).max(200),
+      path: z15.string().min(1).max(4096)
     }).strict().parse(raw);
     await new IdentityService(this.db).authorize(actor, "read");
     let canonical = null;
     try {
-      canonical = await realpath3(resolve15(input.path));
+      canonical = await realpath4(resolve16(input.path));
     } catch {
       canonical = null;
     }
     const lookup = (path) => this.db.selectFrom("project_bindings").select(["project_id", "local_name", "fs_fingerprint"]).where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("client_id", "=", input.client_id).where("path", "=", path).executeTakeFirst();
-    const row = canonical ? await lookup(canonical) : await lookup(resolve15(input.path));
+    const row = canonical ? await lookup(canonical) : await lookup(resolve16(input.path));
     if (!row)
       return { status: "unbound" };
     if (!canonical)
@@ -8088,7 +9920,7 @@ class BindingService {
 }
 
 // src/application/telemetry.ts
-import { randomUUID as randomUUID22 } from "node:crypto";
+import { randomUUID as randomUUID26 } from "node:crypto";
 
 // src/telemetry/redact.ts
 var sensitive = /authorization|cookie|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key/i;
@@ -8215,7 +10047,7 @@ class TelemetryService {
     });
     if (result.scrubbed_runs + result.deleted_events + result.deleted_lessons + result.deleted_observations)
       await this.storage.db.insertInto("audit_events").values({
-        id: randomUUID22(),
+        id: randomUUID26(),
         tenant_id: actor.tenantId,
         user_id: actor.userId,
         project_id: project,
@@ -8255,19 +10087,19 @@ class TelemetryService {
 }
 
 // src/application/maintenance.ts
-import { createHash as createHash17, randomUUID as randomUUID23 } from "node:crypto";
-import { sql as sql19 } from "kysely";
-import { z as z14 } from "zod";
-var itemSchema = z14.object({
-  skill_id: z14.string().min(1).max(100),
-  revision: z14.string().regex(/^[a-f0-9]{64}$/),
-  updated_at: z14.number().int().nonnegative()
+import { createHash as createHash19, randomUUID as randomUUID27 } from "node:crypto";
+import { sql as sql21 } from "kysely";
+import { z as z16 } from "zod";
+var itemSchema = z16.object({
+  skill_id: z16.string().min(1).max(100),
+  revision: z16.string().regex(/^[a-f0-9]{64}$/),
+  updated_at: z16.number().int().nonnegative()
 }).strict();
-var maintenanceSchema = z14.object({
-  project_ref: z14.string().min(1).max(100),
-  operation_id: z14.string().min(1).max(200),
-  action: z14.enum(["archive", "restore", "delete"]),
-  items: z14.array(itemSchema).min(1).max(100)
+var maintenanceSchema = z16.object({
+  project_ref: z16.string().min(1).max(100),
+  operation_id: z16.string().min(1).max(200),
+  action: z16.enum(["archive", "restore", "delete"]),
+  items: z16.array(itemSchema).min(1).max(100)
 }).strict();
 
 class MaintenanceService {
@@ -8294,13 +10126,13 @@ class MaintenanceService {
   }
   async report(actor, project, options = {}) {
     await new IdentityService(this.storage.db).authorize(actor, "read", project);
-    const days = z14.number().int().min(1).max(365).parse(options.days ?? 30), since = Date.now() - days * 86400000;
+    const days = z16.number().int().min(1).max(365).parse(options.days ?? 30), since = Date.now() - days * 86400000;
     let query = this.storage.db.selectFrom("skills").selectAll().where("tenant_id", "=", actor.tenantId).where("scope_key", "in", await visibleScopes(this.storage.db, actor, project));
     if (options.after)
       query = query.where("id", ">", options.after);
     if (options.state && options.state !== "all")
       query = query.where("archived", "=", options.state === "archived" ? 1 : 0);
-    const limit2 = z14.number().int().min(1).max(50).parse(options.limit ?? 50);
+    const limit2 = z16.number().int().min(1).max(50).parse(options.limit ?? 50);
     const rows = await query.orderBy("id").limit(limit2 + 1).execute();
     const selected = rows.slice(0, limit2), ids = selected.map((s) => s.id);
     const counts = ids.length ? await this.storage.db.selectFrom("skill_observations").select(["skill_id", "kind"]).select((eb) => [
@@ -8390,9 +10222,9 @@ class MaintenanceService {
     for (const item of input.items) {
       try {
         items.push(await this.storage.db.transaction().execute(async (tx) => {
-          await tx.updateTable("tenants").set({ name: sql19`name` }).where("id", "=", actor.tenantId).execute();
+          await tx.updateTable("tenants").set({ name: sql21`name` }).where("id", "=", actor.tenantId).execute();
           await new IdentityService(tx).authorize(actor, "write", input.project_ref);
-          const hash3 = createHash17("sha256").update(JSON.stringify({ action, item })).digest("hex");
+          const hash3 = createHash19("sha256").update(JSON.stringify({ action, item })).digest("hex");
           const receipt = await tx.selectFrom("maintenance_items").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", input.project_ref).where("operation_id", "=", input.operation_id).where("skill_id", "=", item.skill_id).executeTakeFirst();
           if (receipt) {
             const skill = await this.skill(tx, actor, input.project_ref, item.skill_id);
@@ -8427,7 +10259,7 @@ class MaintenanceService {
             tenant_id: actor.tenantId,
             user_id: actor.userId,
             project_id: input.project_ref,
-            id: randomUUID23(),
+            id: randomUUID27(),
             kind: `maintenance.${action}`,
             detail: JSON.stringify({
               ...result,
@@ -8450,9 +10282,9 @@ class MaintenanceService {
 }
 
 // src/application/packages.ts
-import { sql as sql20 } from "kysely";
-import { z as z15 } from "zod";
-import { createHash as createHash18, randomUUID as randomUUID24 } from "node:crypto";
+import { sql as sql22 } from "kysely";
+import { z as z17 } from "zod";
+import { createHash as createHash20, randomUUID as randomUUID28 } from "node:crypto";
 class PackageManager {
   store;
   constructor(store) {
@@ -8477,13 +10309,13 @@ class PackageManager {
     });
   }
   async edit(identity, skillId, raw) {
-    const input = z15.object({
-      base_revision: z15.string().regex(/^[a-f0-9]{64}$/),
-      rebase: z15.boolean().default(false),
-      changes: z15.array(z15.object({
-        path: z15.string().max(240),
-        original_hash: z15.string().regex(/^[a-f0-9]{64}$/).nullable(),
-        content: z15.string().max(1024 * 1024).nullable()
+    const input = z17.object({
+      base_revision: z17.string().regex(/^[a-f0-9]{64}$/),
+      rebase: z17.boolean().default(false),
+      changes: z17.array(z17.object({
+        path: z17.string().max(240),
+        original_hash: z17.string().regex(/^[a-f0-9]{64}$/).nullable(),
+        content: z17.string().max(1024 * 1024).nullable()
       }).strict()).min(1).max(16)
     }).strict().parse(raw);
     const skill = await this.store.authorizedSkill(identity, skillId, true);
@@ -8495,7 +10327,7 @@ class PackageManager {
     for (const change of input.changes) {
       validatePackagePath(change.path);
       const current = loaded.files[change.path];
-      const hash3 = current ? createHash18("sha256").update(current).digest("hex") : null;
+      const hash3 = current ? createHash20("sha256").update(current).digest("hex") : null;
       if (hash3 !== change.original_hash)
         throw new ForgeError("file_conflict", "Dosya okunmuş taban hash'i ile eşleşmiyor.", 409);
       if (change.content === null)
@@ -8524,13 +10356,13 @@ class PackageManager {
     return { scope: "personal" };
   }
   async configure(identity, skillId, raw) {
-    const input = z15.object({
-      base_revision: z15.string().regex(/^[a-f0-9]{64}$/),
-      base_updated_at: z15.number().int().nonnegative().optional(),
-      managed: z15.boolean().optional(),
-      pinned: z15.boolean().optional(),
-      protected: z15.boolean().optional(),
-      archived: z15.boolean().optional()
+    const input = z17.object({
+      base_revision: z17.string().regex(/^[a-f0-9]{64}$/),
+      base_updated_at: z17.number().int().nonnegative().optional(),
+      managed: z17.boolean().optional(),
+      pinned: z17.boolean().optional(),
+      protected: z17.boolean().optional(),
+      archived: z17.boolean().optional()
     }).strict().parse(raw);
     const skill = await this.store.authorizedSkill(identity, skillId, true);
     if (input.archived && (skill.protected || skill.pinned || !skill.managed))
@@ -8542,13 +10374,13 @@ class PackageManager {
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => key !== "base_revision" && key !== "base_updated_at").map(([key, value]) => [key, value ? 1 : 0]));
       const result = await tx.updateTable("skills").set({
         ...patch,
-        updated_at: sql20`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
+        updated_at: sql22`case when updated_at >= ${Date.now()} then updated_at + 1 else ${Date.now()} end`
       }).where("tenant_id", "=", identity.tenantId).where("id", "=", skillId).where("active_revision", "=", input.base_revision).where("updated_at", "=", skill.updated_at).returningAll().executeTakeFirst();
       if (!result)
         throw new ForgeError("revision_conflict", "Paket yapılandırılırken aktif sürüm değişti.", 409);
       await tx.insertInto("audit_events").values({
         tenant_id: identity.tenantId,
-        id: randomUUID24(),
+        id: randomUUID28(),
         user_id: identity.userId,
         project_id: skill.project_id,
         kind: "skill.configured",
@@ -8574,18 +10406,18 @@ class PackageManager {
 import { basename as basename5 } from "node:path";
 
 // src/application/execution-results.ts
-import { mkdir as mkdir9, open as open8 } from "node:fs/promises";
-import { join as join15 } from "node:path";
-import { randomUUID as randomUUID25 } from "node:crypto";
+import { mkdir as mkdir10, open as open10 } from "node:fs/promises";
+import { join as join17 } from "node:path";
+import { randomUUID as randomUUID29 } from "node:crypto";
 async function storeExecutionResult(dataDir, id, executed) {
   const bytes = Buffer.from(JSON.stringify(executed.result));
   const artifacts = [...executed.artifacts];
   let resultPath;
   if (bytes.length > 8192) {
-    resultPath = `forge-result-${randomUUID25()}.json`;
-    const directory = join15(dataDir, "execution", executed.execution_id, "artifacts");
-    await mkdir9(directory, { recursive: true, mode: 448 });
-    const fd = await open8(join15(directory, resultPath), "wx", 384);
+    resultPath = `forge-result-${randomUUID29()}.json`;
+    const directory = join17(dataDir, "execution", executed.execution_id, "artifacts");
+    await mkdir10(directory, { recursive: true, mode: 448 });
+    const fd = await open10(join17(directory, resultPath), "wx", 384);
     try {
       await fd.writeFile(bytes);
       await fd.sync();
@@ -8671,16 +10503,16 @@ function byteChunk(bytes, offset) {
 }
 
 // src/telemetry/observations.ts
-import { randomUUID as randomUUID26 } from "node:crypto";
-import { sql as sql21 } from "kysely";
-async function observe(db, actor, project, kind2, items, correlation = randomUUID26()) {
+import { randomUUID as randomUUID30 } from "node:crypto";
+import { sql as sql23 } from "kysely";
+async function observe(db, actor, project, kind2, items, correlation = randomUUID30()) {
   if (!items.length)
     return;
   const rows = items.map((item) => ({
     tenant_id: actor.tenantId,
     user_id: actor.userId,
     project_id: project,
-    id: randomUUID26(),
+    id: randomUUID30(),
     skill_id: item.skill_id,
     revision: item.revision,
     kind: kind2,
@@ -8721,8 +10553,8 @@ class ObservationBatch {
     if (this.outstanding >= 128)
       return Promise.reject(new ForgeError("observation_capacity", "Gözlem yazma kapasitesi dolu; yeniden deneyin.", 429));
     this.outstanding++;
-    const result = new Promise((resolve16, reject) => {
-      this.queue.push({ rows, resolve: resolve16, reject });
+    const result = new Promise((resolve17, reject) => {
+      this.queue.push({ rows, resolve: resolve17, reject });
     });
     this.schedule();
     return result;
@@ -8748,14 +10580,14 @@ class ObservationBatch {
     try {
       await this.db.transaction().execute(async (tx) => {
         for (const item of group) {
-          await sql21`savepoint forge_observation`.execute(tx);
+          await sql23`savepoint forge_observation`.execute(tx);
           try {
             await insert(tx, item.rows);
           } catch (error) {
-            await sql21`rollback to savepoint forge_observation`.execute(tx);
+            await sql23`rollback to savepoint forge_observation`.execute(tx);
             errors.set(item, error);
           }
-          await sql21`release savepoint forge_observation`.execute(tx);
+          await sql23`release savepoint forge_observation`.execute(tx);
         }
       });
       for (const item of group) {
@@ -8776,7 +10608,7 @@ class ObservationBatch {
 }
 
 // src/application/run-reports.ts
-import { createHash as createHash19 } from "node:crypto";
+import { createHash as createHash21 } from "node:crypto";
 class RunReports {
   queue;
   cursors;
@@ -8825,7 +10657,7 @@ class RunReports {
         const resultBytes = Buffer.from(run.result_json ?? "null");
         const resultBinding = [
           ...binding,
-          createHash19("sha256").update(resultBytes).digest("hex")
+          createHash21("sha256").update(resultBytes).digest("hex")
         ];
         const chunk = byteChunk(resultBytes, value.cursor ? this.cursors.decode(value.cursor, resultBinding) : 0);
         return {
@@ -8855,64 +10687,64 @@ class RunReports {
 }
 
 // src/application/forge.ts
-import { join as join16 } from "node:path";
-import { createHash as createHash20, randomUUID as randomUUID27 } from "node:crypto";
-import { sql as sql22 } from "kysely";
+import { join as join18 } from "node:path";
+import { createHash as createHash22, randomUUID as randomUUID31 } from "node:crypto";
+import { sql as sql24 } from "kysely";
 
 // src/domain/tool-contracts.ts
-import { z as z16 } from "zod";
-var ref = z16.string().min(1).max(100);
-var revision = z16.string().regex(/^[a-f0-9]{64}$/);
-var key = z16.string().min(1).max(200);
+import { z as z18 } from "zod";
+var ref = z18.string().min(1).max(100);
+var revision = z18.string().regex(/^[a-f0-9]{64}$/);
+var key = z18.string().min(1).max(200);
 var toolSchemas = {
-  forge_search: z16.object({
+  forge_search: z18.object({
     project_ref: ref,
-    query: z16.string().max(200).default(""),
-    scope: z16.enum(["personal", "project", "workspace", "environment"]).optional(),
-    limit: z16.number().int().min(1).max(20).default(5),
-    cursor: z16.string().max(3000).optional()
+    query: z18.string().max(200).default(""),
+    scope: z18.enum(["personal", "project", "workspace", "environment"]).optional(),
+    limit: z18.number().int().min(1).max(20).default(5),
+    cursor: z18.string().max(3000).optional()
   }).strict(),
-  forge_load: z16.object({
+  forge_load: z18.object({
     project_ref: ref,
     skill_id: ref,
     revision,
-    path: z16.string().max(240).default("SKILL.md"),
-    inventory: z16.boolean().default(false),
-    cursor: z16.string().max(3000).optional()
+    path: z18.string().max(240).default("SKILL.md"),
+    inventory: z18.boolean().default(false),
+    cursor: z18.string().max(3000).optional()
   }).strict(),
-  forge_run: z16.object({
+  forge_run: z18.object({
     project_ref: ref,
     skill_id: ref,
     revision,
-    entrypoint: z16.string().max(64),
-    args: z16.record(z16.string(), z16.unknown()),
+    entrypoint: z18.string().max(64),
+    args: z18.record(z18.string(), z18.unknown()),
     idempotency_key: key
   }).strict(),
-  forge_handoff: z16.object({
+  forge_handoff: z18.object({
     project_ref: ref,
-    summary: z16.string().min(1).max(8000),
+    summary: z18.string().min(1).max(8000),
     idempotency_key: key,
-    source: z16.object({
-      client: z16.string().max(100),
-      session: z16.string().max(200).optional()
+    source: z18.object({
+      client: z18.string().max(100),
+      session: z18.string().max(200).optional()
     }).strict(),
-    evidence: z16.array(z16.object({
-      kind: z16.enum(["test", "command", "observation"]),
-      summary: z16.string().max(2000),
-      reference: z16.string().max(500).optional()
+    evidence: z18.array(z18.object({
+      kind: z18.enum(["test", "command", "observation"]),
+      summary: z18.string().max(2000),
+      reference: z18.string().max(500).optional()
     }).strict()).max(12).default([])
   }).strict(),
-  forge_report: z16.object({
+  forge_report: z18.object({
     project_ref: ref,
     run_id: ref.optional(),
-    section: z16.enum(["jobs", "maintenance", "execution"]).default("jobs"),
+    section: z18.enum(["jobs", "maintenance", "execution"]).default("jobs"),
     execution_id: ref.optional(),
-    artifact_reference: z16.string().max(3000).optional(),
-    result_content: z16.boolean().default(false),
-    observation_days: z16.number().int().min(1).max(365).optional(),
-    state: z16.string().max(30).optional(),
-    limit: z16.number().int().min(1).max(20).default(10),
-    cursor: z16.string().max(3000).optional()
+    artifact_reference: z18.string().max(3000).optional(),
+    result_content: z18.boolean().default(false),
+    observation_days: z18.number().int().min(1).max(365).optional(),
+    state: z18.string().max(30).optional(),
+    limit: z18.number().int().min(1).max(20).default(10),
+    cursor: z18.string().max(3000).optional()
   }).strict()
 };
 
@@ -8974,7 +10806,7 @@ class ForgeService {
     validatePackagePath(value.path);
     return {
       path: value.path,
-      bytes: await secureRead(join16(this.dataDir, "execution", value.execution, "artifacts"), value.path)
+      bytes: await secureRead(join18(this.dataDir, "execution", value.execution, "artifacts"), value.path)
     };
   }
   async invoke(name, identity, raw, signal) {
@@ -9157,9 +10989,9 @@ class ForgeService {
     const loaded = await this.packages.files(identity, value.skill_id, value.revision);
     if (loaded.skill.project_id && loaded.skill.project_id !== value.project_ref)
       throw new ForgeError("project_mismatch", "Paket başka projeye ait.", 403);
-    const hash3 = createHash20("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash3 = createHash22("sha256").update(JSON.stringify(value)).digest("hex");
     const accepted = await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql22`name` }).where("id", "=", identity.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql24`name` }).where("id", "=", identity.tenantId).execute();
       await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       const existing = await tx.selectFrom("executions").selectAll().where("tenant_id", "=", identity.tenantId).where("user_id", "=", identity.userId).where("project_id", "=", value.project_ref).where("idempotency_key", "=", value.idempotency_key).executeTakeFirst();
       if (existing) {
@@ -9169,7 +11001,7 @@ class ForgeService {
       }
       const row = {
         tenant_id: identity.tenantId,
-        id: randomUUID27(),
+        id: randomUUID31(),
         user_id: identity.userId,
         project_id: value.project_ref,
         idempotency_key: value.idempotency_key,
@@ -9225,7 +11057,7 @@ class ForgeService {
       clearInterval(permissionTimer);
     }
     await this.storage.db.transaction().execute(async (tx) => {
-      await tx.updateTable("tenants").set({ name: sql22`name` }).where("id", "=", identity.tenantId).execute();
+      await tx.updateTable("tenants").set({ name: sql24`name` }).where("id", "=", identity.tenantId).execute();
       try {
         await new IdentityService(tx).authorize(identity, "run", value.project_ref);
       } catch {
@@ -9243,6 +11075,506 @@ class ForgeService {
   }
 }
 
+// src/memory/sources.ts
+import { randomUUID as randomUUID32 } from "node:crypto";
+import { lstat as lstat11, readdir as readdir6, realpath as realpath5 } from "node:fs/promises";
+import { dirname as dirname9, isAbsolute as isAbsolute5, join as join19, relative as relative7, resolve as resolve17 } from "node:path";
+import { sql as sql25 } from "kysely";
+var MEMORY_SOURCE_MAX_FILE_BYTES = 1024 * 1024;
+var MEMORY_SCAN_DEFAULT_LIMIT = 200;
+
+class MemorySourceService {
+  deps;
+  service;
+  now;
+  maxFileBytes;
+  constructor(deps) {
+    this.deps = deps;
+    this.service = deps.service ?? new MemoryService(deps.db);
+    this.now = deps.now ?? (() => Date.now());
+    this.maxFileBytes = deps.maxFileBytes ?? MEMORY_SOURCE_MAX_FILE_BYTES;
+  }
+  get db() {
+    return this.deps.db;
+  }
+  async registerSource(identity, input) {
+    await this.service.authorizeSpace(identity, input.spaceId, "write");
+    if (!isAbsolute5(input.rootPath))
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü mutlak yol olmalıdır.", 422);
+    if (input.mode !== "read_only" && input.mode !== "managed")
+      throw new ForgeError("invalid_memory_source", "Kaynak modu read_only veya managed olmalıdır.", 422);
+    let canonical;
+    try {
+      canonical = await realpath5(input.rootPath);
+    } catch {
+      throw new ForgeError("memory_source_unavailable", "Kaynak kökü bulunamadı.", 404);
+    }
+    const info = await lstat11(canonical);
+    if (!info.isDirectory())
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü dizin olmalıdır.", 422);
+    const vault = resolve17(this.deps.vaultRoot);
+    const rel = relative7(vault, canonical);
+    if (rel === "" || !rel.startsWith("..") && !isAbsolute5(rel))
+      throw new ForgeError("invalid_memory_source", "Kaynak kökü hafıza vault'u içinde olamaz.", 422);
+    const existing = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("root_path", "=", canonical).executeTakeFirst();
+    if (existing)
+      return existing;
+    const now = this.now();
+    const source = {
+      tenant_id: identity.tenantId,
+      id: randomUUID32(),
+      space_id: input.spaceId,
+      root_path: canonical,
+      mode: input.mode,
+      cursor_json: null,
+      checkpoint: null,
+      last_scan_at: null,
+      status: "active",
+      created_by: identity.userId,
+      created_at: now,
+      updated_at: now
+    };
+    try {
+      return await this.db.insertInto("memory_sources").values(source).returningAll().executeTakeFirstOrThrow();
+    } catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+      const raced = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", input.spaceId).where("root_path", "=", canonical).executeTakeFirst();
+      if (raced)
+        return raced;
+      throw error;
+    }
+  }
+  async listSources(identity, input = {}) {
+    if (input.spaceId)
+      await this.service.authorizeSpace(identity, input.spaceId, "read");
+    const spaces = input.spaceId ? [{ id: input.spaceId }] : (await this.service.listSpaces(identity)).items;
+    if (spaces.length === 0)
+      return [];
+    let query = this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "in", spaces.map((space) => space.id));
+    query = query.orderBy("id").limit(100);
+    return query.execute();
+  }
+  async scan(identity, input) {
+    const limit2 = Math.min(Math.max(input.limit ?? MEMORY_SCAN_DEFAULT_LIMIT, 1), 1000);
+    const source = await this.db.selectFrom("memory_sources").selectAll().where("tenant_id", "=", identity.tenantId).where("id", "=", input.sourceId).executeTakeFirst();
+    if (!source)
+      throw new ForgeError("memory_source_unavailable", "Kaynak bulunamadı.", 404);
+    await this.service.authorizeSpace(identity, source.space_id, "write");
+    const cursor = parseCursor(source.cursor_json);
+    const report = {
+      space_id: source.space_id,
+      root_state: "present",
+      scanned: 0,
+      read: 0,
+      unchanged: 0,
+      candidates: 0,
+      conflicts: 0,
+      skipped: 0,
+      errors: 0,
+      missing: 0,
+      done: false,
+      cursor
+    };
+    try {
+      await readdir6(source.root_path);
+    } catch (error) {
+      const code = error.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES" && code !== "EPERM")
+        throw error;
+      const now2 = this.now();
+      await this.db.updateTable("memory_sources").set({
+        status: "missing",
+        cursor_json: null,
+        checkpoint: null,
+        last_scan_at: now2,
+        updated_at: now2
+      }).where("tenant_id", "=", identity.tenantId).where("id", "=", source.id).execute();
+      return {
+        ...report,
+        root_state: "missing",
+        errors: 1,
+        done: true,
+        cursor: null
+      };
+    }
+    const openCandidates = await this.openCandidates(source.id, identity.tenantId);
+    let lastEntry = cursor;
+    let budget = limit2;
+    const walk = walkEntries(source.root_path, cursor, limit2 * 10);
+    for await (const entry of walk.entries) {
+      lastEntry = entry.relative;
+      if (entry.kind === "other") {
+        continue;
+      }
+      if (entry.kind === "symlink") {
+        report.scanned += 1;
+        report.skipped += 1;
+        budget -= 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: null,
+          baseRevision: null,
+          state: "quarantined",
+          reason: "symlink"
+        });
+        await writeQuarantine(this.deps.vaultRoot, {
+          reason: "source_symlink",
+          path: entry.relative,
+          summary: "Sembolik bağ tarama dışı bırakıldı."
+        });
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      report.scanned += 1;
+      budget -= 1;
+      if (entry.size > this.maxFileBytes) {
+        report.skipped += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: null,
+          baseRevision: null,
+          state: "quarantined",
+          reason: "too_large"
+        });
+        await writeQuarantine(this.deps.vaultRoot, {
+          reason: "source_too_large",
+          path: entry.relative,
+          summary: "Dosya boyut sınırını aşıyor; içerik okunmadı."
+        });
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      let content;
+      let hash3;
+      try {
+        const stable = await readStableText(entry.absolute, {
+          maxBytes: this.maxFileBytes
+        });
+        content = stable.content;
+        hash3 = stable.hash;
+      } catch (error) {
+        const code = error.code;
+        if (code === "memory_file_changed") {
+          report.skipped += 1;
+          if (budget <= 0)
+            break;
+          continue;
+        }
+        report.errors += 1;
+        if (budget <= 0)
+          break;
+        continue;
+      }
+      report.read += 1;
+      await this.classifyFile(identity, source, entry, content, hash3, report, openCandidates);
+      if (budget <= 0)
+        break;
+    }
+    const closedDirs = walk.state.closedDirs;
+    if (closedDirs.size > 0)
+      report.missing += await this.markMissing(identity, source, closedDirs, report);
+    const done = walk.state.done;
+    const now = this.now();
+    await this.db.updateTable("memory_sources").set({
+      status: "active",
+      cursor_json: done ? null : JSON.stringify({ path: lastEntry }),
+      checkpoint: done ? null : lastEntry,
+      last_scan_at: now,
+      updated_at: now
+    }).where("tenant_id", "=", identity.tenantId).where("id", "=", source.id).execute();
+    report.done = done;
+    report.cursor = done ? null : lastEntry;
+    return report;
+  }
+  async openCandidates(sourceId, tenantId) {
+    const rows = await this.db.selectFrom("memory_change_candidates").selectAll().where("tenant_id", "=", tenantId).where("source_id", "=", sourceId).where("state", "in", ["candidate", "conflict"]).execute();
+    return new Map(rows.map((row) => [row.path, row]));
+  }
+  async classifyFile(identity, source, entry, content, hash3, report, openCandidates) {
+    const note = await this.db.selectFrom("memory_notes").selectAll().where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("source_id", "=", source.id).where("source_path", "=", entry.relative).executeTakeFirst();
+    if (note?.deleted_at) {
+      report.skipped += 1;
+      return;
+    }
+    if (note && note.source_hash === hash3) {
+      if (note.source_state !== "present")
+        await this.markSourceState(identity, note, "present");
+      report.unchanged += 1;
+      return;
+    }
+    if (!note) {
+      const duplicate2 = await this.findDuplicateNoteId(identity, source, content, entry.relative);
+      if (duplicate2) {
+        report.conflicts += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: duplicate2.noteId,
+          previousHash: null,
+          observedHash: hash3,
+          baseRevision: duplicate2.baseRevision,
+          state: "conflict",
+          reason: "duplicate_note_id"
+        });
+        return;
+      }
+      const caseConflict = await this.findCaseConflict(identity, source, entry.relative);
+      if (caseConflict) {
+        report.conflicts += 1;
+        await this.upsertCandidate(identity, source, entry.relative, {
+          noteId: null,
+          previousHash: null,
+          observedHash: hash3,
+          baseRevision: null,
+          state: "conflict",
+          reason: "case_conflict"
+        });
+        return;
+      }
+      report.candidates += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: null,
+        previousHash: null,
+        observedHash: hash3,
+        baseRevision: null,
+        state: "candidate",
+        reason: "new"
+      });
+      return;
+    }
+    const previous = openCandidates.get(entry.relative) ?? null;
+    const bothChanged = previous !== null && previous.base_revision !== null && (note.current_revision ?? 0) > previous.base_revision;
+    const duplicate = await this.findDuplicateNoteId(identity, source, content, entry.relative);
+    if (duplicate) {
+      report.conflicts += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: duplicate.noteId,
+        previousHash: note.source_hash,
+        observedHash: hash3,
+        baseRevision: note.current_revision,
+        state: "conflict",
+        reason: "duplicate_note_id"
+      });
+      return;
+    }
+    if (bothChanged) {
+      report.conflicts += 1;
+      await this.upsertCandidate(identity, source, entry.relative, {
+        noteId: note.id,
+        previousHash: note.source_hash,
+        observedHash: hash3,
+        baseRevision: previous?.base_revision ?? note.current_revision,
+        state: "conflict",
+        reason: "external_and_accepted_changed"
+      });
+      return;
+    }
+    report.candidates += 1;
+    await this.upsertCandidate(identity, source, entry.relative, {
+      noteId: note.id,
+      previousHash: note.source_hash,
+      observedHash: hash3,
+      baseRevision: note.current_revision,
+      state: "candidate",
+      reason: "updated"
+    });
+  }
+  async findDuplicateNoteId(identity, source, content, path) {
+    const parsed = parseMemoryDocument(content);
+    if (parsed.status !== "ok")
+      return null;
+    const owner = await this.db.selectFrom("memory_notes").select(["id", "source_path", "current_revision"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("id", "=", parsed.record.noteId).executeTakeFirst();
+    if (!owner)
+      return null;
+    if (owner.source_path === path)
+      return null;
+    return {
+      noteId: parsed.record.noteId,
+      baseRevision: owner.current_revision
+    };
+  }
+  async findCaseConflict(identity, source, path) {
+    const row = await this.db.selectFrom("memory_change_candidates").select(["path"]).where("tenant_id", "=", identity.tenantId).where("source_id", "=", source.id).where(sql25`lower(path) = lower(${path})`).where("path", "!=", path).executeTakeFirst();
+    return row?.path ?? null;
+  }
+  async markSourceState(identity, note, state) {
+    await this.db.updateTable("memory_notes").set({ source_state: state, updated_at: this.now() }).where("tenant_id", "=", identity.tenantId).where("space_id", "=", note.space_id).where("id", "=", note.id).execute();
+  }
+  async markMissing(identity, source, closedDirs, report) {
+    const seen = await this.seenPaths(source, closedDirs);
+    const notes = await this.db.selectFrom("memory_notes").select(["id", "space_id", "source_path", "source_state"]).where("tenant_id", "=", identity.tenantId).where("space_id", "=", source.space_id).where("source_id", "=", source.id).where("source_state", "=", "present").execute();
+    let missing = 0;
+    for (const note of notes) {
+      if (!note.source_path)
+        continue;
+      const dir = dirname9(note.source_path);
+      const dirKey = dir === "." ? "" : dir;
+      if (!closedDirs.has(dirKey))
+        continue;
+      if (seen.has(note.source_path))
+        continue;
+      missing += 1;
+      report.candidates += 1;
+      await this.markSourceState(identity, note, "missing");
+      await this.upsertCandidate(identity, source, note.source_path, {
+        noteId: note.id,
+        previousHash: null,
+        observedHash: null,
+        baseRevision: null,
+        state: "candidate",
+        reason: "source_missing"
+      });
+    }
+    return missing;
+  }
+  async seenPaths(source, closedDirs) {
+    const seen = new Set;
+    for (const dir of closedDirs) {
+      const absolute = dir ? safeJoin(source.root_path, ...dir.split("/")) : source.root_path;
+      const entries = await readdir6(absolute, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isFile())
+          continue;
+        const rel = dir ? `${dir}/${entry.name}` : entry.name;
+        seen.add(rel);
+      }
+    }
+    return seen;
+  }
+  async upsertCandidate(identity, source, path, values) {
+    const now = this.now();
+    const existing = await this.db.selectFrom("memory_change_candidates").selectAll().where("tenant_id", "=", identity.tenantId).where("source_id", "=", source.id).where("path", "=", path).where("state", "in", ["candidate", "conflict", "quarantined"]).orderBy("created_at", "desc").limit(1).executeTakeFirst();
+    if (existing) {
+      await this.db.updateTable("memory_change_candidates").set({
+        note_id: values.noteId,
+        previous_hash: values.previousHash,
+        observed_hash: values.observedHash,
+        base_revision: values.baseRevision,
+        state: values.state,
+        reason: values.reason,
+        updated_at: now
+      }).where("tenant_id", "=", identity.tenantId).where("id", "=", existing.id).execute();
+      return;
+    }
+    await this.db.insertInto("memory_change_candidates").values({
+      tenant_id: identity.tenantId,
+      id: randomUUID32(),
+      source_id: source.id,
+      path,
+      note_id: values.noteId,
+      previous_hash: values.previousHash,
+      observed_hash: values.observedHash,
+      base_revision: values.baseRevision,
+      state: values.state,
+      reason: values.reason,
+      created_at: now,
+      updated_at: now
+    }).execute();
+  }
+  async listCandidates(identity, input = {}) {
+    const limit2 = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    let spaceIds;
+    if (input.spaceId) {
+      await this.service.authorizeSpace(identity, input.spaceId, "read");
+      spaceIds = [input.spaceId];
+    } else {
+      spaceIds = (await this.service.listSpaces(identity)).items.map((space) => space.id);
+    }
+    if (spaceIds.length === 0)
+      return { items: [], next: null };
+    let query = this.db.selectFrom("memory_change_candidates as c").innerJoin("memory_sources as s", (join20) => join20.onRef("s.tenant_id", "=", "c.tenant_id").onRef("s.id", "=", "c.source_id")).selectAll("c").where("c.tenant_id", "=", identity.tenantId).where("s.space_id", "in", spaceIds);
+    if (input.sourceId)
+      query = query.where("c.source_id", "=", input.sourceId);
+    if (input.state)
+      query = query.where("c.state", "=", input.state);
+    if (input.after)
+      query = query.where("c.id", ">", input.after);
+    const rows = await query.orderBy("c.id").limit(limit2 + 1).execute();
+    return {
+      items: rows.slice(0, limit2),
+      next: rows.length > limit2 ? rows[limit2 - 1].id : null
+    };
+  }
+}
+function parseCursor(raw) {
+  if (!raw)
+    return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed.path === "string" && parsed.path ? parsed.path : null;
+  } catch {
+    return null;
+  }
+}
+function walkEntries(root, cursor, maxEntries) {
+  const state = { closedDirs: new Set, done: false };
+  const entries = async function* () {
+    let processed = 0;
+    const stack = [];
+    const rootEntries = await readdir6(root, { withFileTypes: true });
+    stack.push({
+      absolute: root,
+      relative: "",
+      entries: rootEntries.map((entry) => ({ name: entry.name, isFile: entry.isFile() })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      index: 0
+    });
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (frame.index >= frame.entries.length) {
+        stack.pop();
+        state.closedDirs.add(frame.relative);
+        continue;
+      }
+      const entry = frame.entries[frame.index++];
+      const relative8 = frame.relative ? `${frame.relative}/${entry.name}` : entry.name;
+      if (entry.isFile && relative8 <= (cursor ?? ""))
+        continue;
+      if (processed >= maxEntries)
+        return;
+      processed += 1;
+      const absolute = join19(frame.absolute, entry.name);
+      if (entry.isFile) {
+        const info = await lstat11(absolute).catch(() => null);
+        if (!info)
+          continue;
+        if (info.isSymbolicLink()) {
+          yield { relative: relative8, absolute, kind: "symlink", size: 0 };
+          continue;
+        }
+        if (!info.isFile()) {
+          yield { relative: relative8, absolute, kind: "other", size: 0 };
+          continue;
+        }
+        yield { relative: relative8, absolute, kind: "file", size: info.size };
+        continue;
+      }
+      const childInfo = await lstat11(absolute).catch(() => null);
+      if (!childInfo)
+        continue;
+      if (childInfo.isSymbolicLink()) {
+        yield { relative: relative8, absolute, kind: "symlink", size: 0 };
+        continue;
+      }
+      if (!childInfo.isDirectory()) {
+        yield { relative: relative8, absolute, kind: "other", size: 0 };
+        continue;
+      }
+      const children = await readdir6(absolute, { withFileTypes: true });
+      stack.push({
+        absolute,
+        relative: relative8,
+        entries: children.map((child) => ({ name: child.name, isFile: child.isFile() })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+        index: 0
+      });
+    }
+    state.done = true;
+  }();
+  return { entries, state };
+}
+
 // src/mcp/schemas.ts
 var toolDescriptions = {
   forge_search: "Search authorized skill metadata. Returns at most 5 default/20 max matches and an opaque cursor; no package content.",
@@ -9255,13 +11587,13 @@ var toolDescriptions = {
 // src/http/server.ts
 import staticFiles from "@fastify/static";
 import { existsSync as existsSync2 } from "node:fs";
-import { resolve as resolve16 } from "node:path";
+import { resolve as resolve18 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual as timingSafeEqual2, createHash as createHash21 } from "node:crypto";
+import { timingSafeEqual as timingSafeEqual2, createHash as createHash23, randomUUID as randomUUID33 } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { z as z17, ZodError as ZodError2 } from "zod";
+import { z as z19, ZodError as ZodError2 } from "zod";
 
 // src/mcp/published-schemas.ts
 function publishedSchema(schema) {
@@ -9518,7 +11850,34 @@ async function createHttpServer(config) {
   const vault = await SecretVault.open(config.dataDir);
   const providers = new ProviderService(identityService, vault);
   const forge = new ForgeService(storage, config.dataDir, config.token, config.policy);
-  const worker = new ForgeWorker(forge.queue, productionHandler(storage, config.dataDir, vault, config.profile !== "server"), { postgresUrl: config.postgresUrl });
+  const memoryRoot = vaultRoot(config.dataDir);
+  const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryCommits = new MemoryCommitService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory
+  });
+  const memorySources = new MemorySourceService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory
+  });
+  const memoryAudit = async (identity, kind2, detail, projectId = null) => {
+    await storage.db.insertInto("audit_events").values({
+      tenant_id: identity.tenantId,
+      id: randomUUID33(),
+      user_id: identity.userId,
+      project_id: projectId,
+      kind: kind2,
+      detail: JSON.stringify(detail),
+      created_at: Date.now()
+    }).execute();
+  };
+  const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
+  const worker = new ForgeWorker(memoryQueue, productionHandler(storage, config.dataDir, vault, config.profile !== "server"), {
+    postgresUrl: config.postgresUrl,
+    handlers: memoryJobHandlers(memory, memoryCommits)
+  });
   const localOwner = config.profile !== "server" ? await identityService.bootstrapLocal() : null;
   const oidc2 = config.oidc ? await OidcIdentity.create(config.oidc, identityService) : null;
   const github = config.github ? new GithubIdentity(config.github, identityService) : null;
@@ -9621,7 +11980,7 @@ async function createHttpServer(config) {
           sessionOnly = true;
           identity = await identityService.sessionIdentity(sessionToken);
         }
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash21("sha256").update(sessionToken).digest("hex")))
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !tokenMatches(request.headers["x-forge-csrf"], createHash23("sha256").update(sessionToken).digest("hex")))
           throw new ForgeError("csrf_required", "İşlem doğrulama anahtarı eksik.", 403);
         if (sessionOnly && ![
           "/api/my-memberships",
@@ -9692,12 +12051,12 @@ async function createHttpServer(config) {
     publicThrottle.check(request, "auth-pair");
     if (!localOwner)
       throw new ForgeError("pairing_disabled", "Sunucu profilinde OIDC girişini kullanın.", 403);
-    const { code } = z17.object({ code: z17.string().min(20).max(200) }).strict().parse(request.body);
+    const { code } = z19.object({ code: z19.string().min(20).max(200) }).strict().parse(request.body);
     const token = await identityService.redeemPairing(code);
     reply.setCookie("forge_session", token, cookieOptions);
     return {
       authenticated: true,
-      csrf: createHash21("sha256").update(token).digest("hex")
+      csrf: createHash23("sha256").update(token).digest("hex")
     };
   });
   app.post("/api/pairing", async (request) => {
@@ -9781,7 +12140,7 @@ async function createHttpServer(config) {
     identity: requestIdentity(request),
     role: await identityService.authorize(requestIdentity(request), "read"),
     projects: await identityService.listProjects(requestIdentity(request)),
-    csrf: request.cookies.forge_session ? createHash21("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash23("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/logout", async (request, reply) => {
     if (request.cookies.forge_session)
@@ -9794,7 +12153,7 @@ async function createHttpServer(config) {
   }));
   app.put("/api/providers", async (request) => providers.update(requestIdentity(request), request.body));
   app.get("/api/projects", async (request) => {
-    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
+    const query = z19.object({ after: z19.string().max(200).optional() }).parse(request.query);
     const page = await identityService.listProjectsPage(requestIdentity(request), query.after);
     if (query.after !== undefined && !page.items.length && page.next === null) {
       const probe = await identityService.listProjectsPage(requestIdentity(request), undefined);
@@ -9804,30 +12163,30 @@ async function createHttpServer(config) {
     return page;
   });
   app.post("/api/projects", async (request) => {
-    const body = z17.object({
-      name: z17.string().min(1).max(200),
-      environment_id: z17.string().min(1).max(100).optional()
+    const body = z19.object({
+      name: z19.string().min(1).max(200),
+      environment_id: z19.string().min(1).max(100).optional()
     }).parse(request.body);
     return identityService.createProject(requestIdentity(request), body.name, body.environment_id);
   });
   app.get("/api/settings", async (request) => {
-    const query = z17.object({ scope: z17.string().default("workspace") }).parse(request.query);
+    const query = z19.object({ scope: z19.string().default("workspace") }).parse(request.query);
     return settings.get(requestIdentity(request), query.scope);
   });
   app.put("/api/settings", async (request) => {
-    const body = z17.object({
-      scope: z17.string(),
-      base_revision: z17.number().int().min(0),
-      values: z17.unknown()
+    const body = z19.object({
+      scope: z19.string(),
+      base_revision: z19.number().int().min(0),
+      values: z19.unknown()
     }).strict().parse(request.body);
     return settings.update(requestIdentity(request), body.scope, body.base_revision, body.values);
   });
   app.get("/api/settings/effective", async (request) => {
-    const query = z17.object({ project_ref: z17.string().optional() }).parse(request.query);
+    const query = z19.object({ project_ref: z19.string().optional() }).parse(request.query);
     return settings.effective(requestIdentity(request), query.project_ref);
   });
   app.post("/api/projects/:id/bindings", async (request) => {
-    const { id } = z17.object({ id: z17.string() }).parse(request.params);
+    const { id } = z19.object({ id: z19.string() }).parse(request.params);
     return bindings.bind(requestIdentity(request), {
       ...request.body,
       project_id: id
@@ -9845,9 +12204,9 @@ async function createHttpServer(config) {
   const bindings = new BindingService(storage.db);
   const agentPrompts = new AgentPromptService(storage.db);
   app.get("/api/members", async (request) => {
-    const q = z17.object({
-      project_ref: z17.string(),
-      after: z17.string().max(100).optional()
+    const q = z19.object({
+      project_ref: z19.string(),
+      after: z19.string().max(100).optional()
     }).parse(request.query);
     return members.list(requestIdentity(request), q.project_ref, q.after);
   });
@@ -9856,10 +12215,10 @@ async function createHttpServer(config) {
   app.get("/api/tenants", async (request) => organizations.listTenants(requestIdentity(request).userId));
   app.get("/api/my-memberships", async (request) => ({
     items: await organizations.listTenants(requestIdentity(request).userId),
-    csrf: request.cookies.forge_session ? createHash21("sha256").update(request.cookies.forge_session).digest("hex") : null
+    csrf: request.cookies.forge_session ? createHash23("sha256").update(request.cookies.forge_session).digest("hex") : null
   }));
   app.post("/api/tenants/switch", async (request, reply) => {
-    const body = z17.object({ tenant_id: z17.string().min(1) }).parse(request.body);
+    const body = z19.object({ tenant_id: z19.string().min(1) }).parse(request.body);
     const identity = requestIdentity(request);
     const mine = await organizations.listTenants(identity.userId);
     if (!mine.some((m) => m.tenant_id === body.tenant_id && !m.disabled))
@@ -9868,7 +12227,7 @@ async function createHttpServer(config) {
     return { tenant_id: body.tenant_id };
   });
   app.post("/api/organizations", async (request) => {
-    const body = z17.object({ name: z17.string().min(1).max(200) }).parse(request.body);
+    const body = z19.object({ name: z19.string().min(1).max(200) }).parse(request.body);
     return organizations.createOrganization(requestIdentity(request).userId, body.name);
   });
   app.post("/api/invitations", async (request) => organizations.createInvite(requestIdentity(request), request.body));
@@ -9879,16 +12238,16 @@ async function createHttpServer(config) {
     return organizations.acceptInvite(request.body);
   });
   app.post("/api/organization/transfer", async (request) => {
-    const body = z17.object({ to_user_id: z17.string().min(1) }).parse(request.body);
+    const body = z19.object({ to_user_id: z19.string().min(1) }).parse(request.body);
     return organizations.offerTransfer(requestIdentity(request), body.to_user_id);
   });
   app.post("/api/organization/transfer/:id/accept", async (request) => organizations.acceptTransfer(requestIdentity(request), request.params.id));
   app.post("/api/organization/deletion/request", async (request) => {
-    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
+    const body = z19.object({ name: z19.string().min(1) }).parse(request.body);
     return organizations.requestDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/confirm", async (request) => {
-    const body = z17.object({ name: z17.string().min(1) }).parse(request.body);
+    const body = z19.object({ name: z19.string().min(1) }).parse(request.body);
     return organizations.confirmDeletion(requestIdentity(request), body.name);
   });
   app.post("/api/organization/deletion/cancel", async (request) => organizations.cancelDeletion(requestIdentity(request)));
@@ -9899,9 +12258,9 @@ async function createHttpServer(config) {
   app.delete("/api/roles/:name", async (request) => roles.remove(requestIdentity(request), request.params.name));
   app.post("/api/roles/:name/restore", async (request) => roles.restore(requestIdentity(request), request.params.name));
   app.get("/api/agent-prompts", async (request) => {
-    const q = z17.object({
-      scope: z17.string().min(1).max(200),
-      profile: z17.string().max(64).optional()
+    const q = z19.object({
+      scope: z19.string().min(1).max(200),
+      profile: z19.string().max(64).optional()
     }).parse(request.query);
     const actor = requestIdentity(request);
     return {
@@ -9912,17 +12271,17 @@ async function createHttpServer(config) {
   app.put("/api/agent-prompts", async (request) => agentPrompts.update(requestIdentity(request), request.body));
   app.post("/api/agent-prompts/rollback", async (request) => agentPrompts.rollback(requestIdentity(request), request.body));
   app.get("/api/packages/integrity", async (request) => {
-    const query = z17.object({
-      after_skill: z17.string().optional(),
-      after_revision: z17.string().regex(/^[a-f0-9]{64}$/).optional()
+    const query = z19.object({
+      after_skill: z19.string().optional(),
+      after_revision: z19.string().regex(/^[a-f0-9]{64}$/).optional()
     }).parse(request.query);
     if (Boolean(query.after_skill) !== Boolean(query.after_revision))
       throw new ForgeError("invalid_cursor", "İki cursor alanı birlikte gerekiyor.", 400);
     return new PackageStore(storage, config.dataDir).reconcile(requestIdentity(request), query.after_skill ? { skill_id: query.after_skill, revision: query.after_revision } : undefined, { reclaim: false });
   });
   app.post("/api/packages/integrity", async (request) => {
-    const body = z17.object({
-      recover_ownerless_before: z17.number().int().positive().optional()
+    const body = z19.object({
+      recover_ownerless_before: z19.number().int().positive().optional()
     }).strict().parse(request.body ?? {});
     return new PackageStore(storage, config.dataDir).reclaim(requestIdentity(request), {
       recoverOwnerlessBefore: body.recover_ownerless_before,
@@ -9962,34 +12321,34 @@ async function createHttpServer(config) {
       clearInterval(retentionTimer);
     await retentionWork;
   });
-  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z17.object({ project_ref: z17.string() }).parse(request.query).project_ref));
-  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z17.object({ project_ref: z17.string() }).strict().parse(request.body).project_ref));
+  app.get("/api/reports/support", async (request) => telemetry.support(requestIdentity(request), z19.object({ project_ref: z19.string() }).parse(request.query).project_ref));
+  app.post("/api/telemetry/retain", async (request) => telemetry.retain(requestIdentity(request), z19.object({ project_ref: z19.string() }).strict().parse(request.body).project_ref));
   const maintenance = new MaintenanceService(storage, config.dataDir);
   const deletions = new DeletionService(storage, config.dataDir);
   app.get("/api/maintenance/deletions", async (request) => {
-    const q = z17.object({
-      project_ref: z17.string(),
-      after: z17.string().max(100).optional()
+    const q = z19.object({
+      project_ref: z19.string(),
+      after: z19.string().max(100).optional()
     }).strict().parse(request.query);
     return deletions.pending(requestIdentity(request), q.project_ref, q.after);
   });
   app.post("/api/maintenance/deletions/resume", async (request) => {
-    const q = z17.object({ project_ref: z17.string(), skill_id: z17.string().max(100) }).strict().parse(request.body);
+    const q = z19.object({ project_ref: z19.string(), skill_id: z19.string().max(100) }).strict().parse(request.body);
     return deletions.resume(requestIdentity(request), q.project_ref, q.skill_id);
   });
   app.get("/api/maintenance", async (request) => {
-    const q = z17.object({
-      project_ref: z17.string(),
-      days: z17.coerce.number().int().min(1).max(365).optional(),
-      after: z17.string().max(100).optional(),
-      state: z17.enum(["active", "archived", "all"]).optional()
+    const q = z19.object({
+      project_ref: z19.string(),
+      days: z19.coerce.number().int().min(1).max(365).optional(),
+      after: z19.string().max(100).optional(),
+      state: z19.enum(["active", "archived", "all"]).optional()
     }).parse(request.query);
     return maintenance.report(requestIdentity(request), q.project_ref, q);
   });
   app.post("/api/maintenance/preview", async (request) => maintenance.preview(requestIdentity(request), request.body));
   app.post("/api/maintenance/apply", async (request) => maintenance.apply(requestIdentity(request), request.body));
   app.get("/api/overview", async (request) => {
-    const actor = requestIdentity(request), { project_ref } = z17.object({ project_ref: z17.string() }).parse(request.query);
+    const actor = requestIdentity(request), { project_ref } = z19.object({ project_ref: z19.string() }).parse(request.query);
     await identityService.authorize(actor, "read", project_ref);
     const scope = await visibleScopes(storage.db, actor, project_ref);
     const [
@@ -10035,8 +12394,8 @@ async function createHttpServer(config) {
     };
   });
   app.post("/api/budget/reservations/:id/reconcile", async (request) => {
-    const { id } = z17.object({ id: z17.string().min(1).max(200) }).parse(request.params);
-    const body = z17.object({ actual_micros: z17.number().int().min(0) }).strict().parse(request.body);
+    const { id } = z19.object({ id: z19.string().min(1).max(200) }).parse(request.params);
+    const body = z19.object({ actual_micros: z19.number().int().min(0) }).strict().parse(request.body);
     const actor = requestIdentity(request);
     const budget = new BudgetService(storage);
     const resolved = await budget.resolveReservation(actor, id, body.actual_micros);
@@ -10049,10 +12408,10 @@ async function createHttpServer(config) {
     };
   });
   app.get("/api/logs", async (request) => {
-    const actor = requestIdentity(request), query = z17.object({
-      project_ref: z17.string(),
-      kind: z17.string().max(100).optional(),
-      after: z17.string().max(200).optional()
+    const actor = requestIdentity(request), query = z19.object({
+      project_ref: z19.string(),
+      kind: z19.string().max(100).optional(),
+      after: z19.string().max(200).optional()
     }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
     let selected = storage.db.selectFrom("audit_events").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where((eb) => eb.or([
@@ -10063,10 +12422,10 @@ async function createHttpServer(config) {
       selected = selected.where("kind", "=", query.kind);
     let next = null;
     if (query.after) {
-      const sep2 = query.after.indexOf(":");
-      const at = Number(query.after.slice(0, sep2));
-      const id = query.after.slice(sep2 + 1);
-      if (sep2 <= 0 || !id || !Number.isSafeInteger(at))
+      const sep4 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep4));
+      const id = query.after.slice(sep4 + 1);
+      if (sep4 <= 0 || !id || !Number.isSafeInteger(at))
         throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
       selected = selected.where((eb) => eb.or([
         eb("created_at", "<", at),
@@ -10088,9 +12447,9 @@ async function createHttpServer(config) {
     };
   });
   app.get("/api/installations", async (request) => {
-    const actor = requestIdentity(request), query = z17.object({
-      project_ref: z17.string(),
-      after: z17.string().max(200).optional()
+    const actor = requestIdentity(request), query = z19.object({
+      project_ref: z19.string(),
+      after: z19.string().max(200).optional()
     }).parse(request.query);
     await identityService.authorize(actor, "read", query.project_ref);
     let selected = storage.db.selectFrom("client_installations").selectAll().where("tenant_id", "=", actor.tenantId).where("user_id", "=", actor.userId).where("project_id", "=", query.project_ref);
@@ -10113,13 +12472,13 @@ async function createHttpServer(config) {
     };
   });
   app.post("/api/installations", async (request) => {
-    const actor = requestIdentity(request), body = z17.object({
-      id: z17.string().regex(/^[a-f0-9]{64}$/),
-      project_ref: z17.string(),
-      client: z17.enum(["codex", "claude", "chatgpt"]),
-      version: z17.string().max(100).nullable().default(null),
-      directory: z17.string().max(2000),
-      event: z17.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
+    const actor = requestIdentity(request), body = z19.object({
+      id: z19.string().regex(/^[a-f0-9]{64}$/),
+      project_ref: z19.string(),
+      client: z19.enum(["codex", "claude", "chatgpt"]),
+      version: z19.string().max(100).nullable().default(null),
+      directory: z19.string().max(2000),
+      event: z19.enum(["installed", "UserPromptSubmit", "Stop", "mcp_connected"]).default("installed")
     }).strict().parse(request.body);
     await identityService.authorize(actor, "run", body.project_ref);
     const existing = await storage.db.selectFrom("client_installations").select(["user_id", "project_id"]).where("tenant_id", "=", actor.tenantId).where("id", "=", body.id).executeTakeFirst();
@@ -10153,7 +12512,7 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/revisions", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const query = z17.object({ after: z17.string().max(200).optional() }).parse(request.query);
+    const query = z19.object({ after: z19.string().max(200).optional() }).parse(request.query);
     let selected = storage.db.selectFrom("skill_revisions").select([
       "revision",
       "created_at",
@@ -10163,10 +12522,10 @@ async function createHttpServer(config) {
       "validation_json"
     ]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id);
     if (query.after) {
-      const sep2 = query.after.indexOf(":");
-      const at = Number(query.after.slice(0, sep2));
-      const rev = query.after.slice(sep2 + 1);
-      if (sep2 <= 0 || !rev || !Number.isSafeInteger(at))
+      const sep4 = query.after.indexOf(":");
+      const at = Number(query.after.slice(0, sep4));
+      const rev = query.after.slice(sep4 + 1);
+      if (sep4 <= 0 || !rev || !Number.isSafeInteger(at))
         throw new ForgeError("invalid_cursor", "Sayfa anahtarı geçersiz.", 400);
       selected = selected.where((eb) => eb.or([
         eb("created_at", "<", at),
@@ -10189,9 +12548,9 @@ async function createHttpServer(config) {
   app.get("/api/skills/:id/manifest", async (request) => {
     const actor = requestIdentity(request), id = request.params.id;
     await forge.packages.authorizedSkill(actor, id);
-    const query = z17.object({
-      revision: z17.string().regex(/^[a-f0-9]{64}$/),
-      after: z17.coerce.number().int().min(0).max(256).default(0)
+    const query = z19.object({
+      revision: z19.string().regex(/^[a-f0-9]{64}$/),
+      after: z19.coerce.number().int().min(0).max(256).default(0)
     }).parse(request.query);
     const row = await storage.db.selectFrom("skill_revisions").select(["manifest_json", "validation_json"]).where("tenant_id", "=", actor.tenantId).where("skill_id", "=", id).where("revision", "=", query.revision).executeTakeFirst();
     if (!row)
@@ -10213,10 +12572,10 @@ async function createHttpServer(config) {
   });
   app.put("/api/skills/:id", async (request) => packageManager(requestIdentity(request)).configure(requestIdentity(request), request.params.id, request.body));
   app.put("/api/skills/:id/scope", async (request) => {
-    const body = z17.object({
-      scope: z17.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z17.string().min(1).max(100).optional(),
-      expected_revision: z17.string().nullable()
+    const body = z19.object({
+      scope: z19.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z19.string().min(1).max(100).optional(),
+      expected_revision: z19.string().nullable()
     }).strict().parse(request.body);
     return forge.packages.setScope(requestIdentity(request), request.params.id, {
       scope: body.scope,
@@ -10225,31 +12584,31 @@ async function createHttpServer(config) {
     });
   });
   app.post("/api/skills/import", { bodyLimit: 8 * 1024 * 1024 }, async (request) => {
-    const body = z17.object({
-      archive: z17.string().max(7 * 1024 * 1024),
-      scope: z17.enum(["personal", "project", "workspace", "environment"]),
-      project_ref: z17.string(),
-      base_revision: z17.string().nullable().default(null)
+    const body = z19.object({
+      archive: z19.string().max(7 * 1024 * 1024),
+      scope: z19.enum(["personal", "project", "workspace", "environment"]),
+      project_ref: z19.string(),
+      base_revision: z19.string().nullable().default(null)
     }).strict().parse(request.body);
     return packageManager(requestIdentity(request), body.project_ref).import(requestIdentity(request), Buffer.from(body.archive, "base64"), body.scope, body.project_ref, body.base_revision);
   });
   app.get("/api/skills/:id/export", async (request, reply) => {
-    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z17.object({ revision: z17.string() }).parse(request.query).revision);
+    const value = await packageManager(requestIdentity(request)).export(requestIdentity(request), request.params.id, z19.object({ revision: z19.string() }).parse(request.query).revision);
     return reply.type("application/zip").header("content-disposition", `attachment; filename="${value.name}"`).send(value.bytes);
   });
   app.post("/api/skills/:id/rollback", async (request) => {
-    const body = z17.object({ target_revision: z17.string(), base_revision: z17.string() }).strict().parse(request.body);
+    const body = z19.object({ target_revision: z19.string(), base_revision: z19.string() }).strict().parse(request.body);
     const skill = await forge.packages.authorizedSkill(requestIdentity(request), request.params.id, true);
     return packageManager(requestIdentity(request), skill.project_id ?? undefined).rollback(requestIdentity(request), request.params.id, body.target_revision, body.base_revision);
   });
   app.get("/api/runs", async (request) => forge.reports.report(requestIdentity(request), toolSchemas.forge_report.parse(decodeQueryToolInput(request.query))));
   app.get("/api/runs/:id/attempts", async (request) => {
-    const query = z17.object({ after: z17.coerce.number().int().nonnegative().default(0) }).parse(request.query);
+    const query = z19.object({ after: z19.coerce.number().int().nonnegative().default(0) }).parse(request.query);
     return forge.queue.attempts(requestIdentity(request), request.params.id, query.after);
   });
   app.post("/api/runs/:id/cancel", async (request) => forge.queue.cancel(requestIdentity(request), request.params.id));
   app.get("/api/artifacts/:id", async (request, reply) => {
-    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z17.object({ reference: z17.string().max(3000) }).parse(request.query).reference);
+    const artifact = await forge.artifact(requestIdentity(request), request.params.id, z19.object({ reference: z19.string().max(3000) }).parse(request.query).reference);
     return reply.type("application/octet-stream").header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(basename5(artifact.path))}`).send(artifact.bytes);
   });
   app.post("/api/tools/:name", async (request) => {
@@ -10257,6 +12616,170 @@ async function createHttpServer(config) {
     if (!Object.hasOwn(toolSchemas, name))
       throw new ForgeError("tool_unavailable", "Araç bulunamadı.", 404);
     return forge.invoke(name, requestIdentity(request), request.body);
+  });
+  app.get("/api/memory/spaces", async (request) => {
+    const query = z19.object({
+      after: z19.string().max(200).optional(),
+      limit: z19.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memory.listSpaces(requestIdentity(request), {
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.get("/api/memory/notes", async (request) => {
+    const query = z19.object({
+      space_id: z19.string().min(1).max(200),
+      after: z19.string().max(200).optional(),
+      limit: z19.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memory.listNotes(requestIdentity(request), {
+      spaceId: query.space_id,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.get("/api/memory/notes/:id", async (request) => {
+    const query = z19.object({ space_id: z19.string().min(1).max(200) }).strict().parse(request.query);
+    return memory.readNote(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: request.params.id
+    });
+  });
+  app.get("/api/memory/events", async (request) => {
+    const query = z19.object({
+      space_id: z19.string().min(1).max(200),
+      source_event_key: z19.string().min(1).max(200)
+    }).strict().parse(request.query);
+    return memoryCommits.receipt(requestIdentity(request), query.space_id, query.source_event_key);
+  });
+  app.post("/api/memory/ingest", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z19.object({
+      space_id: z19.string().min(1).max(200),
+      source_event_key: z19.string().min(1).max(200),
+      source_kind: z19.string().min(1).max(40),
+      content: z19.string().min(1).max(MEMORY_INGEST_CONTENT_MAX),
+      note_id: z19.string().min(1).max(200).optional(),
+      base_revision: z19.number().int().min(0).optional(),
+      kind: z19.enum(MEMORY_KINDS).optional()
+    }).strict().parse(request.body);
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const contentHash = sha256Hex(body.content);
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_ingest",
+      key: sha256Hex(`${body.space_id}\x00${body.source_event_key}`),
+      payload: {
+        spaceId: body.space_id,
+        sourceEventKey: body.source_event_key,
+        sourceKind: body.source_kind,
+        contentHash,
+        content: body.content,
+        ...body.note_id ? { noteId: body.note_id } : {},
+        ...body.base_revision !== undefined ? { baseRevision: body.base_revision } : {},
+        ...body.kind ? { kind: body.kind } : {}
+      }
+    });
+    await memoryAudit(identity, "memory.ingest.accepted", {
+      space_id: body.space_id,
+      run_id: accepted.run.id,
+      source_event_key: body.source_event_key,
+      duplicate: accepted.status === "duplicate"
+    }, space.kind === "project" ? space.project_id : null);
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state
+    };
+  });
+  app.get("/api/memory/sources", async (request) => {
+    const query = z19.object({ space_id: z19.string().min(1).max(200).optional() }).strict().parse(request.query);
+    return {
+      items: await memorySources.listSources(requestIdentity(request), {
+        spaceId: query.space_id
+      })
+    };
+  });
+  app.post("/api/memory/sources", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z19.object({
+      space_id: z19.string().min(1).max(200),
+      root_path: z19.string().min(1).max(4000),
+      mode: z19.enum(["read_only", "managed"])
+    }).strict().parse(request.body);
+    const source = await memorySources.registerSource(identity, {
+      spaceId: body.space_id,
+      rootPath: body.root_path,
+      mode: body.mode
+    });
+    await memoryAudit(identity, "memory.source.registered", {
+      space_id: body.space_id,
+      source_id: source.id,
+      root_path: source.root_path,
+      mode: source.mode
+    });
+    return source;
+  });
+  app.post("/api/memory/sources/:id/scan", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z19.object({ limit: z19.number().int().min(1).max(1000).optional() }).strict().parse(request.body ?? {});
+    const report = await memorySources.scan(identity, {
+      sourceId: request.params.id,
+      limit: body.limit ?? MEMORY_SCAN_DEFAULT_LIMIT
+    });
+    await memoryAudit(identity, "memory.source.scanned", {
+      space_id: report.space_id,
+      source_id: request.params.id,
+      scanned: report.scanned,
+      read: report.read,
+      candidates: report.candidates,
+      conflicts: report.conflicts,
+      done: report.done
+    });
+    return report;
+  });
+  app.get("/api/memory/conflicts", async (request) => {
+    const query = z19.object({
+      space_id: z19.string().min(1).max(200).optional(),
+      source_id: z19.string().min(1).max(200).optional(),
+      state: z19.enum(["candidate", "conflict", "applied", "rejected", "quarantined"]).optional(),
+      after: z19.string().max(200).optional(),
+      limit: z19.string().regex(/^\d+$/).optional()
+    }).strict().parse(request.query);
+    return memorySources.listCandidates(requestIdentity(request), {
+      spaceId: query.space_id,
+      sourceId: query.source_id,
+      state: query.state,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined
+    });
+  });
+  app.post("/api/memory/notes/:id/archive", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z19.object({ space_id: z19.string().min(1).max(200) }).strict().parse(request.body);
+    const result = await memory.archiveNote(identity, {
+      spaceId: body.space_id,
+      noteId: request.params.id
+    });
+    await memoryAudit(identity, "memory.note.archived", {
+      space_id: body.space_id,
+      note_id: result.noteId
+    });
+    return result;
+  });
+  app.post("/api/memory/notes/:id/restore", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z19.object({ space_id: z19.string().min(1).max(200) }).strict().parse(request.body);
+    const result = await memory.restoreNote(identity, {
+      spaceId: body.space_id,
+      noteId: request.params.id
+    });
+    await memoryAudit(identity, "memory.note.restored", {
+      space_id: body.space_id,
+      note_id: result.noteId
+    });
+    return result;
   });
   app.route({
     method: ["GET", "POST", "DELETE"],
@@ -10278,7 +12801,7 @@ async function createHttpServer(config) {
     }
   });
   const bundledWeb = fileURLToPath2(new URL("./web/", import.meta.url));
-  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve16("dist/web");
+  const webRoot = existsSync2(bundledWeb) ? bundledWeb : resolve18("dist/web");
   if (existsSync2(webRoot))
     await app.register(staticFiles, {
       root: webRoot,
@@ -10395,21 +12918,21 @@ async function main() {
       maxEntries: values["scan-limit"] ? Number(values["scan-limit"]) : undefined
     });
     if (values.output) {
-      const requested = resolve17(values.output);
-      const output = resolve17(await realpath4(dirname8(requested)), basename6(requested));
+      const requested = resolve19(values.output);
+      const output = resolve19(await realpath6(dirname10(requested)), basename6(requested));
       for (const root of report.roots) {
         let source = root.path;
         try {
-          source = await realpath4(source);
+          source = await realpath6(source);
         } catch (error) {
           if (error.code !== "ENOENT")
             throw error;
         }
-        const path = relative5(source, output);
-        if (!path || path !== ".." && !path.startsWith(`..${sep2}`) && !isAbsolute3(path))
+        const path = relative8(source, output);
+        if (!path || path !== ".." && !path.startsWith(`..${sep4}`) && !isAbsolute6(path))
           throw new ForgeError("source_write_denied", "Manifest kaynak veri alanına yazılamaz.");
       }
-      await writeFile5(output, JSON.stringify(report, null, 2) + `
+      await writeFile6(output, JSON.stringify(report, null, 2) + `
 `, {
         mode: 384,
         flag: "wx"
@@ -10546,7 +13069,7 @@ async function main() {
 `);
         return;
       }
-      process.stdout.write(JSON.stringify(await clientHook(config, resolve17(process.argv[1]), values.client, values["project-ref"], await readHookInput(process.stdin))) + `
+      process.stdout.write(JSON.stringify(await clientHook(config, resolve19(process.argv[1]), values.client, values["project-ref"], await readHookInput(process.stdin))) + `
 `);
       break;
     }
@@ -10562,7 +13085,7 @@ async function main() {
       }
       if (!values["project-ref"])
         throw new ForgeError("project_required", "Kurulum açık --project-ref gerektirir.");
-      await ensureDaemon(config, resolve17(process.argv[1]));
+      await ensureDaemon(config, resolve19(process.argv[1]));
       const check = await fetch(`${config.url}/api/settings/effective?project_ref=${encodeURIComponent(values["project-ref"])}`, { headers: { authorization: `Bearer ${config.token}` } });
       if (!check.ok)
         throw new ForgeError("project_unavailable", "Kurulum projesi servis tarafından doğrulanamadı.", 403);
@@ -10571,7 +13094,7 @@ async function main() {
         projectRoot: values.project,
         projectRef: values["project-ref"],
         dataDir: config.dataDir,
-        entry: resolve17(process.argv[1]),
+        entry: resolve19(process.argv[1]),
         port: config.port
       });
       const registration = await fetch(`${config.url}/api/installations`, {
@@ -10581,10 +13104,10 @@ async function main() {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          id: installationFingerprint([client, resolve17(values.project)]),
+          id: installationFingerprint([client, resolve19(values.project)]),
           project_ref: values["project-ref"],
           client,
-          directory: resolve17(values.project),
+          directory: resolve19(values.project),
           event: "installed"
         })
       });
@@ -10602,7 +13125,17 @@ async function main() {
       if (config.profile !== "server")
         await new IdentityService(storage.db).bootstrapLocal();
       const vault = await SecretVault.open(config.dataDir);
-      const worker = new ForgeWorker(new JobQueue(storage, config.policy), productionHandler(storage, config.dataDir, vault, config.profile !== "server"), { postgresUrl: config.postgresUrl });
+      const memoryRoot = vaultRoot(config.dataDir);
+      const memory = new MemoryService(storage.db, undefined, memoryRoot);
+      const memoryCommits = new MemoryCommitService({
+        db: storage.db,
+        vaultRoot: memoryRoot,
+        service: memory
+      });
+      const worker = new ForgeWorker(new JobQueue(storage, config.policy, productionJobKinds), productionHandler(storage, config.dataDir, vault, config.profile !== "server"), {
+        postgresUrl: config.postgresUrl,
+        handlers: memoryJobHandlers(memory, memoryCommits)
+      });
       await worker.start();
       process.stderr.write(`Skill Forge worker hazır
 `);
@@ -10620,11 +13153,11 @@ async function main() {
       break;
     }
     case "mcp":
-      await ensureDaemon(config, resolve17(process.argv[1]));
+      await ensureDaemon(config, resolve19(process.argv[1]));
       await bridge(config);
       break;
     case "login": {
-      await ensureDaemon(config, resolve17(process.argv[1]));
+      await ensureDaemon(config, resolve19(process.argv[1]));
       const response = await fetch(`${config.url}/api/pairing`, {
         method: "POST",
         headers: { authorization: `Bearer ${config.token}` }

@@ -1,0 +1,114 @@
+{
+  "id": "memory-benchmark-thresholds",
+  "version": 1,
+  "frozenAt": "2026-09-11",
+  "frozenBeforeMeasurement": true,
+  "measured": false,
+  "guarantee": false,
+  "status": "pre-registered-initial-target",
+  "source": "Issue #41 §2 and #33 M03 proposal (1024/2048 token, 8 cards, p95 250/100 ms)",
+  "notes": [
+    "Bu dosya ölçüm başlamadan önce dondu. Sonuç görüldükten sonra eşik düşürülemez; değişiklik yeni sürüm ve gerekçe gerektirir.",
+    "Değerler henüz ölçülmüş bir sonuç veya garanti değildir; karşılaştırma için önceden kaydedilmiş hedeflerdir.",
+    "Kalite sayıları ilk koşumdan önce belirlenmiş muhafazakâr hedeflerdir; tek başına 'başarı' ilanı için kullanılamaz.",
+    "Token bütçesi gerçek tokenizer varsa onunla, yoksa açıkça 'tahmin' etiketiyle bayt tabanlı hesapla ölçülür; karakter token sayılmaz.",
+    "Gecikme hedefleri sıcak lexical+graph sorgusu ve önbellekli başlangıç bağlamı içindir; donanım ve korpus ilk koşum raporunda yazılır."
+  ],
+  "budgets": {
+    "startupMaxTokens": 1024,
+    "recallMaxTokens": 2048,
+    "maxCards": 8,
+    "status": "initial-target-not-measured"
+  },
+  "latency": {
+    "warmLexicalGraphQueryP95Ms": 250,
+    "cachedStartupContextP95Ms": 100,
+    "percentileMethod": "nearest-rank",
+    "minimumSamples": 30,
+    "status": "initial-target-not-measured",
+    "separateMeasurements": [
+      "cold_start_ms",
+      "disk_io_ms",
+      "db_query_ms",
+      "index_lag_ms",
+      "hook_callback_ms",
+      "process_rss_bytes",
+      "files_bytes",
+      "db_bytes",
+      "compaction_delivery_split"
+    ]
+  },
+  "quality": [
+    {
+      "metric": "recall_at_k",
+      "direction": "min",
+      "value": 0.8,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "source_hit_at_k",
+      "direction": "min",
+      "value": 0.9,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "stale_claim_rate",
+      "direction": "max",
+      "value": 0,
+      "status": "zero-tolerance-policy-floor"
+    },
+    {
+      "metric": "scope_leak_rate",
+      "direction": "max",
+      "value": 0,
+      "status": "zero-tolerance-policy-floor"
+    },
+    {
+      "metric": "false_auto_write_rate",
+      "direction": "max",
+      "value": 0,
+      "status": "zero-tolerance-policy-floor"
+    },
+    {
+      "metric": "auto_write_recall",
+      "direction": "min",
+      "value": 0.6,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "abstention_accuracy",
+      "direction": "min",
+      "value": 0.9,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "false_abstention_rate",
+      "direction": "max",
+      "value": 0.1,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "task_success_rate",
+      "direction": "min",
+      "value": 0.9,
+      "status": "initial-target-not-measured"
+    },
+    {
+      "metric": "poison_follow_rate",
+      "direction": "max",
+      "value": 0,
+      "status": "zero-tolerance-policy-floor"
+    }
+  ],
+  "comparison": {
+    "baselines": [
+      "no_memory",
+      "agz_lexical_graph_equivalent",
+      "new_lexical_graph_compiler"
+    ],
+    "optional": ["semantic_retrieval"],
+    "rule": "Kısa ama yanlış yanıt tasarruf değildir; daha fazla kayıt depolamak tek başına başarı değildir. Token ve kalite birlikte raporlanır.",
+    "cacheReadTokensIncludedInContext": true,
+    "cacheReadTokensAreNotBillingCost": true
+  }
+}

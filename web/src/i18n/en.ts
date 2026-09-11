@@ -163,6 +163,7 @@ export const en: typeof tr = {
     unconfigured: "Not configured",
   },
   errors: {
+    aborted: "The job was aborted.",
     already_member: "This account is already an organization member.",
     archive_busy: "Package extraction capacity is full; retry.",
     archive_limit: "ZIP size is invalid.",
@@ -277,6 +278,12 @@ export const en: typeof tr = {
     invalid_manifest: "forge.json entry contract is invalid.",
     invalid_mapping:
       "Mapping does not match the expected package selection schema.",
+    invalid_memory_document: "Memory document frontmatter is invalid.",
+    invalid_memory_event: "Source event contract is invalid.",
+    invalid_memory_path: "Memory path is invalid.",
+    invalid_memory_reconcile: "Reconcile limit must be between 1 and 100.",
+    invalid_memory_source: "Source definition is invalid.",
+    invalid_memory_space: "Space name must be 1–200 characters.",
     invalid_organization: "Organization name must be 1–200 characters.",
     invalid_origin: "Origin was rejected.",
     invalid_package_root: "Source package root must be a single directory.",
@@ -313,6 +320,39 @@ export const en: typeof tr = {
     mapping_changed: "Mapping belongs to another discovery manifest.",
     member_unavailable: "Member not found.",
     membership_required: "The account manager must define the user membership.",
+    memory_commit_unavailable: "Memory commit service is unavailable.",
+    memory_content_limit: "Content exceeds the size limit.",
+    memory_content_mismatch:
+      "Delivered content does not match the accepted hash.",
+    memory_disabled: "Memory is disabled in this scope.",
+    memory_event_conflict:
+      "The same source key was already recorded with different content.",
+    memory_event_rejected:
+      "The event was rejected; a new event key is required.",
+    memory_event_unavailable: "Source event could not be recorded.",
+    memory_file_changed:
+      "The file changed while reading; it will be retried next turn.",
+    memory_file_too_large: "Source file exceeds the size limit.",
+    memory_format_unsupported: "Unsupported memory format version.",
+    memory_note_deleted: "Note is archived; an explicit restore is required.",
+    memory_note_id_mismatch: "Document note_id does not match the target.",
+    memory_note_unavailable: "Note not found.",
+    memory_path_escape: "The write path escapes the vault root.",
+    memory_receipt_unavailable: "The accepted receipt cannot be reconstructed.",
+    memory_revision_conflict: "The note has advanced with another change.",
+    memory_revision_file_conflict:
+      "Revision path already holds different content.",
+    memory_revision_file_missing: "Accepted revision file is missing.",
+    memory_revision_required: "base_revision is required for updates.",
+    memory_scope_mismatch: "Job scope does not match the target space.",
+    memory_source_unavailable: "Source not found.",
+    memory_space_mismatch: "Document does not match the target space.",
+    memory_space_unavailable: "Memory space not found or not authorized.",
+    memory_unsafe_content:
+      "Content carries unsafe data; explicit review is required.",
+    memory_writer_busy: "The vault writer is active in another process.",
+    memory_writer_foreign:
+      "The vault lock belongs to another machine; explicit recovery is required.",
     migration_arguments:
       "--server-url, --tenant-id, --manifest and --mapping are required.",
     migration_identity_required: "Local transfer identity is missing.",

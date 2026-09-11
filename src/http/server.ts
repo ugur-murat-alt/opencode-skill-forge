@@ -13,7 +13,7 @@ import {
 import { BindingService } from "../application/bindings.js";
 import { TelemetryService } from "../application/telemetry.js";
 import { MaintenanceService } from "../application/maintenance.js";
-import { terminalStates } from "../jobs/queue.js";
+import { JobQueue, terminalStates } from "../jobs/queue.js";
 import { redact as redactMetadata } from "../telemetry/redact.js";
 import { PackageManager } from "../application/packages.js";
 import { PackageStore } from "../skills/store.js";
@@ -23,6 +23,17 @@ import { ForgeService } from "../application/forge.js";
 import { ForgeWorker } from "../jobs/worker.js";
 import { BudgetService } from "../jobs/budgets.js";
 import { productionHandler } from "../runner/handler.js";
+import { MemoryService } from "../memory/service.js";
+import { jobScopeForSpace } from "../memory/service.js";
+import { MemoryCommitService } from "../memory/commit.js";
+import { MemorySourceService } from "../memory/sources.js";
+import { MEMORY_SCAN_DEFAULT_LIMIT } from "../memory/sources.js";
+import { memoryJobHandlers } from "../memory/worker.js";
+import { productionJobKinds } from "../memory/job-kinds.js";
+import { MEMORY_INGEST_CONTENT_MAX } from "../memory/job-kinds.js";
+import { sha256Hex } from "../memory/files.js";
+import { vaultRoot } from "../memory/paths.js";
+import { MEMORY_KINDS } from "../domain/memory.js";
 import { toolSchemas, type ToolName } from "../mcp/schemas.js";
 import { SecretVault } from "../storage/secrets.js";
 import { ProviderService } from "../application/providers.js";
@@ -32,7 +43,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { z, ZodError } from "zod";
 import { createMcpServer } from "../mcp/server.js";
@@ -78,15 +89,50 @@ export async function createHttpServer(config: LocalConfig) {
     config.token,
     config.policy,
   );
+  const memoryRoot = vaultRoot(config.dataDir);
+  const memory = new MemoryService(storage.db, identityService, memoryRoot);
+  const memoryCommits = new MemoryCommitService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+  });
+  const memorySources = new MemorySourceService({
+    db: storage.db,
+    vaultRoot: memoryRoot,
+    service: memory,
+  });
+  const memoryAudit = async (
+    identity: Identity,
+    kind: string,
+    detail: Record<string, unknown>,
+    projectId: string | null = null,
+  ) => {
+    await storage.db
+      .insertInto("audit_events")
+      .values({
+        tenant_id: identity.tenantId,
+        id: randomUUID(),
+        user_id: identity.userId,
+        project_id: projectId,
+        kind,
+        detail: JSON.stringify(detail),
+        created_at: Date.now(),
+      })
+      .execute();
+  };
+  const memoryQueue = new JobQueue(storage, config.policy, productionJobKinds);
   const worker = new ForgeWorker(
-    forge.queue,
+    memoryQueue,
     productionHandler(
       storage,
       config.dataDir,
       vault,
       config.profile !== "server",
     ),
-    { postgresUrl: config.postgresUrl },
+    {
+      postgresUrl: config.postgresUrl,
+      handlers: memoryJobHandlers(memory, memoryCommits),
+    },
   );
   const localOwner =
     config.profile !== "server" ? await identityService.bootstrapLocal() : null;
@@ -1378,6 +1424,221 @@ export async function createHttpServer(config: LocalConfig) {
       requestIdentity(request),
       request.body,
     );
+  });
+  // --- Hafıza (issue #35): GET salt-okunur; mutasyonlar açık POST + ACL +
+  // audit. ACK yalnız kalıcı kabulden sonra döner; receipt ayrı okunur.
+  app.get("/api/memory/spaces", async (request) => {
+    const query = z
+      .object({
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listSpaces(requestIdentity(request), {
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memory.listNotes(requestIdentity(request), {
+      spaceId: query.space_id,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.get("/api/memory/notes/:id", async (request) => {
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    return memory.readNote(requestIdentity(request), {
+      spaceId: query.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+  });
+  app.get("/api/memory/events", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        source_event_key: z.string().min(1).max(200),
+      })
+      .strict()
+      .parse(request.query);
+    return memoryCommits.receipt(
+      requestIdentity(request),
+      query.space_id,
+      query.source_event_key,
+    );
+  });
+  app.post("/api/memory/ingest", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        source_event_key: z.string().min(1).max(200),
+        source_kind: z.string().min(1).max(40),
+        content: z.string().min(1).max(MEMORY_INGEST_CONTENT_MAX),
+        note_id: z.string().min(1).max(200).optional(),
+        base_revision: z.number().int().min(0).optional(),
+        kind: z.enum(MEMORY_KINDS).optional(),
+      })
+      .strict()
+      .parse(request.body);
+    // Mutasyon sınırında somut alan ACL'i; accept ayrıca tenant/kapsam
+    // `run` iznini doğrular.
+    const space = await memory.authorizeSpace(identity, body.space_id, "write");
+    const contentHash = sha256Hex(body.content);
+    const accepted = await memoryQueue.accept(identity, {
+      scope: jobScopeForSpace(space),
+      kind: "memory_ingest",
+      // Kapsam/olay çifti kararlı ve sınırlı tek bir anahtara indirilir.
+      key: sha256Hex(`${body.space_id}\u0000${body.source_event_key}`),
+      payload: {
+        spaceId: body.space_id,
+        sourceEventKey: body.source_event_key,
+        sourceKind: body.source_kind,
+        contentHash,
+        content: body.content,
+        ...(body.note_id ? { noteId: body.note_id } : {}),
+        ...(body.base_revision !== undefined
+          ? { baseRevision: body.base_revision }
+          : {}),
+        ...(body.kind ? { kind: body.kind } : {}),
+      },
+    });
+    await memoryAudit(
+      identity,
+      "memory.ingest.accepted",
+      {
+        space_id: body.space_id,
+        run_id: accepted.run.id,
+        source_event_key: body.source_event_key,
+        duplicate: accepted.status === "duplicate",
+      },
+      space.kind === "project" ? space.project_id : null,
+    );
+    return {
+      status: accepted.status,
+      run_id: accepted.run.id,
+      run_state: accepted.run.state,
+    };
+  });
+  app.get("/api/memory/sources", async (request) => {
+    const query = z
+      .object({ space_id: z.string().min(1).max(200).optional() })
+      .strict()
+      .parse(request.query);
+    return {
+      items: await memorySources.listSources(requestIdentity(request), {
+        spaceId: query.space_id,
+      }),
+    };
+  });
+  app.post("/api/memory/sources", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        root_path: z.string().min(1).max(4000),
+        mode: z.enum(["read_only", "managed"]),
+      })
+      .strict()
+      .parse(request.body);
+    const source = await memorySources.registerSource(identity, {
+      spaceId: body.space_id,
+      rootPath: body.root_path,
+      mode: body.mode,
+    });
+    await memoryAudit(identity, "memory.source.registered", {
+      space_id: body.space_id,
+      source_id: source.id,
+      root_path: source.root_path,
+      mode: source.mode,
+    });
+    return source;
+  });
+  app.post("/api/memory/sources/:id/scan", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ limit: z.number().int().min(1).max(1000).optional() })
+      .strict()
+      .parse(request.body ?? {});
+    const report = await memorySources.scan(identity, {
+      sourceId: (request.params as { id: string }).id,
+      limit: body.limit ?? MEMORY_SCAN_DEFAULT_LIMIT,
+    });
+    await memoryAudit(identity, "memory.source.scanned", {
+      space_id: report.space_id,
+      source_id: (request.params as { id: string }).id,
+      scanned: report.scanned,
+      read: report.read,
+      candidates: report.candidates,
+      conflicts: report.conflicts,
+      done: report.done,
+    });
+    return report;
+  });
+  app.get("/api/memory/conflicts", async (request) => {
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200).optional(),
+        source_id: z.string().min(1).max(200).optional(),
+        state: z
+          .enum(["candidate", "conflict", "applied", "rejected", "quarantined"])
+          .optional(),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    return memorySources.listCandidates(requestIdentity(request), {
+      spaceId: query.space_id,
+      sourceId: query.source_id,
+      state: query.state,
+      after: query.after,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+  });
+  app.post("/api/memory/notes/:id/archive", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.body);
+    const result = await memory.archiveNote(identity, {
+      spaceId: body.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+    await memoryAudit(identity, "memory.note.archived", {
+      space_id: body.space_id,
+      note_id: result.noteId,
+    });
+    return result;
+  });
+  app.post("/api/memory/notes/:id/restore", async (request) => {
+    const identity = requestIdentity(request);
+    const body = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.body);
+    const result = await memory.restoreNote(identity, {
+      spaceId: body.space_id,
+      noteId: (request.params as { id: string }).id,
+    });
+    await memoryAudit(identity, "memory.note.restored", {
+      space_id: body.space_id,
+      note_id: result.noteId,
+    });
+    return result;
   });
   app.route({
     method: ["GET", "POST", "DELETE"],

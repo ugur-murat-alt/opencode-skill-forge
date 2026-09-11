@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory-evidence-report.schema.json",
+  "title": "Memory verification / benchmark report",
+  "description": "Kanıt raporu şeması (#41). Bu dosya yalnız şemadır; üretilen raporlar docs/evidence/memory altına commit edilmez.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reportId",
+    "reportType",
+    "status",
+    "requirement",
+    "entryPath",
+    "command",
+    "fixture",
+    "commit",
+    "ci",
+    "environment",
+    "startedAt",
+    "finishedAt",
+    "results",
+    "limitations",
+    "artifacts"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "reportId": { "type": "string", "minLength": 1 },
+    "reportType": {
+      "enum": [
+        "benchmark",
+        "acceptance",
+        "fault-injection",
+        "native-client",
+        "backup-restore"
+      ]
+    },
+    "status": { "enum": ["placeholder", "passed", "partial", "failed"] },
+    "notice": {
+      "type": "string",
+      "description": "Placeholder dosyalarda 'gerçek koşum değildir' uyarısı."
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["issue", "section"],
+      "properties": {
+        "issue": { "type": "string" },
+        "section": { "type": "string" }
+      }
+    },
+    "entryPath": {
+      "enum": ["worker", "http", "mcp", "cli", "native-hook", "fixture-only"],
+      "description": "Ürünü gerçekten çalıştıran giriş yolu."
+    },
+    "command": { "type": "string", "minLength": 1 },
+    "fixture": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "type": ["string", "null"] },
+        "seed": { "type": ["integer", "null"] }
+      }
+    },
+    "commit": { "type": "string" },
+    "ci": {
+      "type": ["object", "null"],
+      "required": ["provider", "runId"],
+      "properties": {
+        "provider": { "type": "string" },
+        "runId": { "type": "string" },
+        "url": { "type": ["string", "null"] }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["os", "runtime", "backend"],
+      "properties": {
+        "os": { "type": "string" },
+        "runtime": { "type": "string" },
+        "backend": { "enum": ["sqlite", "postgres", "mixed", "none"] },
+        "postgresVersion": { "type": ["string", "null"] },
+        "hardware": { "type": ["string", "null"] },
+        "tokenizer": {
+          "type": "string",
+          "description": "Gerçek tokenizer adı; yoksa 'none (byte estimate)'."
+        }
+      }
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "expected", "observed", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "expected": { "type": "string" },
+          "observed": { "type": "string" },
+          "status": { "enum": ["passed", "failed", "skipped", "not-run"] },
+          "evidence": {
+            "type": ["object", "null"],
+            "properties": {
+              "logPath": { "type": ["string", "null"] },
+              "sha256": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": ["object", "null"],
+      "description": "Benchmark özeti; metrik başına {value, numerator, denominator}.",
+      "additionalProperties": true
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Çalıştırılmamış kontroller ve kalan riskler açıkça yazılır."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "properties": {
+          "path": { "type": "string" },
+          "kind": { "enum": ["log", "json", "image", "csv"] },
+          "sha256": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

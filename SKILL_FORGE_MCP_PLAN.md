@@ -1707,3 +1707,101 @@ işleri yeşil olmadan issue kapatılmaz.
 - İlk final koşu **34533437017** (commit `5d8f744`) beş işin tamamında yeşil:
   linux-contracts 6m11s, web-acceptance 1m41s (artifact `--verify` + kasıtlı hata kapısı),
   portable-artifact windows/macos/ubuntu. Issue kapanışları bu koşuya dayanır.
+
+### Hafıza modülü kampanyası (#33–#41) — koordinatör kaydı (2026-09-11)
+
+Taban: `1bda764` (main, takip kampanyası kapanışı). Kampanya dalı:
+`feat/memory-second-brain` (push edildi). Hedef: Obsidian'sız, Markdown ana kayıtlı,
+kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01–M04.
+
+#### Bağlayıcı sözleşme kararları (M01/#34)
+- Modül yerleşimi: `src/domain/memory.ts` (saf sözleşme), `src/memory/service.ts`
+  (uygulama işlemleri), `src/memory/job-kinds.ts` + `src/memory/worker.ts`
+  (deterministik, model gerektirmeyen işler), `src/storage/memory-migration.ts`.
+  HTTP/MCP/CLI yalnız adapter olacak; `PackageStore`/`EvolutionStaging` hafızaya
+  taşınmaz.
+- Kapsam: `runs.scope_kind` (`project|personal|organization`) + `scope_key`;
+  `project_id` nullable; sahte proje yok. Skill türleri proje ister; hafıza türleri
+  tenant düzeyi yetki + alan ACL'i ile projesiz kabul edilir. Kabul, claim/finish
+  ve commit aynı kapsamı yeniden yetkilendirir; tekillik anahtarı kapsam tabanlıdır.
+- Markdown format v1: LF kanonik serileştirme (gövde anlamı korunur, Unicode
+  normalizasyonu yok), `revision` alanı hariç SHA-256, bilinmeyen frontmatter
+  korunur, gelecek format mutasyonsuz reddedilir, `note_id` rename'de sabit,
+  wikilink belirsizliği rastgele çözülmez, task durumu not yaşam döngüsünden ayrı.
+- Tablolar: `memory_spaces`, `memory_notes`, `memory_note_revisions`,
+  `memory_events`; migration `032_memory` (SQLite 12-adım yeniden inşa + PG alter).
+- İş türleri: `memory_ingest`, `memory_reconcile`; `skillProfile:false`;
+  `memoryEnabled` bağımsız ayar (varsayılan kapalı), `evolutionEnabled`'dan ayrı.
+
+#### Bağımlılık haritası ve iş akışları
+- M01 (#34) → M02 (#35) → M03 (#36) → M04 (#37) → M05 (#38) → M06 (#39);
+  M07 (#40) salt-okunur keşifle paralel; M08 (#41) tüm süreç boyunca bağımsız test.
+- Ajanlar (worktree / branch):
+  - Çekirdek: `agent-mem-core` / `memory/m01-core` → #34, sonra #35+#36.
+  - Arayüz: `agent-mem-ui` / `memory/m04-ui` → #37 (faz 1 plan; uygulama M03 sonrası).
+  - Entegrasyon: `agent-mem-hooks` / `memory/m05-hooks` → #38 (faz 1 plan).
+  - Aktarım: `agent-mem-agz` / `memory/m07-agz` → #40 (faz 1 salt-okunur keşif).
+  - Doğrulama: `agent-mem-verify` / `memory/m08-verify` → #41 (sürekli bağımsız test).
+- Entegrasyon: ajanlar push etmez; koordinatör rebase + ff-merge ile kampanya
+  dalına alır. `SKILL_FORGE_MCP_PLAN.md`, `docs/evidence/issues-progress.json` ve
+  `dist/**` tek yazarlı/ertelemeli. Nihai entegrasyon PR'ı issue–değişiklik–test
+  eşlemesi, doğrulanan HEAD ve kalan engellerle açılır; issue'lar yalnız kabul
+  kanıtıyla kapatılır. Sürüm/canlı AGZ/üretim geçişi bu kampanyanın yetkisi değil.
+
+#### M01 çalışma notları (ajan raporlarından bağımsız)
+- Koordinatör kararı: M01 sözleşmesi doğrudan ajan promptunda bağlayıcı olarak
+  verildi; sapma hâlinde ajan duracak. Koordinatör, birleşme sonrası kodu ve
+  testleri bağımsız olarak doğrulayacak (ajan raporu kanıt sayılmaz).
+
+#### M01 (#34) — tamamlandı ve bağımsız doğrulandı
+- Çekirdek uygulama: `627a040` (Markdown v1 sözleşmesi + `runs` scope modeli +
+  migration 032), `91fdb33` (alan ACL servisi + `memory_ingest`/`memory_reconcile`
+  türleri + handler'lar + üretim kablolaması), `3364f2b` (ADR + format referansı).
+- Takip düzeltmeleri: `5936911` (memory-job zinciri sıra-bağımsız/canlı test),
+  `248439d` (B1: run kapsamı ↔ hedef alan eşleşmesi execution'da zorunlu;
+  B3: yetki iptalinde fence-only terminalizasyon gerçek `error_code` ile).
+- Bağımsız doğrulama altyapısı: `8dc9b4d` + `7d17c90` (`MEMORY_REQUIRE_M01=1`
+  kapısı; bağımsız inceleme raporu).
+- Kanıt: bağımsız kapı SQLite 13/13, PG 21/21; hafıza süiti 23/23; regresyon
+  setleri yeşil; çekirdeğin tam takımı 597 test / 585 pass / 12 ortamsal
+  (Docker sandbox + pg_dump). B1/B2/B3 kapalı; migration 031→032 yükseltmesi
+  veri koruyor ve FK temiz.
+- Karar notları: `memoryEnabled` kabul anında işin KENDİ kapsamı için snapshot
+  alınır; hedef alan execution'da kapsamla yeniden eşleştirilir. `dist/**`
+  birleşik dalda bir sonraki final entegrasyonda tek seferde derlenecek.
+
+#### M02 (#35) — tamamlandı ve bağımsız doğrulandı
+- Faz A `406eaab` (migration 033, vault yolu, atomik/immutable yayın, tek yazıcı
+  kilidi, commit durum makinesi, receipt, HTTP çekirdeği), Faz B `020c523`
+  (kaynak kaydı, cursor/checkpoint sınırlı tarama, aday/çatışma, tombstone +
+  açık restore, HTTP kaynak uçları), `583a234` (i18n kodları), `964840a` +
+  `48c0156` (gerçek SIGKILL replay ve rename kanıtları).
+- Bağımsız doğrulama (M02) 5 gerçek açık uç buldu; tümü kapatıldı:
+  `a5b6964` (bozuk kilit force'suz devralınamaz), `e26d46c` (symlink güvenli
+  yazım + `memory_path_escape`, silinen kaynak kökü `missing` durumu, 034 ile
+  olay→not bağı ve receipt kapsamı, hayalet `working_copy_changed` düzeltmesi,
+  ölü-pid temp GC, receipt dosya doğrulaması), `567e570` + `36da3e5`
+  (bağımsız `.failing` işaretlerinin kaldırılması), `89e7c9f` (HTTP `indexed`
+  işareti yarışının test düzeltmesi).
+- Kanıt: tüm hafıza süiti + bağımsız M02 paketi SQLite/PG yeşil; M01 katı kapısı
+  13/13; taze PG DB'de tam takım **691 test / 679 pass / 12 ortamsal**
+  (Docker sandbox + pg_dump; işlevsel kırmızı yok). Migration 033/034 additive.
+- Sınırlar: çevrimdışı spool M05'te; adayların otomatik uygulanması/3-yollu
+  birleştirme M04/M06'da; kaynak tarama SQLite'ta 1005 dosyayla kanıtlandı,
+  PG'de 61 dosyalık eşdeğer senaryo.
+
+#### Entegrasyon PR'ı (WIP)
+- `feat/memory-second-brain` → `main` draft PR: M01–M02 ve faz-1 plan/doğrulama
+  katmanları; issue–değişiklik–test eşlemesi, doğrulanan HEAD ve kalan engeller
+  (M03–M08) PR açıklamasında. Nihai birleştirme yalnız PR CI yeşil ve kalan
+  M'ler tamamlandığında.
+
+#### PR #42 (draft) — CI yeşil ve kabul sağlamlaştırması
+- `50353bc`: Proje oluşturmada kapsam yeniden doğrulaması, liste yenilemesi
+  başarısız olsa da çalışır (`Projects.tsx` finally); `dist` web bundle güncel.
+- `2bfb868`: Silinen proje kabul kontrolü `/api/me` yeniden doğrulama yanıtını
+  bekler; pin kontrolünde nadir "Bilinmeyen hata" bandına tek sınırlı yeniden
+  deneme eklenir (ikinci deneme de düşerse kontrol kırmızı kalır).
+- Doğrulanan HEAD `2bfb868`: push ve PR CI koşuları (34559715401, 34559718246)
+  beş işte de yeşil; yerel tarayıcı kabulü 101/101; linux-contracts tam takımı
+  temiz DB ile geçti. PR draft olarak açık; birleştirme kullanıcı onayında.
