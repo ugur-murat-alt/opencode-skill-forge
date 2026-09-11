@@ -363,7 +363,70 @@ M01–M04, M06 ve M07 bağımsız kapıları yukarıda; kalan başlıklar:
   tanılama ekranı/doctor; public health'te not/tenant adı yok; kademeli açılış
   matrisi.
 
-## 9. Artifact şeması ve placeholder
+## 9. Final ölçüm turu ve entegrasyon bulguları (11.09.2026, `db63dab`)
+
+### 9.1 Kalite/token/gecikme (donmuş eşikler; ölçüm, garanti değil)
+
+Koşum: `bun test test/benchmarks/memory-acceptance.test.ts`
+(`new_lexical_graph_compiler`, k=8, 16 senaryo, SQLite):
+
+| Metrik                  | Ölçüm            | Eşik  | Durum                                    |
+| ----------------------- | ---------------- | ----- | ---------------------------------------- |
+| `recall@8`              | 0.964 (13.5/14)  | ≥0.80 | pass                                     |
+| `source_hit@8`          | 1.0 (14/14)      | ≥0.90 | pass                                     |
+| `stale_claim_rate`      | 0 (0/4)          | ≤0    | pass                                     |
+| `scope_leak_rate`       | 0 (0/2)          | ≤0    | pass                                     |
+| `abstention_accuracy`   | 1.0 (2/2)        | ≥0.90 | pass                                     |
+| `false_abstention_rate` | 0 (0/14)         | ≤0.10 | pass                                     |
+| `task_success_rate`     | 1.0 (2/2)        | ≥0.90 | pass                                     |
+| `poison_follow_rate`    | 0 (0/2)          | ≤0    | pass                                     |
+| `startup_max_tokens`    | 978              | ≤1024 | pass (bayt tahmini)                      |
+| `recall_max_tokens`     | 694              | ≤2048 | pass (bayt tahmini)                      |
+| p95 gecikme             | 60 ms / 16 örnek | ≤250  | **not-measured** (en az 30 örnek kuralı) |
+| auto-write (bu koşumda) | —                | —     | **not-measured** (yazma yolu yok)        |
+
+### 9.2 Küratör auto-write ölçümü (deterministik sahte stream, TR/EN)
+
+Koşum: `M08_EVIDENCE_DIR=/tmp/opencode/m08-evidence bun test test/memory-curator-benchmark-independent.test.ts`
+
+| Metrik                                                                        | Ölçüm                                    |
+| ----------------------------------------------------------------------------- | ---------------------------------------- |
+| Uygun aday (user_declared preference)                                         | 2/2 yazıldı; `auto_write_recall` = 1     |
+| Uygun olmayan aday (tamamlama, çelişki, plan, allowlist dışı tür, enjeksiyon) | 0/6 yazıldı; `false_auto_write_rate` = 0 |
+| Allowlist ihlali                                                              | 0                                        |
+| Yazılan notlarda kaynak hash desteği                                          | 2/2                                      |
+| Uydurma citation / enjeksiyon                                                 | yazım yok                                |
+
+Donmuş eşikler değiştirilmedi (`false_auto_write_rate ≤ 0`, `auto_write_recall ≥ 0.6`).
+Örneklem küçüktür (uygun aday n=2) ve claim sınıflaması model bayraklarına
+dayanır; "model yanlış sınıflandırırsa" riski bu ölçümün dışındadır. Üretilen
+rapor (şemaya uygun) `/tmp/opencode/m08-evidence/` altındadır; commit edilmez.
+
+### 9.3 Açık bulgular (düzeltme çekirdeğe ait; `test.failing` ile işaretli)
+
+1. **[Kritik] `src/memory/invalidation.ts:15-31`** — `memory_index_edges`
+   tablosunda `note_id` yok; invalidation yanlış kolonu siliyor. PostgreSQL'de
+   arşiv/purge `42703 column "note_id" does not exist` ile düşüyor (probe);
+   SQLite'ta hata sessizce yutulup kenar satırı kalıyor (probe: arşiv sonrası
+   `source_note_id=inv-a` kenarı duruyor). Ayrıca PG purge'unda dosyalar
+   silindikten sonra transaction düşüyor: not satırı kalır, revision dosyası
+   yok olur (probe). Bu bulgu nedeniyle M02/M04 bağımsız paketlerinin ilgili
+   **üç PostgreSQL hücresi kırmızıdır**; SQLite hücreleri yeşildir ve bulgu
+   `test/memory-m08-independent.test.ts` içinde `test.failing` ile ayrıca
+   işaretlenmiştir.
+2. **[Kritik] `src/storage/retention-migration.ts:23,36,37,48,49`** — ms
+   zaman damgası tutan kolonlar `integer` (PG int4). PostgreSQL'de retention
+   koşumu ve purge/restore makbuzları `22003 value out of range for type
+integer` ile yazılamıyor (probe); SQLite 64-bit olduğu için gizli kalıyor.
+3. **[Düşük] `src/memory/curator/apply.ts:112-126`** — otomatik uygulanan
+   adayda üretilen `note_id` change satırına yazılmıyor (review.ts yazıyor);
+   panel/liste ile oluşturulan not arasındaki bağ kaybolur.
+4. **[Düşük/Orta] `writes.ts` ↔ `review.ts` kanonik gövde farkı** — aynı
+   mantıksal düzenleme review yolunda izleyen `\n` ile, typed write yolunda
+   `\n` olmadan yazılıyor; hash/replay eşleşmesi yola bağlı hale geliyor
+   (`test/memory-curator-review-independent.test.ts` içindeki `test.failing`).
+
+## 10. Artifact şeması ve placeholder
 
 - `docs/evidence/memory/report.schema.json` — rapor JSON şeması.
 - `docs/evidence/memory/example.report.json` — **placeholder**; gerçek koşum
