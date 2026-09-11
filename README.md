@@ -95,6 +95,19 @@ Skill paketleri `SKILL.md` ve referans/script dosyalarından oluşur. Revision'l
 - [Bakım ve paket düzenleme](docs/tr/bakim-ve-paket-duzenleme.md)
 - [Worker kurtarma](docs/tr/worker-kurtarma.md)
 - [Katalog benchmarkı](docs/tr/katalog-benchmarki.md)
+- [Hafıza (ikinci beyin)](docs/tr/hafiza.md)
+
+## Hafıza (ikinci beyin)
+
+Skill Forge, Obsidian gerektirmeyen Markdown tabanlı bir hafıza modülü içerir:
+kaynak bağlantılı notlar, tipli ilişkiler, sürümlü kabul, graph/backlink ve
+Codex/Claude oturum sürekliliği. Giriş noktası
+[docs/tr/hafiza.md](docs/tr/hafiza.md); işletim (saklama, unutma, yedek/geri
+yükleme, doctor) için [docs/tr/hafiza-isletim.md](docs/tr/hafiza-isletim.md),
+oturum kancaları için
+[docs/tr/hafiza-oturum-kancalari.md](docs/tr/hafiza-oturum-kancalari.md).
+Kabul edilmiş notlar saklama penceresiyle silinmez; unutma açık purge işlemidir
+ve yedeklerde purge öncesi kopya kalabileceği belgelenmiştir.
 
 Kalıcı kuyruk istemci bağlantısı kapandığında kabul edilmiş işi saklar; sonuç `forge_report` ile sorgulanır. Ayrı worker süreci `node dist/cli.js worker` komutuyla başlatılabilir. Worker kurtarma testleri model kalitesi kanıtı değildir. Uzun soak ölçümündeki gecikme hedefi ihlalleri ve gerçek model kalite benchmarkı açık kabul maddeleridir.
 
