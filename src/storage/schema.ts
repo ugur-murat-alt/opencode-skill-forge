@@ -682,6 +682,11 @@ export interface MemoryPurge {
   purged_at: number;
   reason: string;
   source: string;
+  /** Issue #41 follow-up: durable, retryable revision-file cleanup. */
+  file_paths_json: string | null;
+  cleanup_pending: number;
+  cleanup_attempts: number;
+  cleanup_next_at: number;
 }
 export interface MemoryRetentionRun {
   id: string;

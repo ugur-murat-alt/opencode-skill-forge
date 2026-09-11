@@ -2197,6 +2197,13 @@ export async function createHttpServer(config: LocalConfig) {
       .where("tenant_id", "=", identity.tenantId)
       .where("space_id", "=", space.id)
       .executeTakeFirstOrThrow();
+    const purgesPendingRow = await storage.db
+      .selectFrom("memory_purges")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("cleanup_pending", "=", 1)
+      .executeTakeFirstOrThrow();
     const lastRetentionRun = await storage.db
       .selectFrom("memory_retention_runs")
       .select(["finished_at"])
@@ -2231,6 +2238,7 @@ export async function createHttpServer(config: LocalConfig) {
       retention: {
         windows: retentionWindows(effective.values),
         purges: Number(purgesRow.n),
+        purges_pending_cleanup: Number(purgesPendingRow.n),
         last_run_at: lastRetentionRun?.finished_at ?? null,
         restore_reconciliation_required: restoreStatus.reconciliation_required,
       },

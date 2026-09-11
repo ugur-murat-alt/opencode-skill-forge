@@ -110,6 +110,7 @@ export async function applyAutoProposals(input: {
         .updateTable("memory_curator_changes")
         .set({
           state: "applied",
+          note_id: noteId,
           applied_revision: receipt.revision,
           updated_at: Date.now(),
         })

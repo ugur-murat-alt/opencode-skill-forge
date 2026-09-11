@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { unlink } from "node:fs/promises";
 import type { Kysely } from "kysely";
 import type { DB } from "../storage/schema.js";
 import type { Identity } from "../application/identity.js";
 import type { Settings } from "../domain/settings.js";
 import { ForgeError } from "../domain/errors.js";
-import { resolveVaultRelative } from "./paths.js";
+import { cleanupPendingPurgeFiles } from "./invalidation.js";
 import { MemoryIndexService } from "./index.js";
 import { MemoryService } from "./service.js";
 import { invalidateDerivedForNote } from "./invalidation.js";
@@ -48,6 +47,9 @@ export function retentionWindows(
 }
 
 export interface RetentionReport {
+  purge_files_cleaned: number;
+  purge_files_failed: number;
+  purges_pending_cleanup: number;
   events_deleted: number;
   candidates_deleted: number;
   extractions_deleted: number;
@@ -83,6 +85,9 @@ export class MemoryRetentionService {
     const windows = retentionWindows(this.deps.settings);
     const day = 86_400_000;
     const report: RetentionReport = {
+      purge_files_cleaned: 0,
+      purge_files_failed: 0,
+      purges_pending_cleanup: 0,
       events_deleted: 0,
       candidates_deleted: 0,
       extractions_deleted: 0,
@@ -168,6 +173,15 @@ export class MemoryRetentionService {
       .executeTakeFirst();
     report.flags_deleted = Number(flags.numDeletedRows ?? 0);
 
+    const purgeCleanup = await cleanupPendingPurgeFiles(
+      this.db,
+      this.deps.vaultRoot,
+      now,
+    );
+    report.purge_files_cleaned = purgeCleanup.cleaned;
+    report.purge_files_failed = purgeCleanup.failed;
+    report.purges_pending_cleanup = purgeCleanup.pending;
+
     await this.db
       .insertInto("memory_retention_runs")
       .values({
@@ -194,6 +208,7 @@ export class MemoryRetentionService {
     note_id: string;
     purged_at: number;
     files_deleted: number;
+    cleanup_pending: boolean;
   }> {
     const service = new MemoryService(this.db, undefined, this.deps.vaultRoot);
     await service.authorizeSpace(identity, input.spaceId, "write");
@@ -222,6 +237,7 @@ export class MemoryRetentionService {
         note_id: input.noteId,
         purged_at: existing.purged_at,
         files_deleted: 0,
+        cleanup_pending: false,
       };
     if (!note)
       throw new ForgeError("memory_note_unavailable", "Not bulunamadı.", 404);
@@ -232,19 +248,11 @@ export class MemoryRetentionService {
       .where("space_id", "=", purgeId.space_id)
       .where("note_id", "=", purgeId.note_id)
       .execute();
-    let filesDeleted = 0;
-    if (this.deps.vaultRoot)
-      for (const revision of revisions) {
-        if (!revision.file_path) continue;
-        try {
-          await unlink(
-            resolveVaultRelative(this.deps.vaultRoot, revision.file_path),
-          );
-          filesDeleted += 1;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }
+    const filePaths = revisions
+      .map((revision) => revision.file_path)
+      .filter(
+        (path): path is string => typeof path === "string" && path.length > 0,
+      );
     const purgedAt = this.now;
     await this.db.transaction().execute(async (tx) => {
       await invalidateDerivedForNote(tx, purgeId);
@@ -277,6 +285,10 @@ export class MemoryRetentionService {
           purged_at: purgedAt,
           reason: input.reason.slice(0, 500),
           source: "manual",
+          file_paths_json: JSON.stringify(filePaths),
+          cleanup_pending: 1,
+          cleanup_attempts: 0,
+          cleanup_next_at: 0,
         })
         .onConflict((oc) => oc.doNothing())
         .execute();
@@ -291,17 +303,28 @@ export class MemoryRetentionService {
           detail: JSON.stringify({
             space_id: purgeId.space_id,
             note_id: purgeId.note_id,
-            files_deleted: filesDeleted,
+            files_pending: filePaths.length,
           }),
           created_at: purgedAt,
         })
         .execute();
     });
+    // The purge is durable before any file is touched; a failed unlink stays
+    // visible on the receipt and is retried with backoff.
+    await cleanupPendingPurgeFiles(this.db, this.deps.vaultRoot, purgedAt);
+    const receipt = await this.db
+      .selectFrom("memory_purges")
+      .select(["cleanup_pending"])
+      .where("tenant_id", "=", purgeId.tenant_id)
+      .where("space_id", "=", purgeId.space_id)
+      .where("note_id", "=", purgeId.note_id)
+      .executeTakeFirstOrThrow();
     return {
       status: "purged",
       note_id: input.noteId,
       purged_at: purgedAt,
-      files_deleted: filesDeleted,
+      files_deleted: receipt.cleanup_pending === 1 ? 0 : filePaths.length,
+      cleanup_pending: receipt.cleanup_pending === 1,
     };
   }
 
@@ -428,6 +451,10 @@ export async function applyPurgesFromBackup(
         purged_at: purge.purged_at,
         reason: (purge.reason ?? "restored").slice(0, 500),
         source: "backup",
+        file_paths_json: null,
+        cleanup_pending: 0,
+        cleanup_attempts: 0,
+        cleanup_next_at: 0,
       })
       .onConflict((oc) => oc.doNothing())
       .execute();

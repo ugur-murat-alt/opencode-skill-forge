@@ -1,11 +1,18 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DB } from "../storage/schema.js";
 import { ForgeError } from "../domain/errors.js";
+import { resolveVaultRelative } from "./paths.js";
+import { unlink } from "node:fs/promises";
 
 /**
  * Issue #41 (M08): derived-invalidation and tombstone/purge guards shared by
  * the delete path and the commit pipeline. No primary note/revision content is
  * touched here.
+ *
+ * `memory_index_edges` has no `note_id` column: a note participates as either
+ * the source or the target of an edge. SQLite silently treats an unknown
+ * double-quoted identifier as a string constant, so using `note_id` there
+ * deletes nothing and PostgreSQL fails with 42703; both are covered by tests.
  */
 
 /** Removes only derived index rows for a note; accepted revisions stay. */
@@ -13,17 +20,29 @@ export async function invalidateDerivedForNote(
   db: Kysely<DB>,
   key: { tenant_id: string; space_id: string; note_id: string },
 ): Promise<void> {
-  for (const table of [
-    "memory_index_terms",
-    "memory_index_edges",
-    "memory_index_heads",
-  ] as const)
-    await db
-      .deleteFrom(table)
-      .where("tenant_id", "=", key.tenant_id)
-      .where("space_id", "=", key.space_id)
-      .where("note_id", "=", key.note_id)
-      .execute();
+  await db
+    .deleteFrom("memory_index_terms")
+    .where("tenant_id", "=", key.tenant_id)
+    .where("space_id", "=", key.space_id)
+    .where("note_id", "=", key.note_id)
+    .execute();
+  await db
+    .deleteFrom("memory_index_heads")
+    .where("tenant_id", "=", key.tenant_id)
+    .where("space_id", "=", key.space_id)
+    .where("note_id", "=", key.note_id)
+    .execute();
+  await db
+    .deleteFrom("memory_index_edges")
+    .where("tenant_id", "=", key.tenant_id)
+    .where("space_id", "=", key.space_id)
+    .where((eb) =>
+      eb.or([
+        eb("source_note_id", "=", key.note_id),
+        eb("target_note_id", "=", key.note_id),
+      ]),
+    )
+    .execute();
 }
 
 /**
@@ -62,3 +81,96 @@ export async function assertCommitTarget(
       409,
     );
 }
+
+export const MAX_PURGE_CLEANUP_PER_RUN = 100;
+
+/**
+ * Bounded, retryable cleanup of revision files for already-committed purges.
+ * A purge is durable before any file is touched; a failed unlink leaves the
+ * receipt with `cleanup_pending = 1` and is retried with backoff, so a
+ * "note row present but file missing" state cannot occur.
+ */
+export async function cleanupPendingPurgeFiles(
+  db: Kysely<DB>,
+  vaultRoot: string | undefined,
+  now: number,
+): Promise<{ cleaned: number; failed: number; pending: number }> {
+  if (!vaultRoot)
+    return { cleaned: 0, failed: 0, pending: await pendingPurgeCount(db) };
+  const rows = await db
+    .selectFrom("memory_purges")
+    .select([
+      "tenant_id",
+      "space_id",
+      "note_id",
+      "file_paths_json",
+      "cleanup_attempts",
+    ])
+    .where("cleanup_pending", "=", 1)
+    .where("cleanup_next_at", "<=", now)
+    .orderBy("cleanup_next_at")
+    .limit(MAX_PURGE_CLEANUP_PER_RUN)
+    .execute();
+  let cleaned = 0,
+    failed = 0;
+  for (const row of rows) {
+    const paths = parseFilePaths(row.file_paths_json);
+    let ok = true;
+    for (const path of paths) {
+      try {
+        await unlink(resolveVaultRelative(vaultRoot, path));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") ok = false;
+      }
+    }
+    if (ok) {
+      await db
+        .updateTable("memory_purges")
+        .set({ cleanup_pending: 0, cleanup_next_at: 0 })
+        .where("tenant_id", "=", row.tenant_id)
+        .where("space_id", "=", row.space_id)
+        .where("note_id", "=", row.note_id)
+        .execute();
+      cleaned += 1;
+    } else {
+      const attempts = Number(row.cleanup_attempts) + 1;
+      await db
+        .updateTable("memory_purges")
+        .set({
+          cleanup_attempts: attempts,
+          cleanup_next_at: now + Math.min(1000 * 2 ** attempts, 60 * 60 * 1000),
+        })
+        .where("tenant_id", "=", row.tenant_id)
+        .where("space_id", "=", row.space_id)
+        .where("note_id", "=", row.note_id)
+        .execute();
+      failed += 1;
+    }
+  }
+  return { cleaned, failed, pending: await pendingPurgeCount(db) };
+}
+
+export async function pendingPurgeCount(db: Kysely<DB>): Promise<number> {
+  const row = await db
+    .selectFrom("memory_purges")
+    .select((eb) => eb.fn.countAll<number>().as("n"))
+    .where("cleanup_pending", "=", 1)
+    .executeTakeFirstOrThrow();
+  return Number(row.n);
+}
+
+function parseFilePaths(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value)
+      ? value
+          .filter((entry): entry is string => typeof entry === "string")
+          .slice(0, 1000)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export { sql };
