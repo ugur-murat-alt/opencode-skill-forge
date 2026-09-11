@@ -484,7 +484,8 @@ describe("dry-run raporu", () => {
         expect(codes).toContain(expected);
       }
       expect(report.decision.status).toBe("blocked");
-      expect(report.decision.blockingIssues).toBeGreaterThanOrEqual(8);
+      expect(report.decision.blockingIssues).toBe(8);
+      expect(report.decision.warningIssues).toBe(1);
       expect(
         report.issues.find(
           (issue) => issue.code === "note_content_hash_mismatch",
