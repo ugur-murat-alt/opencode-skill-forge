@@ -379,6 +379,8 @@ export const en: typeof tr = {
     memory_file_too_large: "Source file exceeds the size limit.",
     memory_format_unsupported: "Unsupported memory format version.",
     memory_note_deleted: "Note is archived; an explicit restore is required.",
+    memory_note_purged:
+      "The note was permanently purged and cannot be restored.",
     memory_note_id_mismatch: "Document note_id does not match the target.",
     memory_note_unavailable: "Note not found.",
     memory_path_escape: "The write path escapes the vault root.",

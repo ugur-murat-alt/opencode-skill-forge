@@ -370,6 +370,7 @@ export const tr = {
     memory_file_too_large: "Kaynak dosya boyut sınırını aşıyor.",
     memory_format_unsupported: "Desteklenmeyen hafıza format sürümü.",
     memory_note_deleted: "Not arşivlenmiş; önce açık restore gerekir.",
+    memory_note_purged: "Not kalıcı olarak silinmiş; geri getirilemez.",
     memory_note_id_mismatch: "Belge note_id hedefle eşleşmiyor.",
     memory_note_unavailable: "Not bulunamadı.",
     memory_path_escape: "Yazma yolu vault kökünün dışına çıkıyor.",
