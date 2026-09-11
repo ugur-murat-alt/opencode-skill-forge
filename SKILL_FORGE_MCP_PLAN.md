@@ -1752,3 +1752,20 @@ kaynaklı ve ölçülebilir ikinci beyin; ilk kullanılabilir dikey teslim M01�
 - Koordinatör kararı: M01 sözleşmesi doğrudan ajan promptunda bağlayıcı olarak
   verildi; sapma hâlinde ajan duracak. Koordinatör, birleşme sonrası kodu ve
   testleri bağımsız olarak doğrulayacak (ajan raporu kanıt sayılmaz).
+
+#### M01 (#34) — tamamlandı ve bağımsız doğrulandı
+- Çekirdek uygulama: `627a040` (Markdown v1 sözleşmesi + `runs` scope modeli +
+  migration 032), `91fdb33` (alan ACL servisi + `memory_ingest`/`memory_reconcile`
+  türleri + handler'lar + üretim kablolaması), `3364f2b` (ADR + format referansı).
+- Takip düzeltmeleri: `5936911` (memory-job zinciri sıra-bağımsız/canlı test),
+  `248439d` (B1: run kapsamı ↔ hedef alan eşleşmesi execution'da zorunlu;
+  B3: yetki iptalinde fence-only terminalizasyon gerçek `error_code` ile).
+- Bağımsız doğrulama altyapısı: `8dc9b4d` + `7d17c90` (`MEMORY_REQUIRE_M01=1`
+  kapısı; bağımsız inceleme raporu).
+- Kanıt: bağımsız kapı SQLite 13/13, PG 21/21; hafıza süiti 23/23; regresyon
+  setleri yeşil; çekirdeğin tam takımı 597 test / 585 pass / 12 ortamsal
+  (Docker sandbox + pg_dump). B1/B2/B3 kapalı; migration 031→032 yükseltmesi
+  veri koruyor ve FK temiz.
+- Karar notları: `memoryEnabled` kabul anında işin KENDİ kapsamı için snapshot
+  alınır; hedef alan execution'da kapsamla yeniden eşleştirilir. `dist/**`
+  birleşik dalda bir sonraki final entegrasyonda tek seferde derlenecek.
