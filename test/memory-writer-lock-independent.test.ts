@@ -12,10 +12,8 @@ import { writerLockPath } from "../src/memory/paths.js";
  * - Canlı pid (SIGSTOP ile duraklatılmış olsa da) aynı hostta force ile bile
  *   devralınamaz; ölü pid devralınır.
  * - Sahte foreign host yalnız açık `force` ile alınır.
- * - Bozuk/okunamayan kilit force olmadan devralınamaz. Bu son madde şu an
- *   `test.failing`'dir: `src/memory/writer.ts:166` `this.busy(...)` döndürüyor
- *   ama fırlatmıyor. Çekirdek düzeltmesi gelince test yeşile döner ve
- *   `.failing` kaldırılmalıdır.
+ * - Bozuk/okunamayan kilit force olmadan devralınamaz. Çekirdek düzeltmesi
+ *   (`a5b6964`) ile bu uç kapandı; test normal regresyon testidir.
  */
 
 async function tempVault(): Promise<string> {
@@ -147,22 +145,18 @@ test("#35 bağımsız: heartbeat/release sahiplik kontrollü", async () => {
   }
 }, 15000);
 
-test.failing(
-  "#35 bağımsız (bekleyen writer.ts:166): bozuk kilit force olmadan devralınamaz",
-  async () => {
-    const vault = await tempVault();
-    try {
-      await writeFile(writerLockPath(vault), "{bozuk json");
-      const writer = new VaultWriter(vault, { leaseMs: 300 });
-      const denied = await rejection(() => writer.acquire());
-      expect(denied.code).toBe("memory_writer_busy");
-      expect(denied.status).toBe(409);
-    } finally {
-      await rm(vault, { recursive: true, force: true });
-    }
-  },
-  15000,
-);
+test("#35 bağımsız: bozuk kilit force olmadan devralınamaz", async () => {
+  const vault = await tempVault();
+  try {
+    await writeFile(writerLockPath(vault), "{bozuk json");
+    const writer = new VaultWriter(vault, { leaseMs: 300 });
+    const denied = await rejection(() => writer.acquire());
+    expect(denied.code).toBe("memory_writer_busy");
+    expect(denied.status).toBe(409);
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+  }
+}, 15000);
 
 test("#35 bağımsız: bozuk kilit yalnız açık force ile kurtarılır", async () => {
   const vault = await tempVault();
