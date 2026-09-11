@@ -6,13 +6,14 @@ mikroservis, plugin marketplace, CQRS veya DI container gerektirilmez.
 
 ## Sahiplik ve bağımlılık yönü
 
-| Katman                       | Sahiplik                                                                                                                                 | Yasak içe aktarma                                 |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `src/domain`                 | Sözleşmeler: ayarlar, roller, hata kodları, `tool-contracts`, statik iş türü tanımları (`job-kinds`)                                     | application, skills, jobs, runner, cli, mcp, http |
-| `src/application`            | Kullanım senaryoları (identity/organization, settings, packages, maintenance, deletion, run reports, jobs orchestration, forge dispatch) | `src/mcp`, `src/http`, `src/clients`              |
-| `src/skills`                 | Paket depolama, yayın/CAS, arama puanlama, revision okuma                                                                                | mcp, http, clients                                |
-| `src/jobs`, `src/runner`     | Kuyruk, worker, bütçe, sağlayıcı iş akışı                                                                                                | mcp, http, clients                                |
-| `src/http`, `src/mcp`, `web` | Ulaşım adaptörleri: typed uygulama işlemlerine çeviri                                                                                    | —                                                 |
+| Katman                       | Sahiplik                                                                                                                                    | Yasak içe aktarma                                  |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `src/domain`                 | Sözleşmeler: ayarlar, roller, hata kodları, `tool-contracts`, statik iş türü tanımları (`job-kinds`), taşınabilir hafıza formatı (`memory`) | application, skills, jobs, runner, cli, mcp, http  |
+| `src/application`            | Kullanım senaryoları (identity/organization, settings, packages, maintenance, deletion, run reports, jobs orchestration, forge dispatch)    | `src/mcp`, `src/http`, `src/clients`               |
+| `src/memory`                 | Hafıza uygulaması: alan/ACL servisi, statik hafıza iş türleri, model-dışı handler'lar (issue #34)                                           | skills, runner, mcp, execution, http, cli, clients |
+| `src/skills`                 | Paket depolama, yayın/CAS, arama puanlama, revision okuma                                                                                   | mcp, http, clients                                 |
+| `src/jobs`, `src/runner`     | Kuyruk, worker, bütçe, sağlayıcı iş akışı                                                                                                   | mcp, http, clients                                 |
+| `src/http`, `src/mcp`, `web` | Ulaşım adaptörleri: typed uygulama işlemlerine çeviri                                                                                       | —                                                  |
 
 Kural `test/architecture-boundaries.test.ts` ile otomatik denetlenir. Denetim
 artık literal import string'i aramaz: her import/export/dinamik import
@@ -51,8 +52,27 @@ araacıdır — gerekçesi ve liveness sözleşmesi `docs/adr/pg-boss-liveness.m
   bazında farklı handler bağlar. Skill üretim handler'ı yalnız `skill_evolve`
   kabul eder.
 - Test türleri üretime eklenmez; test kendi kaydını kurar
-  (`test/job-kinds-contract.test.ts`). Hafıza uzlaştırması gibi gerçek
-  model-dışı türler bu sınır üzerinden eklenecektir; henüz eklenmemiştir.
+  (`test/job-kinds-contract.test.ts`). Gerçek model-dışı türler bu sınır
+  üzerinden eklenir: ilk statik hafıza türleri (`memory_ingest`,
+  `memory_reconcile`) issue #34 ile `src/memory/job-kinds.ts` içinde
+  tanımlanmış, üretim kaydı `productionJobKinds` ile verilmiştir; türler
+  `skillProfile: false` ve `scope: "memory"` taşır.
+
+## Hafıza sınırı (issue #34)
+
+- Uygulama davranışının tek sahibi `src/memory/`'dir: `MemoryService`
+  (alan oluşturma, alan ACL'i, kalıcı olay kabulü, deterministik
+  uzlaştırma), statik iş türleri ve model-dışı handler'lar. HTTP/MCP/CLI
+  ileride yalnız adaptör olur.
+- `src/domain/memory.ts` taşınabilir Markdown sözleşmesidir; DB/IO/uygulama
+  import etmez. `test/memory-boundaries.test.ts` bunu çözümlenmiş module
+  path'leri ve negatif fixture ile denetler.
+- `src/memory/**`; `skills`, `runner`, `mcp`, `execution` ve taşıma
+  katmanlarını import etmez. `PackageStore`/`EvolutionStaging` hafıza
+  deposu veya izin kaynağı değildir; hafıza işi `skill_evolve` kılığına
+  girmez.
+- Kapsam/yetki kararları ve gerekçeleri `docs/adr/memory-ownership.md`,
+  format referansı `docs/tr/hafiza-format.md` içindedir.
 
 ## Use-case pilotu (issue #32)
 
