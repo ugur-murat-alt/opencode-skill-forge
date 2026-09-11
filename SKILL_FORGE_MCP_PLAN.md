@@ -1873,3 +1873,9 @@ Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türeti
 - Açık maddeler dürüstçe ayrıldı: native Codex/Claude matrisi, canlı model ölçümü,
   gerçek PG restore provası, #37 10k UI ölçümü ve retention otomatik silme yürütücüsü.
   Bu nedenle yalnız kanıtı tamamlanan issue'lar PR birleşmesiyle kapatılır.
+
+- Entegrasyon PR'ı **#44** birleşti (merge `d278371d73`); CI beş işte yeşil (push
+  `34628303828`, PR `34628308059`; doğrulanan HEAD `d0634a1`). **#36, #39 ve #40
+  kapatıldı**; #37 (10k UI ölçümü), #38 (native istemci matrisi), #41 (native/canlı
+  model/gerçek PG restore) ve epic #33 açık maddelerle bırakıldı. Canlı AGZ verisi
+  değiştirilmedi; sürüm yayını ve üretim geçişi yapılmadı.

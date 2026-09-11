@@ -2,7 +2,7 @@
  "campaign": "Markdown hafıza / ikinci beyin modülü (epic #33; #34–#41)",
  "base_main": "1bda764",
  "branch": "feat/memory-m03-m08",
- "verified_head": "171b3ed",
+ "verified_head": "d0634a1",
  "phase1": {
   "issues": [
    "34",
@@ -124,6 +124,22 @@
   "Retention otomatik silme yurutucusu politika olarak tanimli; silme acik yetkili islem"
  ],
  "ci": {
-  "status": "PR acilisinda kosacak; sonuclar PR kontrollerinde"
+  "status": "beş işte yeşil",
+  "runs": [
+   "34628303828",
+   "34628308059"
+  ],
+  "merge_commit": "d278371d73",
+  "closed_issues": [
+   "36",
+   "39",
+   "40"
+  ],
+  "open_with_gaps": [
+   "33",
+   "37",
+   "38",
+   "41"
+  ]
  }
 }
