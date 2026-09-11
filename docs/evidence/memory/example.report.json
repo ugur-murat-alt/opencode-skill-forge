@@ -1,0 +1,46 @@
+{
+  "$schema": "./report.schema.json",
+  "reportId": "PLACEHOLDER-NOT-A-RUN",
+  "reportType": "benchmark",
+  "status": "placeholder",
+  "notice": "Bu dosya yalnız alan doldurma örneğidir; gerçek bir koşumun sonucu DEĞİLDİR. Hiçbir sayı ölçülmüş değildir. Üretilen raporlar bu dizine commit edilmez.",
+  "requirement": {
+    "issue": "#41",
+    "section": "§2 Kalite ve token verimliliği"
+  },
+  "entryPath": "fixture-only",
+  "command": "bun test test/benchmarks/",
+  "fixture": {
+    "path": "test/fixtures/memory-benchmark/acceptance.json",
+    "sha256": null,
+    "seed": null
+  },
+  "commit": "",
+  "ci": null,
+  "environment": {
+    "os": "",
+    "runtime": "",
+    "backend": "none",
+    "postgresVersion": null,
+    "hardware": null,
+    "tokenizer": "none (byte estimate)"
+  },
+  "startedAt": "1970-01-01T00:00:00.000Z",
+  "finishedAt": "1970-01-01T00:00:00.000Z",
+  "results": [
+    {
+      "id": "example-1",
+      "name": "Örnek satır",
+      "expected": "Beklenen gözlenebilir sonuç",
+      "observed": "Doldurulacak",
+      "status": "not-run",
+      "evidence": { "logPath": null, "sha256": null }
+    }
+  ],
+  "metrics": null,
+  "limitations": [
+    "Placeholder dosya: ölçüm yapılmadı.",
+    "Gerçek koşumda donanım, korpus ve tokenizer yöntemi yazılmalı."
+  ],
+  "artifacts": []
+}
