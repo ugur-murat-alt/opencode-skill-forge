@@ -493,3 +493,266 @@ test("#37 HTTP: note-scoped candidate filter", async () => {
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);
+
+test("#37 HTTP: derived tasks, week window, health and temporal recall", async () => {
+  const root = await mkdtemp(join(tmpdir(), "forge-memory-ui-health-"));
+  await writeFile(
+    join(root, "policy.json"),
+    JSON.stringify({ memoryEnabled: true, evolutionEnabled: false }),
+    { mode: 0o600 },
+  );
+  const config = await localConfig(root);
+  const app = await createHttpServer(config);
+  const storage = await openDatabase({ dataDir: root });
+  try {
+    const identities = new IdentityService(storage.db);
+    const owner = await identities.bootstrapLocal();
+    const memory = new MemoryService(storage.db, identities, vaultRoot(root));
+    const space = await memory.ensureSpace(owner, { type: "personal" });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string")
+      throw new Error("server_address_missing");
+    const base = `http://127.0.0.1:${address.port}`;
+    const waitReceipt = async (key: string) =>
+      until(async () => {
+        const response = await request(
+          base,
+          config,
+          `/api/memory/events?space_id=${encodeURIComponent(space.id)}` +
+            `&source_event_key=${encodeURIComponent(key)}`,
+        );
+        if (response.status !== 200) return null;
+        const payload = (await response.json()) as { state: string };
+        return payload.state === "committed" ? payload : null;
+      });
+
+    // Geçerlilik penceresi kapanmış not: as_of ile stale sayılır.
+    const validityKey = "ui-validity";
+    await request(base, config, "/api/memory/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        source_event_key: validityKey,
+        source_kind: "ui",
+        content: [
+          "---",
+          "format_version: 1",
+          'note_id: "validity-note"',
+          `memory_space_id: ${JSON.stringify(space.id)}`,
+          "kind: fact",
+          'title: "validitymarker notu"',
+          "valid_from: 1000",
+          "valid_until: 2000",
+          "---",
+          "",
+          "Kısa ömürlü kayıt.",
+          "",
+        ].join("\n"),
+      }),
+    });
+    await waitReceipt(validityKey);
+    const recalledNow = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/recall?query=validitymarker&space_id=${encodeURIComponent(space.id)}`,
+      )
+    ).json()) as { items: { note_id: string }[]; index: { stale: number } };
+    expect(recalledNow.items.map((row) => row.note_id)).toContain(
+      "validity-note",
+    );
+    const recalledPast = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/recall?query=validitymarker&space_id=${encodeURIComponent(space.id)}` +
+          `&as_of=2001-01-01T00:00:00.000Z`,
+      )
+    ).json()) as { items: unknown[]; index: { stale: number } };
+    expect(recalledPast.items).toHaveLength(0);
+    expect(recalledPast.index.stale).toBeGreaterThanOrEqual(1);
+
+    // Checkpoint canonical task notu üretir; otomatik done yok.
+    const checkpoint = await request(base, config, "/api/memory/checkpoint", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        goal: "Hafta görevi",
+        progress: "başladı",
+        next_step: "devam",
+        event_key: `ui-task-${Date.now()}`,
+      }),
+    });
+    expect(checkpoint.status).toBe(200);
+    const checkpointPayload = (await checkpoint.json()) as {
+      note_id: string;
+      revision: number;
+      task_status: string;
+    };
+    expect(checkpointPayload.task_status).toBe("doing");
+
+    const tasks = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}`,
+      )
+    ).json()) as {
+      items: { id: string; task_status: string; pinned: boolean }[];
+      next: string | null;
+      week: { week_start: number; week_end: number; timezone: string };
+    };
+    expect(tasks.items.map((row) => row.id)).toContain(
+      checkpointPayload.note_id,
+    );
+    // Sunucu haftası pazartesi 00:00'da başlar ve UI yeniden hesaplamaz.
+    const weekStart = new Date(tasks.week.week_start);
+    expect(weekStart.getDay()).toBe(1);
+    expect(weekStart.getHours()).toBe(0);
+    expect(tasks.week.week_end).toBeGreaterThan(tasks.week.week_start);
+    expect(typeof tasks.week.timezone).toBe("string");
+    const weekOnly = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}&week_only=1`,
+      )
+    ).json()) as { items: { id: string }[] };
+    expect(weekOnly.items.map((row) => row.id)).toContain(
+      checkpointPayload.note_id,
+    );
+    const noDone = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}&statuses=done`,
+      )
+    ).json()) as { items: unknown[] };
+    expect(noDone.items).toHaveLength(0);
+    const invalidStatus = await request(
+      base,
+      config,
+      `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}&statuses=nope`,
+    );
+    expect(invalidStatus.status).toBe(400);
+
+    // Durum değişimi canonical kayda gider; eski revision 409'dur.
+    const patched = await request(base, config, "/api/memory/update", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        note_id: checkpointPayload.note_id,
+        expected_revision: checkpointPayload.revision,
+        task_status: "done",
+        event_key: `ui-task-done-${Date.now()}`,
+      }),
+    });
+    expect(patched.status).toBe(200);
+    const patchedPayload = (await patched.json()) as { revision: number };
+    expect(patchedPayload.revision).toBe(checkpointPayload.revision + 1);
+    const doneTasks = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}&statuses=done`,
+      )
+    ).json()) as { items: { id: string }[] };
+    expect(doneTasks.items.map((row) => row.id)).toContain(
+      checkpointPayload.note_id,
+    );
+    const stalePatch = await request(base, config, "/api/memory/update", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: space.id,
+        note_id: checkpointPayload.note_id,
+        expected_revision: checkpointPayload.revision,
+        task_status: "blocked",
+      }),
+    });
+    expect(stalePatch.status).toBe(409);
+
+    // Sağlık raporu ad/başlık sızdırmaz; sayı ve hata kodu döner.
+    const health = (await (
+      await request(
+        base,
+        config,
+        `/api/memory/health?space_id=${encodeURIComponent(space.id)}`,
+      )
+    ).json()) as {
+      index: { heads: number; stale: number; last_indexed_at: number | null };
+      events: { pending: number; rejected: number };
+      jobs: { active: number; failed_24h: number; last_failure: unknown };
+      spool: unknown;
+      week: { week_start: number; week_end: number; timezone: string };
+    };
+    expect(health.index.heads).toBeGreaterThanOrEqual(1);
+    expect(health.index.last_indexed_at).toBeGreaterThan(0);
+    expect(health.week.week_start).toBe(tasks.week.week_start);
+    const healthText = JSON.stringify(health);
+    expect(healthText).not.toContain('"title"');
+    expect(healthText).not.toContain('"name"');
+    expect(healthText).not.toContain(checkpointPayload.note_id);
+    expect(health.spool).toBeNull();
+
+    // Yabancı tenant alanı sızıntısız 404.
+    await storage.db
+      .insertInto("tenants")
+      .values({ id: "ui-health-tenant", name: "H", created_at: Date.now() })
+      .execute();
+    await storage.db
+      .insertInto("users")
+      .values({
+        id: "ui-health-user",
+        subject: "ui-health-user",
+        display_name: "H",
+        created_at: Date.now(),
+      })
+      .execute();
+    await storage.db
+      .insertInto("memberships")
+      .values({
+        tenant_id: "ui-health-tenant",
+        user_id: "ui-health-user",
+        role: "founder",
+      })
+      .execute();
+    const foreign = await memory.createOrganizationSpace(
+      { tenantId: "ui-health-tenant", userId: "ui-health-user" },
+      "Yabancı sağlık",
+    );
+    const foreignHealth = await request(
+      base,
+      config,
+      `/api/memory/health?space_id=${encodeURIComponent(foreign.id)}`,
+    );
+    expect(foreignHealth.status).toBe(404);
+    // Sağlık ve görev okumaları yeni run/olay üretmez (ingest kendi run'ını
+    // zaten oluşturmuştu; yalnız GET'lerin etkisi ölçülür).
+    const runsBefore = await storage.db
+      .selectFrom("runs")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", owner.tenantId)
+      .executeTakeFirstOrThrow();
+    await request(
+      base,
+      config,
+      `/api/memory/health?space_id=${encodeURIComponent(space.id)}`,
+    );
+    await request(
+      base,
+      config,
+      `/api/memory/tasks?space_id=${encodeURIComponent(space.id)}`,
+    );
+    const runsAfter = await storage.db
+      .selectFrom("runs")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("tenant_id", "=", owner.tenantId)
+      .executeTakeFirstOrThrow();
+    expect(Number(runsAfter.n)).toBe(Number(runsBefore.n));
+  } finally {
+    await app.close();
+    await storage.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);

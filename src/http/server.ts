@@ -80,6 +80,30 @@ export function requestIdentity(request: FastifyRequest) {
     throw new ForgeError("unauthorized", "Kimlik doğrulaması gerekiyor.", 401);
   return identity;
 }
+/**
+ * M04 phase B: the derived task/week views use one server-owned week window
+ * (Monday 00:00 in the server's local timezone). The UI displays the returned
+ * boundaries and never recomputes them.
+ */
+export function memoryWeekWindow(now: number) {
+  const date = new Date(now);
+  const mondayOffset = (date.getDay() + 6) % 7;
+  const start = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate() - mondayOffset,
+  );
+  const end = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    start.getDate() + 7,
+  );
+  return {
+    week_start: start.getTime(),
+    week_end: end.getTime(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+  };
+}
 export function tokenMatches(
   value: string | undefined,
   expected: string,
@@ -1911,6 +1935,9 @@ export async function createHttpServer(config: LocalConfig) {
         graph_depth: z.string().regex(/^\d+$/).optional(),
         limit: z.string().regex(/^\d+$/).optional(),
         cursor: z.string().max(2048).optional(),
+        // M04 phase B: temporal validity instant; closed validity windows are
+        // reported as stale instead of silently presented as current.
+        as_of: z.string().min(1).max(40).optional(),
       })
       .strict()
       .parse(request.query);
@@ -1922,6 +1949,7 @@ export async function createHttpServer(config: LocalConfig) {
         query.graph_depth === undefined ? undefined : Number(query.graph_depth),
       limit: query.limit === undefined ? undefined : Number(query.limit),
       cursor: query.cursor,
+      as_of: query.as_of,
     });
   });
   app.get("/api/memory/graph", async (request) => {
@@ -1944,6 +1972,192 @@ export async function createHttpServer(config: LocalConfig) {
       max_edges:
         query.max_edges === undefined ? undefined : Number(query.max_edges),
     });
+  });
+  // M04 phase B: derived task view. Tasks are canonical notes with a
+  // task_status; the week window (Monday 00:00 server local time) and the
+  // timezone name come from the server, the UI never recomputes them.
+  app.get("/api/memory/tasks", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({
+        space_id: z.string().min(1).max(200),
+        after: z.string().max(200).optional(),
+        limit: z.string().regex(/^\d+$/).optional(),
+        statuses: z.string().max(200).optional(),
+        week_only: z.enum(["0", "1"]).optional(),
+      })
+      .strict()
+      .parse(request.query);
+    const space = await memory.authorizeSpace(identity, query.space_id, "read");
+    const limit = Math.min(Math.max(Number(query.limit ?? 50), 1), 100);
+    const week = memoryWeekWindow(Date.now());
+    let statuses: string[] | undefined;
+    if (query.statuses) {
+      statuses = query.statuses.split(",").map((value) => value.trim());
+      const invalid = statuses.filter(
+        (value) => !TASK_STATUSES.includes(value as never),
+      );
+      if (invalid.length > 0)
+        throw new ForgeError(
+          "invalid_filter",
+          "Bilinmeyen görev durumu.",
+          400,
+          undefined,
+          { invalid },
+        );
+    }
+    let selected = storage.db
+      .selectFrom("memory_notes")
+      .select([
+        "id",
+        "title",
+        "summary",
+        "task_status",
+        "pinned",
+        "lifecycle",
+        "current_revision",
+        "created_at",
+        "updated_at",
+        "source_id",
+        "source_state",
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .where("task_status", "is not", null)
+      .where("deleted_at", "is", null);
+    if (statuses && statuses.length > 0)
+      selected = selected.where("task_status", "in", statuses as never[]);
+    if (query.week_only === "1")
+      selected = selected.where("updated_at", ">=", week.week_start);
+    if (query.after) selected = selected.where("id", ">", query.after);
+    const rows = await selected
+      .orderBy("id")
+      .limit(limit + 1)
+      .execute();
+    return {
+      space: { id: space.id, kind: space.kind, name: space.name },
+      week,
+      items: rows.slice(0, limit).map((row) => ({
+        ...row,
+        pinned: Boolean(row.pinned),
+      })),
+      next: rows.length > limit ? rows[limit - 1]!.id : null,
+    };
+  });
+  // M04 phase B: space-scoped memory health. Counts and error codes only;
+  // no note titles, space names or foreign scope identifiers are returned.
+  app.get("/api/memory/health", async (request) => {
+    const identity = requestIdentity(request);
+    const query = z
+      .object({ space_id: z.string().min(1).max(200) })
+      .strict()
+      .parse(request.query);
+    const space = await memory.authorizeSpace(identity, query.space_id, "read");
+    const headsBase = () =>
+      storage.db
+        .selectFrom("memory_index_heads")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("space_id", "=", space.id);
+    const headCount = await headsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .executeTakeFirstOrThrow();
+    const lastIndexed = await headsBase()
+      .select((eb) => eb.fn.max("indexed_at").as("at"))
+      .executeTakeFirstOrThrow();
+    const staleRow = await storage.db
+      .selectFrom("memory_index_heads as h")
+      .leftJoin("memory_notes as n", (join) =>
+        join
+          .onRef("n.tenant_id", "=", "h.tenant_id")
+          .onRef("n.space_id", "=", "h.space_id")
+          .onRef("n.id", "=", "h.note_id"),
+      )
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("h.tenant_id", "=", identity.tenantId)
+      .where("h.space_id", "=", space.id)
+      .where((eb) =>
+        eb.or([
+          eb("n.id", "is", null),
+          eb("n.deleted_at", "is not", null),
+          eb("n.current_revision", "!=", eb.ref("h.revision")),
+        ]),
+      )
+      .executeTakeFirstOrThrow();
+    const eventCounts = await storage.db
+      .selectFrom("memory_events")
+      .select([
+        (eb) =>
+          eb.fn.count("id").filterWhere("state", "=", "pending").as("pending"),
+        (eb) =>
+          eb.fn
+            .count("id")
+            .filterWhere("state", "=", "rejected")
+            .as("rejected"),
+        (eb) =>
+          eb.fn
+            .min("created_at")
+            .filterWhere("state", "=", "pending")
+            .as("oldest_pending"),
+      ])
+      .where("tenant_id", "=", identity.tenantId)
+      .where("space_id", "=", space.id)
+      .executeTakeFirstOrThrow();
+    const scope = jobScopeForSpace(space);
+    const scopeKey =
+      scope.type === "project"
+        ? scope.projectId
+        : scope.type === "personal"
+          ? identity.userId
+          : "organization";
+    const memoryKinds = ["memory_ingest", "memory_reconcile", "memory_curate"];
+    const runsBase = () =>
+      storage.db
+        .selectFrom("runs")
+        .where("tenant_id", "=", identity.tenantId)
+        .where("kind", "in", memoryKinds)
+        .where("scope_kind", "=", scope.type)
+        .where("scope_key", "=", scopeKey);
+    const activeRow = await runsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("state", "in", ["queued", "running", "retry_wait"])
+      .executeTakeFirstOrThrow();
+    const failedRow = await runsBase()
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("state", "=", "failed")
+      .where("updated_at", ">=", Date.now() - 24 * 60 * 60 * 1000)
+      .executeTakeFirstOrThrow();
+    const lastFailure = await runsBase()
+      .select(["error_code", "updated_at", "kind"])
+      .where("state", "=", "failed")
+      .orderBy("updated_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return {
+      space: { id: space.id, kind: space.kind },
+      index: {
+        heads: Number(headCount.n),
+        stale: Number(staleRow.n),
+        last_indexed_at: lastIndexed.at ?? null,
+      },
+      events: {
+        pending: Number(eventCounts.pending),
+        rejected: Number(eventCounts.rejected),
+        oldest_pending_at: eventCounts.oldest_pending ?? null,
+      },
+      jobs: {
+        active: Number(activeRow.n),
+        failed_24h: Number(failedRow.n),
+        last_failure: lastFailure
+          ? {
+              error_code: lastFailure.error_code,
+              updated_at: lastFailure.updated_at,
+              kind: lastFailure.kind,
+            }
+          : null,
+      },
+      spool: null,
+      week: memoryWeekWindow(Date.now()),
+    };
   });
   app.post("/api/memory/index/rebuild", async (request) => {
     const identity = requestIdentity(request);

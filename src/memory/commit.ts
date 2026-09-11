@@ -466,6 +466,11 @@ export class MemoryCommitService {
               title: finalRecord.title,
               summary: finalRecord.summary,
               format_version: finalRecord.formatVersion,
+              // M04 phase B: the canonical note head mirrors the accepted
+              // record axes; otherwise tasks/pins/supersession go stale.
+              lifecycle: finalRecord.lifecycle,
+              pinned: finalRecord.pinned ? 1 : 0,
+              task_status: finalRecord.taskStatus,
               updated_at: now,
             })
             .where("tenant_id", "=", input.identity.tenantId)
