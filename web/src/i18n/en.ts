@@ -381,6 +381,8 @@ export const en: typeof tr = {
       "Revision path already holds different content.",
     memory_revision_file_missing: "Accepted revision file is missing.",
     memory_revision_required: "base_revision is required for updates.",
+    memory_revision_metadata_missing:
+      "Revision does not carry semantic metadata.",
     memory_revision_unavailable: "Revision not found.",
     memory_scope_mismatch: "Job scope does not match the target space.",
     memory_source_unavailable: "Source not found.",

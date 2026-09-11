@@ -132,7 +132,7 @@ export class MemoryWriteService {
     const meta = metadata.record;
     if (!meta)
       throw new ForgeError(
-        "memory_revision_unavailable",
+        "memory_revision_metadata_missing",
         "Sürüm anlamsal metadata taşımıyor.",
         409,
       );

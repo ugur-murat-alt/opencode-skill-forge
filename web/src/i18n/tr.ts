@@ -371,6 +371,7 @@ export const tr = {
     memory_revision_file_conflict: "Revision yolu farklı içerikle dolu.",
     memory_revision_file_missing: "Kabul edilmiş revision dosyası bulunamadı.",
     memory_revision_required: "Güncelleme için base_revision zorunludur.",
+    memory_revision_metadata_missing: "Sürüm anlamsal metadata taşımıyor.",
     memory_revision_unavailable: "Sürüm bulunamadı.",
     memory_scope_mismatch: "İş kapsamı ile hedef alan uyuşmuyor.",
     memory_source_unavailable: "Kaynak bulunamadı.",
