@@ -113,7 +113,7 @@ test("backup manifest carries head/revision hashes and purge receipts; restore r
       expect(summary!.counts.revisions).toBe(1);
       expect(summary!.counts.revision_files).toBe(1);
       expect(summary!.counts.purges).toBe(1);
-      expect(summary!.db_migration).toBe("039_memory_retention");
+      expect(summary!.db_migration).toBe("040_memory_retention_bigint");
       expect(summary!.purges[0]!.note_id).toBe("forgotten-note");
       const refs = await memoryReferences(raw.run);
       const memoryPaths = [...refs.keys()].filter((path) =>
