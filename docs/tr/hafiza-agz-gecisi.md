@@ -5,27 +5,34 @@ kayıpsız, salt okunur ve geri alınabilir aktarımının sözleşmesini tanım
 Üst plan issue #33, aktarım issue'su #40'tır. Hedef modül sözleşmeleri
 #34–#39 kapsamındadır.
 
-**Önemli:** Bu belge bir uygulama planı ve kısmi teslim kaydıdır. Aşağıdaki
-"Planlandı" satırları henüz kodlanmamıştır. "Uygulandı" satırları bu depodaki
-gerçek dosya ve testlerle doğrulanmıştır.
+**Önemli:** Bu belge bir teslim kaydı ve sözleşmedir. "Uygulandı" satırları
+bu depodaki gerçek dosya ve testlerle doğrulanmıştır; "Planlandı" satırları
+henüz kodlanmamıştır. FAZ 1 salt-okunur keşif/envanterdir; FAZ 2 manifest,
+stage, apply, doğrulama ve rollback'i #35 commit hattı üzerinden uygular.
+Cutover (#38/#39 ve M08) bu belgenin kapsamı dışındadır ve yapılmamıştır.
 
 ## 1. Durum tablosu
 
-| Yetenek                                | Durum             | Kanıt / bağımlılık                                          |
-| -------------------------------------- | ----------------- | ----------------------------------------------------------- |
-| Schema 11 fixture üreticisi            | Uygulandı (FAZ 1) | `test/fixtures/agz/buildAgzFixture.ts`                      |
-| Salt-okunur envanter ve dry-run raporu | Uygulandı (FAZ 1) | `src/memory/agz/inventory.ts`, `test/agz-inventory.test.ts` |
-| Hash-tuple/2 doğrulaması ve parmak izi | Uygulandı (FAZ 1) | `src/memory/agz/{hash,schema-v11}.ts`                       |
-| WAL/canlı dosya reddi                  | Uygulandı (FAZ 1) | `source_snapshot_not_frozen`                                |
-| Manifest üretimi                       | Planlandı (FAZ 2) | Bu belgedeki şema                                           |
-| `stage` / `apply` / receipt            | Planlandı (FAZ 2) | #34 ve #35 kabul yolları birleşmeden yazılmaz               |
-| `rollback`                             | Planlandı (FAZ 2) | Bu belgedeki geri alma kuralları                            |
-| Eski/yeni shadow recall ölçümü         | Planlandı (FAZ 3) | #36 ve #41                                                  |
-| Cutover ve tek otomatik yazım sahibi   | Planlandı (FAZ 3) | #38, #39, #41                                               |
+| Yetenek                                   | Durum             | Kanıt / bağımlılık                                          |
+| ----------------------------------------- | ----------------- | ----------------------------------------------------------- |
+| Schema 11 fixture üreticisi               | Uygulandı (FAZ 1) | `test/fixtures/agz/buildAgzFixture.ts`                      |
+| Salt-okunur envanter ve dry-run raporu    | Uygulandı (FAZ 1) | `src/memory/agz/inventory.ts`, `test/agz-inventory.test.ts` |
+| Hash-tuple/2 doğrulaması ve parmak izi    | Uygulandı (FAZ 1) | `src/memory/agz/{hash,schema-v11}.ts`                       |
+| WAL/canlı dosya reddi                     | Uygulandı (FAZ 1) | `source_snapshot_not_frozen`                                |
+| Manifest şeması ve planı                  | Uygulandı (FAZ 2) | `src/memory/agz/manifest.ts`                                |
+| AGZ → M01 belge dönüşümü                  | Uygulandı (FAZ 2) | `src/memory/agz/documents.ts`                               |
+| `stage` + bütünlük doğrulaması            | Uygulandı (FAZ 2) | `stageAgzImport`, `readAgzStage`, `agz_stage_integrity`     |
+| `apply` + kalıcı receipt + crash resume   | Uygulandı (FAZ 2) | `src/memory/agz/pipeline.ts`, M02 `MemoryCommitService`     |
+| `rollback` (yalnız değişmemiş hedeflerde) | Uygulandı (FAZ 2) | `rollbackAgzImport`, M02 tombstone                          |
+| Eski/yeni shadow karşılaştırması          | Uygulandı (FAZ 2) | `src/memory/agz/shadow.ts` (SQLite fixture üzerinde)        |
+| CLI/HTTP/MCP adaptörü                     | Planlandı (FAZ 3) | Uygulama servisi hazır; dış yüzey ayrı issue                |
+| Cutover ve tek otomatik yazım sahibi      | Planlandı (FAZ 3) | #38, #39, #41; bu belge cutover yetkisi vermez              |
 
-FAZ 1 hiçbir hedef sisteme yazmaz; import/apply/rollback komutları yoktur.
-Canlı kullanıcı verisi, token veya gerçek veritabanı yolu bu fazda
-kullanılmaz. Üretim verisiyle otomatik rollout, M08 (#41) backup/restore ve
+FAZ 2 kütüphane API'sidir: `planAgzImport` (dry-run), `stageAgzImport`,
+`applyAgzImport`, `compareAgzShadow`, `rollbackAgzImport`. Henüz CLI/HTTP/MCP
+komutu yoktur. Canlı kullanıcı verisi, token veya gerçek veritabanı yolu
+kullanılmadı; tüm kanıtlar deterministik fixture ve geçici hedef DB/vault
+üzerindedir. Üretim verisiyle otomatik rollout, M08 (#41) backup/restore ve
 gizlilik kapıları tamamlanmadan yapılmaz.
 
 ## 2. Desteklenen kaynak sürümleri
@@ -222,18 +229,21 @@ bölünmez; bölünme gerekiyorsa ayrı manifest ve ayrı karar gerekir.
 - Kaynak revision geçmişi immutable kayıtlardan okunur ve hedef revision
   zincirine sırayla yazılır.
 - Kaynak `revision` numarası ile hedef revision numarası farklı olabilir.
-  Bu durumda eski ve yeni değerler açık mapping olarak saklanır:
+  Eski ve yeni değerler açık mapping olarak saklanır:
 
-  | Manifest alanı      | Anlam                                        |
-  | ------------------- | -------------------------------------------- |
-  | `sourceRevision`    | AGZ `note_revisions.revision`                |
-  | `sourceContentHash` | AGZ `hash-tuple/2` içerik hash'i             |
-  | `targetRevision`    | Hedef revision numarası                      |
-  | `targetContentHash` | Hedefin kendi politikasıyla hesapladığı hash |
+  | Alan                | Anlam                                                      |
+  | ------------------- | ---------------------------------------------------------- |
+  | `sourceRevision`    | AGZ `note_revisions.revision`                              |
+  | `sourceContentHash` | AGZ `hash-tuple/2` içerik hash'i                           |
+  | `targetRevision`    | Hedef revision numarası (plan; gerçek değer receipt'te)    |
+  | `documentSha256`    | Stage edilen hedef Markdown'un bayt hash'i                 |
+  | `recordHash`        | M01 `memoryRecordHash` (revision alanı hariç)              |
+  | hedef `fileHash`    | M02 commit sonrası kabul edilen revision dosyasının hash'i |
 
-- Eski hash **hiçbir zaman** yeni hash'miş gibi yazılmaz. Hedef `content_hash`
-  hedef politikasıyla yeniden hesaplanır; kaynak hash yalnız kaynak izi
-  alanında yaşar.
+- Eski hash **hiçbir zaman** yeni hash'miş gibi yazılmaz: hedef `content_hash`
+  M02 tarafından kendi kuralıyla hesaplanır; AGZ hash'i `sources[].hash`,
+  `agz_content_hash` ve manifest `sourceContentHash` alanında kaynak izi
+  olarak yaşar. Age'a ait hash `content_hash` olarak yazılmaz.
 - Kaynak hash ile içerik yeniden hesabı uyuşmuyorsa kayıt karantinaya
   alınır (`note_content_hash_mismatch` / `revision_content_hash_mismatch`);
   içerik hash'e "uyarlanmaz", hash içeriğe göre düzeltilmez.
@@ -246,13 +256,17 @@ bölünmez; bölünme gerekiyorsa ayrı manifest ve ayrı karar gerekir.
   `confidence` taşınır. Alan kaynakta yoksa hedefte de boş kalır; tarih,
   güven veya kaynak uydurulmaz.
 - **Pin:** `notes.pinned = 1` hedef pin alanına taşınır.
-- **Supersedes:** `notes.supersedes_id` hedefe eşlenmiş not UUID'sine
-  çevrilir ve aynı çift için `SUPERSEDES` edge'iyle tutarlı olur. Hedef
-  bulunamazsa kayıt karantinaya alınır.
+- **Supersedes:** `notes.supersedes_id` varsa aynı çift için
+  `SUPERSEDES` edge'i kurulur (açık edge yoksa sentezlenir) ve hedefe
+  eşlenmiş not UUID'sine çevrilir. Hedef hazır notlar arasında yoksa bağ
+  taşınmaz ve `supersedes_missing` uyarısı raporlanır; notun kendisi
+  taşınmaya devam eder.
 - **Edge'ler:** Altı predicate aynen korunur; `SOURCE → TARGET` yönü
-  değişmez, ters bağlantılar hedefte türetilir. Uçlarından biri eksik veya
-  farklı projede olan edge taşınmaz (`edge_missing_endpoint`,
-  `edge_cross_project`); referans uydurulmaz.
+  değişmez, ters bağlantılar hedefte türetilir. Uçlarından biri eksik, farklı
+  projede veya karantinada olan edge taşınmaz
+  (`edge_cross_project`, `edge_target_unavailable`, `edge_source_quarantined`);
+  referans uydurulmaz. Aynı relation + hedef çifti tekilleştirilir; 200 edge
+  sınırı aşılırsa fazlası raporlanarak düşürülür.
 - **Kişisel alanlar:** Kişisel memory_space notları ortak alana
   kendiliğinden açılmaz. Hedef tenant/actor ACL'si aktarımda yeniden
   uygulanır; kaynak proje UUID izolasyonu hedef yetkilendirmenin yerine
@@ -268,17 +282,25 @@ bölünmez; bölünme gerekiyorsa ayrı manifest ve ayrı karar gerekir.
 - `notes_fts` içeriği taşınmaz; hedef kendi indeksini kabul edilen
   revision'dan üretir.
 
-## 6. Manifest şeması
+## 6. Manifest şeması (donduruldu, v1)
 
-Manifest, dry-run çıktısından üretilen (FAZ 2) makine okunur bir sözleşmedir.
-Kaynak snapshot kimliğini, açık proje/not eşlemesini, dışlananları ve
-kararı taşır. Örnek (alan değerleri fixture'dandır; kullanıcı verisi yoktur):
+Manifest, dry-run planından üretilen makine okunur sözleşmedir
+(`AGZ_MANIFEST_VERSION = 1`, zod ile katı doğrulama). Kaynak snapshot
+kimliğini, açık proje eşlemesini, not/revision/edge planını, sayımları,
+dışlananları ve kararı taşır. Not `content`/`summary` metni taşımaz; yalnız
+kimlik, hash ve metadata.
+
+Örnek (alan değerleri fixture'dandır; kullanıcı verisi yoktur):
 
 ```json
 {
   "manifestVersion": 1,
   "kind": "agz-memory-import-manifest",
-  "createdAt": "2026-09-11T00:00:00.000Z",
+  "createdAt": 1775000000000,
+  "generator": {
+    "product": "agz-project-management-mcp",
+    "module": "m07-agz-import"
+  },
   "source": {
     "productId": "agz-memory",
     "version": "0.5.2",
@@ -287,102 +309,203 @@ kararı taşır. Örnek (alan değerleri fixture'dandır; kullanıcı verisi yok
     "hashPolicy": "hash-tuple/2",
     "schemaFingerprint": "8d63948dcdfd5404a3e555fe9a194866f4c03cb6825dca503063f4797a57a888",
     "databaseId": "e0000000-0000-4000-8000-000000000001",
-    "fileSha256": "b4f443026769adc16e1b0fc538e40b6791aaa689d894f31816f73a9a69074e25",
+    "fileSha256": "835d3252b8ee6d07…",
     "fileSizeBytes": 208896,
-    "inventoryDigest": "fcf9fb7594ef1ea4f64e50bb12fc7967c5f1a72f16473d9db0f1b3fa7ffe1d96"
+    "inventoryDigest": "…",
+    "journalMode": "delete",
+    "integrityCheck": "ok"
   },
-  "target": {
-    "tenantId": "<hedef-tenant-uuid>",
-    "memorySpaceId": "<hedef-memory-space-uuid>",
-    "projectId": "<hedef-proje-uuid>"
-  },
-  "mapping": {
-    "projects": [
-      {
-        "sourceProjectId": "a0000000-0000-4000-8000-000000000101",
-        "sourceName": "Proje Alfa",
-        "normalizedName": "proje alfa",
-        "targetProjectId": "<hedef-proje-uuid>",
-        "decision": "explicit"
+  "mappings": [
+    {
+      "sourceProjectId": "a0000000-0000-4000-8000-000000000101",
+      "sourceName": "Proje Alfa",
+      "normalizedName": "proje alfa",
+      "target": {
+        "tenantId": "local",
+        "memorySpaceId": "<hedef-memory-space-uuid>",
+        "projectId": null,
+        "kind": "personal"
       }
-    ],
-    "notes": [
-      {
-        "sourceDatabaseId": "e0000000-0000-4000-8000-000000000001",
-        "sourceProjectId": "a0000000-0000-4000-8000-000000000101",
-        "sourceNoteId": "b0000000-0000-4000-8000-000000000001",
-        "targetNoteId": "b0000000-0000-4000-8000-000000000001",
-        "idDecision": "preserved",
-        "sourceRevision": 1,
-        "sourceContentHash": "8c71e6721c1d7031d35046ae0051cfe82dbefbb875b2786ff627a668b7882179",
-        "targetRevision": 1
-      }
-    ]
-  },
-  "excluded": [
-    { "table": "capture_events", "count": 2, "reason": "not-replayed" },
-    { "table": "index_outbox", "count": 3, "reason": "not-replayed" },
-    {
-      "table": "project_bindings",
-      "count": 1,
-      "reason": "no-target-authority"
-    },
-    {
-      "table": "capture_checkpoints",
-      "count": 1,
-      "reason": "source-operational"
-    },
-    { "table": "notes_fts", "count": 10, "reason": "derived" }
-  ],
-  "issues": [
-    {
-      "code": "edge_missing_endpoint",
-      "severity": "blocking",
-      "edgeId": "d0000000-0000-4000-8000-000000000007"
     }
   ],
-  "decision": { "status": "blocked", "blockingIssues": 8, "warningIssues": 1 }
+  "notes": [
+    {
+      "sourceProjectId": "a0000000-0000-4000-8000-000000000101",
+      "sourceNoteId": "b0000000-0000-4000-8000-000000000004",
+      "targetNoteId": "b0000000-0000-4000-8000-000000000004",
+      "idDecision": "preserved",
+      "idDecisionReason": null,
+      "title": "Yeni Dağıtım Prosedürü",
+      "kind": "procedure",
+      "lifecycle": "active",
+      "pinned": false,
+      "status": "ready",
+      "issues": [],
+      "revisions": [
+        {
+          "sourceRevision": 1,
+          "sourceContentHash": "…",
+          "targetRevision": 1,
+          "documentSha256": "…",
+          "recordHash": "…",
+          "bytes": 742
+        }
+      ],
+      "edges": [
+        {
+          "relation": "SUPERSEDES",
+          "sourceRelation": "SUPERSEDES",
+          "targetSourceNoteId": "b0000000-0000-4000-8000-000000000003",
+          "targetNoteId": "b0000000-0000-4000-8000-000000000003"
+        }
+      ],
+      "provenanceCount": 1
+    }
+  ],
+  "counts": {
+    "projects": 3,
+    "notes": 8,
+    "readyNotes": 8,
+    "quarantinedNotes": 0,
+    "revisions": 11,
+    "edges": 6,
+    "droppedEdges": 0,
+    "provenance": 11,
+    "pinned": 2
+  },
+  "exclusions": [
+    { "table": "capture_events", "count": 2, "reason": "…replay edilmez…" },
+    { "table": "index_outbox", "count": 3, "reason": "…replay edilmez…" },
+    { "table": "project_bindings", "count": 1, "reason": "…" },
+    { "table": "capture_checkpoints", "count": 1, "reason": "…" },
+    { "table": "notes_fts", "count": 8, "reason": "…" }
+  ],
+  "issues": [],
+  "decision": { "status": "ready", "blockingIssues": 0, "warningIssues": 0 }
 }
 ```
 
-Manifest'te bulunması **yasak** olanlar: not `content`/`summary` metni, ham
-transcript veya `payload_json`, token/parola/anahtar, kullanıcı ev dizini
-veya mutlak kaynak yolu, oturum içeriği. Manifest yalnız kimlik, hash,
-sayım, karar ve gerekçe taşır. `issues[].detail` metinleri de içerik
-kopyalamaz.
+- `decision.status`: `ready` (bloklayıcı/uyarı yok), `partial` (karantina
+  veya düşürülen edge var; sağlam öğeler uygulanabilir), `blocked` (hiç
+  uygulanabilir not yok veya eşlenmemiş proje var; stage/apply reddedilir).
+- `notes[].issues` ve üst düzey `issues` karantina gerekçelerini taşır;
+  `edge_cross_project`, `edge_source_quarantined`, `edge_target_unavailable`
+  gibi düşürülen edge'ler `warning` olarak raporlanır.
+- Manifest'te bulunması **yasak** olanlar: not `content`/`summary` metni, ham
+  transcript veya `payload_json`, token/parola/anahtar, kullanıcı ev dizini
+  veya mutlak kaynak yolu, oturum içeriği. `issues[].detail` metinleri de
+  içerik kopyalamaz.
 
-## 7. Apply, receipt ve kısmi hata (planlandı)
+### 6.1 Idempotency anahtarı
 
-1. **Stage:** Manifest ve kaynak snapshot hash'i doğrulanır; stage paketi
-   içerik hash'leriyle birlikte yazılır. Stage hedefe görünmez.
-2. **Apply:** Hedef yazma, #35'in aynı yetkili commit yolunu kullanır.
-   Idempotency anahtarı
-   `(sourceDatabaseId, sourceProjectId, sourceNoteId, sourceRevision)`'dır;
-   ikinci aynı import yeni not/edge/revision çoğaltmaz.
-3. **Receipt:** Uygulanan her hedef ID ve kabul edilen revision kaydedilir.
-   Aynı snapshot ikinci kez uygulanırsa yeni kayıt üretilmez.
-4. **Kısmi hata:** Her öğe bağımsız durum taşır:
-   `applied | skipped_conflict | quarantined | failed`. Bir öğenin hatası
-   diğerlerini durdurmaz; iş sonunda tam durum raporlanır. Çözülemeyen
-   çatışmalar karantinada kalır, sessizce atlanmaz.
-5. **Doğrulama:** Hedefteki not/revision/edge sayıları ve hash'leri dry-run
-   planıyla karşılaştırılır. Kaynak snapshot değişmişse eski dry-run
-   uygulanmaz; yeni dry-run gerekir.
+Her kaynak revision için anahtar:
 
-## 8. Rollback (planlandı)
+```text
+agz:<sourceDatabaseId>:<sourceProjectId>:<sourceNoteId>:<sourceRevision>
+```
 
-- Rollback yalnız bu aktarımın oluşturduğu ve **hâlâ aynı revision'da duran**
-  hedeflere uygulanır.
-- Kullanıcı aktarım sonrası hedefi düzenlediyse rollback o değişikliği
-  silmez; kayıt `conflict` olarak raporlanır ve karar kullanıcıya bırakılır.
+`<snapshot>` olarak kaynak `database_id` kullanılır (dosya kopyaları arasında
+sabit kalır); byte düzeyi snapshot kimliği manifestteki `fileSha256`'dır ve
+apply öncesi yeniden doğrulanır. Aynı anahtar + aynı içerik hash'i = duplicate
+(replay); aynı anahtar + farklı hash = `memory_event_conflict` (409), yani
+kaynak sessizce değişmişse hiçbir yeni revision üretilmez.
+
+### 6.2 Stage paketi ve doğrulaması
+
+`stageAgzImport`, `vault/imports/<databaseId>/<fileSha256>/` altına yazar:
+
+```text
+manifest.json          # dondurulmuş manifest (içeriksiz)
+stage.json             # {manifestDigest, stageDigest, documentCount, bytes}
+documents/<noteId>/<sourceRevision>-<documentSha256>.md
+receipt.json           # apply/rollback sonrası oluşur (aşağıda)
+```
+
+`stageDigest = hashTuple("agz-import-stage", 1, [databaseId, fileSha256, ...])`
+ve `manifestDigest = sha256(manifest.json baytları)`'dır. Apply, her doküman
+dosyasının hash'ini manifest ile ve `stage.json`'daki digest'leri yeniden
+hesaplar; uyuşmazlık `agz_stage_integrity` ile reddedilir ve hedefe hiçbir
+şey yazılmaz. Bloklayıcı manifest stage edilemez (`agz_manifest_blocked`).
+
+## 7. Apply, receipt ve kısmi hata (uygulandı)
+
+1. **Ön koşullar:** `readAgzStage` manifesti ve dokümanları doğrular; hedef
+   tenant aktörün kiracısıyla eşleşmeli; `sourcePath` verilmişse dosya
+   SHA-256'sı manifest ile aynı olmalı (`source_changed_during_scan`).
+2. **ACL ön kontrolü:** Bütün hedef alanlar (`authorizeSpace` + kapsam türü)
+   herhangi bir yazımdan önce yeniden doğrulanır. Yetkisiz hedefte hiçbir
+   satır yazılmaz.
+3. **Apply:** Her revision için `recordEvent` (idempotency anahtarı) +
+   `MemoryCommitService.commit` çağrılır; dosya → DB sırası, tek yazıcı,
+   CAS ve kalıcı event receipt'i M02'den gelir. İçerik `migration` güvenilir
+   kaynak türüdür: sessiz redaksiyon yapılmaz; güvensiz içerik
+   `memory_unsafe_content` ile açık incelemeye gider.
+4. **Kalıcı import receipt'i:** `<stageDir>/receipt.json` her revision ve her
+   öğe sonrası atomik yazılır. Öğe durumları:
+   `pending | applied | duplicate | quarantined | conflict | failed`;
+   her revision planlanan hedef revision, hedef `fileHash` ve `recordHash`
+   ile izlenir.
+5. **Tekrar import:** İkinci aynı stage yeni not/revision/olay üretmez;
+   M02 replay yolu duplicate döner ve eksik index işareti tamamlanır.
+   Rapor `already_applied` olur (`revisions.applied = 0`).
+6. **Crash ve devam:** Dosya sonrası/DB öncesi kesinti M02 orphan-benimseme
+   kuralıyla; DB sonrası kesinti replay ile kapanır. Import düzeyinde
+   `hooks.afterItem` ile simüle edilen çökmede receipt son committed öğeye
+   kadardır; yeniden `applyAgzImport` çağrısı kalan öğeleri tamamlar ve
+   çoğaltma üretmez.
+7. **Kısmi hata:** Bir öğenin hatası diğerlerini durdurmaz; karantina
+   (`quarantined`), çakışma (`conflict`) ve hatalar (`failed`) öğe ve
+   revision düzeyinde raporlanır.
+8. **Doğrulama:** `compareAgzShadow` kaynak planı ile hedef DB/vault'u
+   karşılaştırır; coverage ve `mismatched` listesi kanıttır.
+
+Kullanım (özet):
+
+```ts
+const source = await openAgzSource(snapshotPath); // salt okunur
+try {
+  const plan = await planAgzImport({ source, targetDb, mappings });
+  const staged = await stageAgzImport(plan, { vaultRoot });
+  const applied = await applyAgzImport({
+    service,
+    commits,
+    identity,
+    stageDir: staged.stageDir,
+    sourcePath: snapshotPath,
+  });
+  const shadow = await compareAgzShadow({
+    service,
+    identity,
+    vaultRoot,
+    manifest: plan.manifest,
+  });
+} finally {
+  await source.close();
+}
+```
+
+## 8. Rollback (uygulandı)
+
+- Rollback yalnız bu receipt'in uyguladığı ve **hâlâ aynı kabul edilmiş
+  revision'da duran** hedeflere uygulanır: `current_revision` receipt'teki
+  son hedef revision'a eşit, revision `content_hash` receipt `fileHash`'ine
+  eşit ve çalışma kopyası değişmemiş olmalı.
+- Değişmemiş hedef, açık tombstone ile geri alınır (`archiveNote`:
+  `deleted_at` + `lifecycle = archived`). Hard delete yapılmaz; kabul edilen
+  sürümler ve receipt denetlenebilir kalır, geri alma açık `restoreNote` ile
+  mümkündür.
+- Kullanıcı aktarım sonrası hedefi düzenlediyse (yeni revision, değişmiş
+  çalışma kopyası veya başka bir tombstone) rollback o kaydı silmez; öğe
+  `conflict` olarak raporlanır ve karar kullanıcıya bırakılır.
 - Import tarafından oluşturulmayan notlara, edge'lere ve kullanıcı
   düzenlemelerine dokunulmaz.
+- İkinci rollback idempotenttir: daha önce geri alınanlar
+  `already_rolled_back` olur, yeniden silinmez; süren çatışma `conflict`
+  olarak kalır.
 - Kaynak AGZ veritabanı ve doğrulanmış yedeği her durumda korunur; rollback
-  kaynağı değiştirmez.
-- Rollback sonucu receipt'e işlenir; ikinci rollback aynı kayıtları tekrar
-  silmez.
+  kaynağı değiştirmez ve kaynak dosya hash'i aynı kalır.
 
-## 9. Cutover (planlandı)
+## 9. Cutover (planlandı — yapılmadı)
 
 - Cutover öncesi eski/yeni karşılaştırma salt okunur shadow ölçümüyle
   yapılır (#36/#41); recall, graph ve doğrudan okuma kapsamı karşılaştırılır.
@@ -398,30 +521,43 @@ kopyalamaz.
 
 ## 10. Bilinen sınırlar ve riskler
 
-- FAZ 1 yalnız keşif ve salt-okunur altyapıdır; hedefe yazmaz. Bu belgedeki
-  manifest/apply/rollback bölümleri sözleşmedir, çalışan kod değildir.
-- Gerçek kullanıcı verisinin boyutu, canlı AGZ sürümü ve DB konumu bu fazda
-  doğrulanmadı; ilk gerçek dry-run ayrı bir operatör adımıdır.
+- FAZ 2 henüz CLI/HTTP/MCP yüzeyi sunmaz; API çağrıları uygulama kodundan
+  yapılır ve dış adaptör ayrı iş kalemidir.
+- Kanıtlar deterministik fixture ve SQLite hedef üzerindedir; gerçek
+  kullanıcı verisinin boyutu, canlı AGZ sürümü ve DB konumu doğrulanmadı.
+  İlk gerçek dry-run ayrı bir operatör adımıdır ve M08 kapılarına bağlıdır.
 - Fixture bazı bilinçli bozukluklar içerir (bozuk referans, hash uyuşmazlığı,
   revision boşluğu); bunlar negatif test içindir, üretim verisi değildir.
 - `foreign_key_check` sayısı bütünlük tanısıdır; ayrıntılı karantina kararı
   issue listesindeki semantik kodlarla verilir.
-- PostgreSQL hedefi bu fazın kapsamı dışındadır.
+- PostgreSQL hedefi bu fazın kapsamı dışındadır; M02 yolu iki backend'i
+  desteklese de M07 testleri SQLite ile koştu.
 - Bir SQLite dosyasında şema 11 ama farklı DDL parmak izi varsa aktarım
   reddedilir; bu durumda ayrı sürüme uygun exporter gerekir.
+- Rollback tombstone'dur (hard delete değil); kabul edilen revision
+  dosyaları ve receipt denetim izi olarak kalır. Kalıcı silme ayrı ve açık
+  bir unutma/retention kararıdır (#41).
+- Stage/receipt dosyaları vault içindedir; aynı stage üzerinde eşzamanlı iki
+  apply denenirse M02 CAS/event idempotency çoğaltmayı engeller, ancak yarış
+  raporu `conflict`/`duplicate` olarak görünebilir. Tek operatör akışı
+  önerilir.
 
 ## 11. Sonraki faz önkoşulları
 
-FAZ 2 (manifest + apply + rollback) başlamadan önce:
+FAZ 3 (adaptör + cutover hazırlığı) başlamadan önce:
 
-1. #34 çekirdek alan/kimlik/Markdown sözleşmesi birleşmiş olmalı,
-2. #35 tek yazıcı ve dayanıklı kabul yolu kullanılabilir olmalı,
-3. Hedef `memory_space`/proje oluşturma ve ACL tekrar kontrolü tanımlı olmalı,
-4. Manifest şeması bu belgedeki alanlarla dondurulmalı,
-5. Dry-run raporu en az bir gerçek (dondurulmuş) yedek üzerinde
-   çalıştırılmalı ve sonuç kullanıcıya raporlanmalıdır.
+1. En az bir gerçek (dondurulmuş) AGZ yedeği üzerinde dry-run + shadow
+   çalıştırılmalı ve kayıp/karantina listesi kullanıcıya raporlanmalı,
+2. CLI/HTTP/MCP adaptörü aynı servis çağrılarını kullanmalı; yeni iş mantığı
+   `src/memory/agz/` dışına kopyalanmamalı,
+3. Hedef `memory_space`/proje oluşturma ve ACL akışı UI/operatör tarafından
+   seçilebilir olmalı (ad benzerliğiyle otomatik eşleme yok),
+4. M08 (#41) backup/restore, gizlilik/unutma ve işletim kapıları geçmeli,
+5. Cutover'da tek otomatik yazım sahibi kararı (#38/#39) açıkça verilmeli;
+   iki bağımsız auto-write aynı oturumda açık bırakılmamalı.
 
-FAZ 3 (cutover) ayrıca #36–#39 ve #41 kapılarını bekler.
+Cutover bu belgenin otomatik yetkisi değildir; M07 kodu yazıldı diye
+üretim verisiyle rollout yapılmaz.
 
 ## 12. Kaynak, atıf ve dosyalar
 
@@ -436,17 +572,29 @@ FAZ 3 (cutover) ayrıca #36–#39 ve #41 kapılarını bekler.
   - `src/memory/agz/errors.ts` — hata kodları,
   - `test/fixtures/agz/buildAgzFixture.ts` — deterministik fixture üreticisi,
   - `test/agz-inventory.test.ts` — kabul testleri.
-- FAZ 1 doğrulaması: `bun test test/agz-inventory.test.ts` (18 test),
-  `bun run typecheck`, `bun run lint`.
+- FAZ 2 dosyaları:
+  - `src/memory/agz/manifest.ts` — dondurulmuş manifest şeması, plan, kimlik,
+  - `src/memory/agz/documents.ts` — AGZ → M01 Markdown dönüşümü,
+  - `src/memory/agz/pipeline.ts` — stage/apply/receipt/rollback,
+  - `src/memory/agz/shadow.ts` — eski/yeni karşılaştırma,
+  - `test/agz-import-pipeline.test.ts` — FAZ 2 kabul testleri.
+- FAZ 2 doğrulaması: `bun test test/agz-import-pipeline.test.ts` (13 test),
+  `bun test test/agz-inventory.test.ts` (18 test), hafıza + sınır süiti
+  (130 test), `bun run typecheck`, `bun run lint`.
 
 ## 13. Terimler
 
 - **Dondurulmuş snapshot:** WAL günlüğü checkpoint edilmiş, yan dosyasız,
   salt okunur açılan SQLite kopyası.
-- **Dry-run:** Hiçbir değişiklik yapmadan eşleme, çakışma ve karantina
-  kararlarını gösteren rapor.
+- **Dry-run / plan:** Hiçbir değişiklik yapmadan eşleme, kimlik, hash,
+  çakışma ve karantina kararlarını üreten manifest + belge planı.
 - **Manifest:** Dry-run'dan üretilen, açık eşleme ve snapshot kimliğini
-  taşıyan makine okunur sözleşme.
-- **Receipt:** Apply sırasında oluşan hedef ID ve revision'ların kaydı.
+  taşıyan dondurulmuş makine okunur sözleşme (v1).
+- **Stage:** Manifestin ve hedef Markdown belgelerinin hash'lerle vault
+  altına yazılmış, doğrulanabilir paketi.
+- **Receipt:** Apply/rollback sırasında oluşan hedef ID, revision ve
+  durumların kalıcı kaydı (`receipt.json`).
+- **Shadow:** Kaynak manifesti ile hedef DB/vault'un salt-okunur içerik/kapsam
+  karşılaştırması.
 - **Cutover:** Otomatik yazım sahipliğinin eski sistemden yeni sisteme açık
-  kararla geçirilmesi.
+  kararla geçirilmesi (bu fazda yapılmadı).

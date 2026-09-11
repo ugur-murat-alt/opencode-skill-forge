@@ -161,6 +161,14 @@ export const tr = {
   },
   errors: {
     aborted: "İş iptal edildi.",
+    agz_manifest_blocked:
+      "Bloklayıcı sorunları olan AGZ manifesti uygulanamaz.",
+    agz_receipt_invalid: "AGZ import receipt kaydı bozuk.",
+    agz_receipt_missing: "AGZ rollback için import receipt bulunamadı.",
+    agz_stage_conflict: "AGZ stage kaydı başka bir manifeste ait.",
+    agz_stage_integrity: "AGZ stage paketi bozulmuş veya eksik.",
+    agz_stage_missing: "AGZ stage paketi bulunamadı.",
+    agz_target_mismatch: "AGZ hedef alanı manifest eşlemesiyle uyuşmuyor.",
     already_member: "Bu hesap zaten organizasyon üyesi.",
     archive_busy: "Paket açma kapasitesi dolu; yeniden deneyin.",
     archive_limit: "ZIP boyutu geçersiz.",
@@ -249,6 +257,8 @@ export const tr = {
     installation_unavailable: "Kurulum başka kapsama ait.",
     instruction_conflict: "Yönetilen talimat bloğu eksik kapanmış.",
     insufficient_scope: "Token forge kapsamını taşımıyor.",
+    invalid_agz_manifest: "AGZ import manifesti geçersiz.",
+    invalid_agz_mapping: "AGZ proje eşlemesi geçersiz.",
     invalid_archive: "ZIP dizini bulunamadı.",
     invalid_artifact: "Artifact kimliği geçersiz.",
     invalid_bearer: "Bearer kimliği doğrulanamadı.",
@@ -422,6 +432,8 @@ export const tr = {
     skill_protected: "Skill otomatik yazıma kapalı.",
     skill_unavailable: "Skill bulunamadı veya yetkiniz yok.",
     source_changed: "Kaynak checksum değişti; yeni keşif gerekiyor.",
+    source_changed_during_scan:
+      "Kaynak snapshot tarama sırasında değişti; eski dry-run uygulanamaz.",
     source_collision: "Kaynak ad çakışması çözülmeli.",
     source_mapping_invalid: "Kaynak kök/kimlik eşlemesi geçersiz.",
     source_write_denied: "Manifest kaynak veri alanına yazılamaz.",
@@ -455,6 +467,7 @@ export const tr = {
     unsafe_package_path: "Paket yolu veri deposu dışında.",
     unsafe_path: "Silme yolu tenant paket köküne ait değil.",
     unsupported_lockfile: "Node bağımlılıkları package-lock.json gerektirir.",
+    unsupported_manifest: "Desteklenmeyen AGZ import manifest sürümü.",
     unsupported_schema_feature:
       "Script şeması referans/regex/format yürütmesi içeremez.",
     backup_invalid: "Yedekleme geçersiz.",

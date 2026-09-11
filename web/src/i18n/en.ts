@@ -164,6 +164,15 @@ export const en: typeof tr = {
   },
   errors: {
     aborted: "The job was aborted.",
+    agz_manifest_blocked:
+      "An AGZ manifest with blocking issues cannot be applied.",
+    agz_receipt_invalid: "The AGZ import receipt record is corrupt.",
+    agz_receipt_missing: "No import receipt was found for AGZ rollback.",
+    agz_stage_conflict: "The AGZ stage belongs to another manifest.",
+    agz_stage_integrity: "The AGZ stage package is corrupt or incomplete.",
+    agz_stage_missing: "The AGZ stage package was not found.",
+    agz_target_mismatch:
+      "The AGZ target space does not match the manifest mapping.",
     already_member: "This account is already an organization member.",
     archive_busy: "Package extraction capacity is full; retry.",
     archive_limit: "ZIP size is invalid.",
@@ -256,6 +265,8 @@ export const en: typeof tr = {
     installation_unavailable: "Installation belongs to another scope.",
     instruction_conflict: "Managed instruction block is missing its closing.",
     insufficient_scope: "Token does not carry the forge scope.",
+    invalid_agz_manifest: "The AGZ import manifest is invalid.",
+    invalid_agz_mapping: "The AGZ project mapping is invalid.",
     invalid_archive: "ZIP directory was not found.",
     invalid_artifact: "Artifact identity is invalid.",
     invalid_bearer: "Bearer identity could not be verified.",
@@ -439,6 +450,8 @@ export const en: typeof tr = {
     skill_referenced: "Skill is used by another record.",
     skill_unavailable: "Skill not found or no permission.",
     source_changed: "Source checksum changed; new discovery is required.",
+    source_changed_during_scan:
+      "The source snapshot changed during the scan; the old dry-run cannot be applied.",
     source_collision: "Source name collision must be resolved.",
     source_mapping_invalid: "Source root/identity mapping is invalid.",
     source_write_denied: "Cannot write to the manifest source data area.",
@@ -476,6 +489,7 @@ export const en: typeof tr = {
     unsafe_package_path: "Package path is outside the data store.",
     unsafe_path: "Deletion path does not belong to the tenant package root.",
     unsupported_lockfile: "Node dependencies require package-lock.json.",
+    unsupported_manifest: "Unsupported AGZ import manifest version.",
     unsupported_schema_feature:
       "Script schema must not contain reference/regex/format execution.",
     client_inventory_required: "Load the file inventory first.",
