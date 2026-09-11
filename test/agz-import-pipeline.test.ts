@@ -17,10 +17,7 @@ import { sha256Hex } from "../src/memory/files.js";
 import { vaultRoot } from "../src/memory/paths.js";
 import { MemoryService } from "../src/memory/service.js";
 import { openDatabase, type DatabaseHandle } from "../src/storage/database.js";
-import {
-  openAgzSource,
-  type AgzSource,
-} from "../src/memory/agz/inventory.js";
+import { openAgzSource, type AgzSource } from "../src/memory/agz/inventory.js";
 import {
   AGZ_MANIFEST_VERSION,
   deterministicAgzNoteId,
@@ -59,6 +56,12 @@ interface TestEnv {
 }
 
 const roots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    roots.map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
 
 async function openEnv(): Promise<TestEnv> {
   const root = await mkdtemp(join(tmpdir(), "forge-m07-"));
@@ -175,6 +178,7 @@ describe("M07 FAZ 2: plan / dry-run", () => {
   let env: TestEnv;
   let cleanPath: string;
   let source: AgzSource;
+  let mappings: AgzProjectMapping[];
 
   beforeAll(async () => {
     env = await openEnv();
@@ -183,6 +187,7 @@ describe("M07 FAZ 2: plan / dry-run", () => {
     cleanPath = join(fixtureRoot, "agz-clean.db");
     await buildAgzFixture(cleanPath, { profile: "clean" });
     source = await sourceOf(cleanPath);
+    mappings = await bindProjects(env);
   });
 
   afterAll(async () => {
@@ -193,7 +198,6 @@ describe("M07 FAZ 2: plan / dry-run", () => {
   test("dry-run planı kaynak kimliğini, açık eşlemeyi ve plan hash'lerini taşır; hiçbir yazım yapmaz", async () => {
     const beforeNotes = await countRows(env, "memory_notes");
     const beforeEvents = await countRows(env, "memory_events");
-    const mappings = await bindProjects(env);
     const plan = await planAgzImport({
       source,
       targetDb: env.db,
@@ -252,13 +256,14 @@ describe("M07 FAZ 2: plan / dry-run", () => {
     // Dry-run hiçbir hedef satır ve stage dosyası üretmez.
     expect(await countRows(env, "memory_notes")).toBe(beforeNotes);
     expect(await countRows(env, "memory_events")).toBe(beforeEvents);
-    await expect(readFile(join(env.vault, "imports"), "utf8")).rejects.toThrow();
+    await expect(
+      readFile(join(env.vault, "imports"), "utf8"),
+    ).rejects.toThrow();
     const sourceHash = await fileSnapshot(cleanPath);
     expect(sourceHash.sha256).toBe(plan.manifest.source.fileSha256);
   });
 
   test("aynı başlık farklı UUID ayrı not; aynı not UUID farklı DB deterministik remap", async () => {
-    const mappings = await bindProjects(env);
     const basePlan = await planAgzImport({
       source,
       targetDb: env.db,
@@ -294,10 +299,22 @@ describe("M07 FAZ 2: plan / dry-run", () => {
     await buildAgzFixture(twinPath, { variant: "twin", profile: "clean" });
     const twinSource = await sourceOf(twinPath);
     try {
+      // Aynı ad, farklı proje UUID'si: eşleme açıkça twin UUID'siyle verilir,
+      // ad benzerliği otomatik eşleme değildir.
+      const twinMappings: AgzProjectMapping[] = [
+        {
+          ...mappings[0]!,
+          sourceProjectId: AGZ_FIXTURE_IDS.projectAlphaTwin,
+          sourceName: "Proje Alfa",
+          normalizedName: "proje alfa",
+        },
+        mappings[1]!,
+        mappings[2]!,
+      ];
       const twinPlan = await planAgzImport({
         source: twinSource,
         targetDb: env.db,
-        mappings,
+        mappings: twinMappings,
         now: () => FIXED_NOW,
       });
       const twinRule = twinPlan.manifest.notes.find(
@@ -316,7 +333,7 @@ describe("M07 FAZ 2: plan / dry-run", () => {
       const twinAgain = await planAgzImport({
         source: twinSource,
         targetDb: env.db,
-        mappings,
+        mappings: twinMappings,
         now: () => FIXED_NOW,
       });
       expect(
@@ -340,10 +357,7 @@ describe("M07 FAZ 2: plan / dry-run", () => {
         .selectFrom("memory_notes")
         .selectAll()
         .where("space_id", "=", alphaSpace)
-        .where("id", "in", [
-          AGZ_FIXTURE_IDS.noteRule,
-          twinRule!.targetNoteId,
-        ])
+        .where("id", "in", [AGZ_FIXTURE_IDS.noteRule, twinRule!.targetNoteId])
         .execute();
       expect(ruleRows).toHaveLength(2);
       const twinRevision = await env.db
@@ -365,11 +379,11 @@ describe("M07 FAZ 2: plan / dry-run", () => {
   });
 
   test("eşlenmemiş proje blocked kararı verir; kısmi manifestte karantina listelenir", async () => {
-    const mappings = (await bindProjects(env)).slice(0, 1);
+    const partial = mappings.slice(0, 1);
     const plan = await planAgzImport({
       source,
       targetDb: env.db,
-      mappings,
+      mappings: partial,
       now: () => FIXED_NOW,
     });
     expect(plan.manifest.decision.status).toBe("blocked");
@@ -383,6 +397,7 @@ describe("M07 FAZ 2: stage ve apply", () => {
   let env: TestEnv;
   let cleanPath: string;
   let negativePath: string;
+  let mappings: AgzProjectMapping[];
 
   beforeAll(async () => {
     env = await openEnv();
@@ -392,6 +407,7 @@ describe("M07 FAZ 2: stage ve apply", () => {
     negativePath = join(fixtureRoot, "agz-negative.db");
     await buildAgzFixture(cleanPath, { profile: "clean" });
     await buildAgzFixture(negativePath, { profile: "negative" });
+    mappings = await bindProjects(env);
   });
 
   afterAll(async () => {
@@ -399,7 +415,6 @@ describe("M07 FAZ 2: stage ve apply", () => {
   });
 
   test("clean fixture: stage doğrulanır, apply yetkili commit hattından geçer, shadow eşleşir", async () => {
-    const mappings = await bindProjects(env);
     const source = await sourceOf(cleanPath);
     const sourceHashBefore = (await fileSnapshot(cleanPath)).sha256;
     let plan: AgzImportPlan;
@@ -451,10 +466,18 @@ describe("M07 FAZ 2: stage ve apply", () => {
     }
 
     expect(report.status).toBe("applied");
-    expect(report.counters).toMatchObject({
-      notes: 8,
-      revisions: 11,
+    expect(report.counters.notes).toMatchObject({
+      planned: 8,
       applied: 8,
+      duplicate: 0,
+      quarantined: 0,
+      conflict: 0,
+      failed: 0,
+    });
+    expect(report.counters.revisions).toMatchObject({
+      planned: 11,
+      applied: 11,
+      duplicate: 0,
       quarantined: 0,
       conflict: 0,
       failed: 0,
@@ -475,7 +498,7 @@ describe("M07 FAZ 2: stage ve apply", () => {
       "active",
       "active",
       "active",
-      "active",
+      "archived",
       "archived",
       "superseded",
     ]);
@@ -519,7 +542,6 @@ describe("M07 FAZ 2: stage ve apply", () => {
   });
 
   test("tekrar aynı import yeni not/revision/olay çoğaltmaz", async () => {
-    const mappings = await bindProjects(env);
     const source = await sourceOf(cleanPath);
     try {
       const plan = await planAgzImport({
@@ -546,15 +568,15 @@ describe("M07 FAZ 2: stage ve apply", () => {
       );
       expect(await countRows(env, "memory_events")).toBe(eventsBefore);
       expect(second.status).toBe("already_applied");
-      expect(second.counters.applied).toBe(0);
-      expect(second.counters.duplicate).toBe(11);
+      expect(second.counters.notes.duplicate).toBe(8);
+      expect(second.counters.revisions.applied).toBe(0);
+      expect(second.counters.revisions.duplicate).toBe(11);
     } finally {
       await source.close();
     }
   });
 
   test("stage dokümanı bozulursa apply reddeder ve hedefe yazmaz", async () => {
-    const mappings = await bindProjects(env);
     const source = await sourceOf(negativePath);
     try {
       const plan = await planAgzImport({
@@ -591,7 +613,6 @@ describe("M07 FAZ 2: stage ve apply", () => {
   });
 
   test("kaynak snapshot değiştiyse eski stage sessizce uygulanmaz", async () => {
-    const mappings = await bindProjects(env);
     const source = await sourceOf(cleanPath);
     try {
       const plan = await planAgzImport({
@@ -623,7 +644,6 @@ describe("M07 FAZ 2: stage ve apply", () => {
   });
 
   test("yetkisiz hedef apply öncesi reddedilir; hiçbir satır yazılmaz", async () => {
-    const mappings = await bindProjects(env);
     const source = await sourceOf(cleanPath);
     const stranger: Identity = { userId: "user-2", tenantId: "local" };
     await env.db
@@ -689,11 +709,12 @@ describe("M07 FAZ 2: stage ve apply", () => {
         );
         expect(quarantined.map((note) => note.sourceNoteId).sort()).toEqual(
           [
+            AGZ_FIXTURE_IDS.noteCurrentProcedure,
             AGZ_FIXTURE_IDS.noteOrphan,
             AGZ_FIXTURE_IDS.noteArchivedGap,
           ].sort(),
         );
-        expect(plan.manifest.counts.droppedEdges).toBe(3);
+        expect(plan.manifest.counts.droppedEdges).toBe(4);
 
         const staged = await stageAgzImport(plan, {
           vaultRoot: negativeEnv.vault,
@@ -706,8 +727,8 @@ describe("M07 FAZ 2: stage ve apply", () => {
           sourcePath: negativePath,
         });
         expect(report.status).toBe("partial");
-        expect(report.counters.quarantined).toBe(2);
-        expect(report.counters.applied).toBe(8);
+        expect(report.counters.notes.quarantined).toBe(3);
+        expect(report.counters.notes.applied).toBe(7);
 
         const noteIds = await negativeEnv.db
           .selectFrom("memory_notes")
@@ -728,6 +749,7 @@ describe("M07 FAZ 2: stage ve apply", () => {
           shadow.quarantined.map((entry) => entry.sourceNoteId).sort(),
         ).toEqual(
           [
+            AGZ_FIXTURE_IDS.noteCurrentProcedure,
             AGZ_FIXTURE_IDS.noteOrphan,
             AGZ_FIXTURE_IDS.noteArchivedGap,
           ].sort(),
@@ -812,7 +834,9 @@ describe("M07 FAZ 2: crash, resume ve rollback", () => {
       const receipt = JSON.parse(
         await readFile(join(stageDir, "receipt.json"), "utf8"),
       ) as { counters: Record<string, number> };
-      expect(receipt.counters.applied + receipt.counters.duplicate).toBe(8);
+      expect(
+        receipt.counters.notes.applied + receipt.counters.notes.duplicate,
+      ).toBe(8);
     } finally {
       await source.close();
     }
@@ -883,8 +907,10 @@ describe("M07 FAZ 2: crash, resume ve rollback", () => {
           identity: rollbackEnv.owner,
           stageDir: staged.stageDir,
         });
-        expect(second.status).toBe("already_rolled_back");
+        expect(second.status).toBe("partial");
         expect(second.counters.rolledBack).toBe(0);
+        expect(second.counters.alreadyRolledBack).toBe(7);
+        expect(second.counters.conflict).toBe(1);
         expect((await fileSnapshot(cleanPath)).sha256).toBe(sourceHashBefore);
       } finally {
         await source.close();

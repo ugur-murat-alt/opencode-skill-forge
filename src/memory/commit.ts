@@ -57,7 +57,7 @@ import {
 
 export const MEMORY_CONTENT_MAX_BYTES = 48 * 1024;
 /** Source kinds whose text is user-authored and never silently rewritten. */
-const TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui"]);
+const TRUSTED_SOURCE_KINDS = new Set(["manual", "editor", "ui", "migration"]);
 
 export interface MemoryCommitHooks {
   /** Test-only crash injection: after file publication, before DB. */
