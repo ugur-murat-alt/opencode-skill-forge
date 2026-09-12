@@ -87,7 +87,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/web-acceptance
-          node scripts/web-acceptance.mjs --port 38471 \
+          node scripts/web-acceptance.mjs --port 38471 --scale-10k \
             --report artifacts/web-acceptance/report.json \
             --shots artifacts/web-acceptance/shots \
             2> artifacts/web-acceptance/stderr.log \

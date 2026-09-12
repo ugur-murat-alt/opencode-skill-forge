@@ -141,5 +141,45 @@
    "38",
    "41"
   ]
+ },
+ "final_round": {
+  "base_head": "73bfd7b",
+  "date": "2026-09-12",
+  "changes": [
+   "scripts/web-acceptance.mjs: 60 sn makbuz butcesi + terminal redde yeni event_key ile bounded re-ingest (#45)",
+   "scripts/web-acceptance.mjs: --scale-10k 10.000 kayit fixture olcumu (#37)",
+   ".github/workflows/verify.yml: ana kabul kosusuna --scale-10k eklendi",
+   "test/memory-backup-postgres.test.ts: gercek PostgreSQL backup/restore kaniti (#41)"
+  ],
+  "web_acceptance_scale_local": {
+   "command": "node scripts/web-acceptance.mjs --port 38471 --scale-10k",
+   "checks": 215,
+   "passed": 215,
+   "failed": 0,
+   "list_requests": 1,
+   "list_items": 50,
+   "list_dom_rows": 50,
+   "first_row_ms": 32,
+   "heap_before_mb": 27.7,
+   "heap_after_mb": 28.2,
+   "graph_nodes": 25,
+   "graph_edges": 50,
+   "graph_dom_nodes": 24,
+   "graph_truncated": true,
+   "verify_exit": 0,
+   "failure_gate": "inject login: run_exit=1; verify --expect-failure exit=0"
+  },
+  "pg_restore_proof": {
+   "test": "test/memory-backup-postgres.test.ts",
+   "server": "PostgreSQL 17.11",
+   "result": "1/1 pass, 21 expect",
+   "backup_suite": "memory-backup-cli + memory-backup-postgres + memory-backup-reconcile: 4/4 pass"
+  },
+  "remaining_boundaries": [
+   "Native Codex/Claude istemci matrisi: istemci CLI'leri bu ortamda yok",
+   "Canli model kalitesi/maliyeti: saglayici/hesap yok; sahte stream sample-limited",
+   "macOS/Windows kosusu: CI ubuntu; Windows EBUSY retry kodda var, platform kosusu yok",
+   "Retention otomatik silme yurutucusu: politika; kalici silme acik yetkili islem"
+  ]
  }
 }

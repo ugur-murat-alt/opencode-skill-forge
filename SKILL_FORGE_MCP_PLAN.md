@@ -1879,3 +1879,18 @@ Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türeti
   kapatıldı**; #37 (10k UI ölçümü), #38 (native istemci matrisi), #41 (native/canlı
   model/gerçek PG restore) ve epic #33 açık maddelerle bırakıldı. Canlı AGZ verisi
   değiştirilmedi; sürüm yayını ve üretim geçişi yapılmadı.
+
+#### Kapanış turu (2026-09-12, `73bfd7b` tabanı)
+- **#45 kabul dayanıklılığı:** makbuz bütçesi 60 sn; terminal reddedilen seed
+  olayı yeni `event_key` ile bounded re-ingest + not okumasından doğrulama.
+- **#37 10k UI ölçümü:** `--scale-10k` bayrağı ana CI kabul koşusuna eklendi;
+  yerel koşum **215/215** (1 liste isteği / 50 kayıt, ilk satır 32 ms, heap
+  27,7→28,2 MB, graf 25 düğüm/50 kenar `truncated`, DOM 24).
+- **#41 gerçek PG provası:** `test/memory-backup-postgres.test.ts` canlı
+  PostgreSQL 17.11'de CLI backup/restore + purge + yeniden indeks; yedek paketi
+  4/4 pass. Bu turda ürün davranışı değişmedi.
+- Kalan sınırlar şartlı kapanışa esas alındı: native Codex/Claude istemci
+  matrisi, canlı model ölçümü ve macOS/Windows koşusu bu ortamda çalıştırılamadı;
+  retention otomatik silme bilinçli olarak açık yetkili işlem. Ayrıntı:
+  `docs/tr/hafiza-kabul.md` §11 ve `docs/evidence/issues-progress-memory.json`
+  `final_round`.

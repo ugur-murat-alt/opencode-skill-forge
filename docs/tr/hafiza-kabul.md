@@ -435,3 +435,63 @@ integer` ile yazılamıyor (probe); SQLite 64-bit olduğu için gizli kalıyor.
 
 Üretilen raporlar `docs/evidence/memory/` altına commit edilmez; temiz artifact
 kökünde tutulur ve raporda yolu + SHA-256'sı belirtilir.
+
+## 11. Kapanış turu (12.09.2026, `73bfd7b` tabanı)
+
+Kampanyanın kalan ortam-bağımlı boşlukları kapatıldı; kalan sınırlar aşağıda
+açıkça ayrıldı. Bu turda ürün davranışı değişmedi; kabul altyapısı ve kanıt
+kapsamı genişletildi.
+
+### 11.1 Kabul koşusu sertleştirmesi (#45)
+
+`memoryReceiptWait` bütçesi 30 sn → 60 sn'ye çıkarıldı; seed yolları terminal
+reddedilen olayı yeni `event_key` ile (en çok 3 deneme) yeniden gönderiyor ve
+geç/yarış durumunda not okumasından committed doğrulaması yapıyor. Böylece
+proje-101 doğrudan silmesinin ardından yük altında oluşan geçici SQLite kilit
+çekişmesi kabul koşusunu düşürmüyor; asıl UI doğrulamaları aynen kalıyor.
+
+Koşum: `node scripts/web-acceptance.mjs --scale-10k` → **215/215 pass** (yerel
+gerçek Chromium, gerçek HTTP). `--verify` exit 0; kasıtlı `login` hatası kapısı
+kırmızı + hata görseli üretti ve `--verify --expect-failure` exit 0 verdi.
+
+### 11.2 10.000 kayıtlı UI ölçümü (#37)
+
+Fixture: 10.000 `memory_notes` + revision + index-head satırı çalışan sunucunun
+SQLite dosyasına tek transaction'da yazıldı (WAL, `busy_timeout`); hub notuna
+60 tipli kenar bağlandı. Ölçüm `--scale-10k` bayrağıyla ayrıca CI ana kabul
+koşusunda çalışır ve rapor JSON'una işlenir.
+
+| Metrik                     | Ölçüm                                | Kapı           |
+| -------------------------- | ------------------------------------ | -------------- |
+| Liste isteği (ilk yükleme) | 1 istek, `limit` yok (varsayılan 50) | ≤3 istek, ≤100 |
+| Liste sayfa boyutu         | items=50, dom_rows=50                | ≤100           |
+| İlk satır render süresi    | 32 ms                                | ≤5000 ms       |
+| JS heap                    | 27,7 MB → 28,2 MB (delta ~0,5 MB)    | ≤256 MB        |
+| Graf payload               | nodes=25, edges=50, `truncated=true` | ≤25 / ≤50      |
+| Graf DOM                   | 24 düğüm + merkez                    | ≤25            |
+
+Ölçüm; liste ve grafın 10k kayıtta bounded kaldığını, ilk açılışta tüm vault'un
+indirilmediğini ve grafiğin varsayılan sınırlarda kırpıldığını gösterir. Sayılar
+tek yerel koşumdandır; garanti değil, sürümlü ölçümdür.
+
+### 11.3 Gerçek PostgreSQL yedek/restore provası (#41)
+
+`test/memory-backup-postgres.test.ts` eklendi: canlı PostgreSQL 17.11 üzerinde
+CLI `backup` + `restore` (pg_dump/pg_restore 17 imajı), kabul edilmiş Markdown
+dosyaları, purge receipt'i ve restore sonrası türetilmiş indeks yeniden
+kurulumu; kaynak DB'de unutulan not hedefte dirilmiyor.
+
+Sonuç: yeni test 1/1 pass (21 expect); `memory-backup-cli` +
+`memory-backup-reconcile` ile birlikte **4/4 pass**.
+
+### 11.4 Kalan sınırlar (şartlı kapanış)
+
+- Gerçek Codex/Claude native oturum matrisi (#38): istemci CLI'leri bu ortamda
+  yok; sözleşme, spool, binding ve installer fixture düzeyinde ve gerçek M03
+  hattıyla kanıtlı, native istemci koşusu yapılmadı.
+- Canlı model kalitesi/maliyeti (#41): sağlayıcı/hesap yok; otomatik yazım
+  ölçümü deterministik sahte stream ile sample-limited.
+- macOS/Windows çalıştırması (#41): CI ubuntu; Windows'a özgü EBUSY retry kodda
+  var, yerel platform koşusu yok.
+- Retention otomatik silme yürütücüsü (#41): politika olarak tanımlı; kalıcı
+  silme bilinçli olarak açık yetkili işlem (tasarım kararı).

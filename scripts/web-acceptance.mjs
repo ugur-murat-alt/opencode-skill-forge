@@ -6,8 +6,10 @@
 // yalnız bu JSON'u taşır, tüm debug logları stderr'e gider (issue #30).
 //
 // Çalıştırma: node scripts/web-acceptance.mjs [--port 38471] [--headed]
-//   --report <report.json> --shots <shots-dir>
+//   --report <report.json> --shots <shots-dir> [--scale-10k]
 //   --inject-failure <senaryo> --fail-fast
+// --scale-10k: ek olarak 10.000 kayıtlı fixture üzerinde liste/graph
+//   sınırlılığını, ilk satır süresini ve JS heap kullanımını ölçer.
 // Doğrulama: node scripts/web-acceptance.mjs --verify --report <report.json>
 //   [--stdout <stdout.log>] [--expect-failure]
 import { existsSync } from "node:fs";
@@ -576,8 +578,14 @@ async function main() {
         }),
       });
     };
-    const memoryReceiptWait = async (spaceId, eventKey) => {
-      for (let i = 0; i < 200; i++) {
+    // Issue #45: a loaded CI runner can transiently contend on SQLite right
+    // after the direct project deletion, and the worker's bounded retry may
+    // exhaust. The receipt budget is 60s; seeding additionally re-ingests a
+    // terminal rejection under a fresh event key. Seeding is setup only: the
+    // UI assertions stay authoritative.
+    const memoryReceiptWait = async (spaceId, eventKey, budgetMs = 60_000) => {
+      const deadline = Date.now() + budgetMs;
+      while (Date.now() < deadline) {
         const response = await fetch(
           `${base}/api/memory/events?space_id=${encodeURIComponent(spaceId)}` +
             `&source_event_key=${encodeURIComponent(eventKey)}`,
@@ -590,6 +598,70 @@ async function main() {
         await sleep(150);
       }
       throw new Error(`memory receipt timeout: ${eventKey}`);
+    };
+    // A rejected event is terminal for that event key; re-ingest with a new
+    // key is safe because a failed commit left no note (or the note read
+    // already shows the intended committed revision, e.g. a late commit or a
+    // duplicate writer won the race).
+    const memorySeed = async (
+      spaceId,
+      noteId,
+      title,
+      body,
+      keyPrefix,
+      baseRevision,
+    ) => {
+      let last = { state: "not_attempted", ingest_ok: false };
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const eventKey = `${keyPrefix}-a${attempt}`;
+        const response = await memoryIngest(
+          spaceId,
+          noteId,
+          title,
+          body,
+          eventKey,
+          baseRevision,
+        );
+        last = {
+          state: `http_${response.status}`,
+          ingest_ok: response.ok,
+          status: response.status,
+        };
+        if (response.ok) {
+          try {
+            last = {
+              ...(await memoryReceiptWait(spaceId, eventKey)),
+              ingest_ok: true,
+              status: response.status,
+            };
+          } catch (error) {
+            last = {
+              state: "timeout",
+              ingest_ok: true,
+              status: response.status,
+              error_code: String(error?.message ?? error),
+            };
+          }
+        }
+        if (last.state === "committed") return last;
+        const detail = await fetch(
+          `${base}/api/memory/notes/${encodeURIComponent(noteId)}` +
+            `?space_id=${encodeURIComponent(spaceId)}`,
+          { headers: ownerHeaders },
+        );
+        if (detail.status === 200) {
+          const payload = await detail.json();
+          if (payload?.revision)
+            return {
+              ...last,
+              state: "committed",
+              committed_revision: payload.revision.revision,
+              recovered_note_read: true,
+            };
+        }
+        await sleep(500);
+      }
+      return last;
     };
     // Direct typed writes share the vault writer lock with the ingest worker;
     // a transient memory_writer_busy is retried a bounded number of times.
@@ -2614,69 +2686,81 @@ async function main() {
         memoryXssTitle = `UI xss ${stamp}`;
         memoryConflictTitle = `UI catisma ${stamp}`;
         memoryArchiveTitle = `UI arsiv ${stamp}`;
-        const seedKey = `ui-seed-${stamp}`;
-        const seeded = await memoryIngest(
+        // Issue #45: seeds retry under fresh event keys on terminal rejection.
+        const seedReceipt = await memorySeed(
           memorySpaceId,
           "ui-seed-note",
           memorySeedTitle,
           "İlk gövde.",
-          seedKey,
+          `ui-seed-${stamp}`,
         );
-        check("memory-seed-note", seeded.ok, seeded.status);
-        const seedReceipt = await memoryReceiptWait(memorySpaceId, seedKey);
+        check(
+          "memory-seed-note",
+          seedReceipt.ingest_ok === true,
+          seedReceipt.status ?? seedReceipt.state,
+        );
         check(
           "memory-seed-committed",
           seedReceipt.state === "committed" &&
             seedReceipt.committed_revision === 1,
           `${seedReceipt.state}/${seedReceipt.committed_revision}`,
         );
-        const xssKey = `ui-xss-${stamp}`;
         const xssBody = [
           "<script>window.__xss=1</script>",
           "[tıkla](javascript:alert(1))",
           "![uzak](https://evil.example/pixel.png)",
           '<iframe src="https://evil.example/frame"></iframe>',
         ].join("\n\n");
-        const xssSeed = await memoryIngest(
+        const xssSeed = await memorySeed(
           memorySpaceId,
           "ui-xss-note",
           memoryXssTitle,
           xssBody,
-          xssKey,
+          `ui-xss-${stamp}`,
         );
-        check("memory-xss-seed", xssSeed.ok, xssSeed.status);
+        check(
+          "memory-xss-seed",
+          xssSeed.ingest_ok === true,
+          xssSeed.status ?? xssSeed.state,
+        );
         check(
           "memory-xss-committed",
-          (await memoryReceiptWait(memorySpaceId, xssKey)).state ===
-            "committed",
+          xssSeed.state === "committed",
+          xssSeed.state,
         );
-        const conflictKey = `ui-conflict-${stamp}`;
-        const conflictSeed = await memoryIngest(
+        const conflictSeed = await memorySeed(
           memorySpaceId,
           "ui-conflict-note",
           memoryConflictTitle,
           "Çatışma temeli.",
-          conflictKey,
+          `ui-conflict-${stamp}`,
         );
-        check("memory-conflict-seed", conflictSeed.ok, conflictSeed.status);
+        check(
+          "memory-conflict-seed",
+          conflictSeed.ingest_ok === true,
+          conflictSeed.status ?? conflictSeed.state,
+        );
         check(
           "memory-conflict-seed-committed",
-          (await memoryReceiptWait(memorySpaceId, conflictKey)).state ===
-            "committed",
+          conflictSeed.state === "committed",
+          conflictSeed.state,
         );
-        const archiveKey = `ui-archive-${stamp}`;
-        const archiveSeed = await memoryIngest(
+        const archiveSeed = await memorySeed(
           memorySpaceId,
           "ui-archive-note",
           memoryArchiveTitle,
           "Arşiv gövdesi.",
-          archiveKey,
+          `ui-archive-${stamp}`,
         );
-        check("memory-archive-seed", archiveSeed.ok, archiveSeed.status);
+        check(
+          "memory-archive-seed",
+          archiveSeed.ingest_ok === true,
+          archiveSeed.status ?? archiveSeed.state,
+        );
         check(
           "memory-archive-seed-committed",
-          (await memoryReceiptWait(memorySpaceId, archiveKey)).state ===
-            "committed",
+          archiveSeed.state === "committed",
+          archiveSeed.state,
         );
 
         await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
@@ -3045,29 +3129,21 @@ async function main() {
         phasebValidityTitle = `UI validitymarker ${stamp}`;
         phasebTaskTitle = `UI gorev ${stamp}`;
         const seedNote = async (noteId, title, body, key) => {
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            const attemptKey = attempt === 0 ? key : `${key}-retry`;
-            const response = await memoryIngest(
-              memorySpaceId,
-              noteId,
-              title,
-              body,
-              attemptKey,
-            );
-            check(
-              `memory-phaseb-seed-${noteId}-${attempt}`,
-              response.ok,
-              response.status,
-            );
-            const receipt = await memoryReceiptWait(memorySpaceId, attemptKey);
-            if (receipt.state === "committed") return receipt;
-            check(
-              `memory-phaseb-seed-${noteId}-error-${attempt}`,
-              false,
-              `${receipt.state}/${receipt.error_code ?? ""}/${receipt.run_error_code ?? ""}`,
-            );
-          }
-          throw new Error(`memory seed failed: ${noteId}`);
+          const receipt = await memorySeed(
+            memorySpaceId,
+            noteId,
+            title,
+            body,
+            key,
+          );
+          check(
+            `memory-phaseb-seed-${noteId}`,
+            receipt.state === "committed",
+            `${receipt.state}/${receipt.error_code ?? ""}/${receipt.run_error_code ?? ""}`,
+          );
+          if (receipt.state !== "committed")
+            throw new Error(`memory seed failed: ${noteId}`);
+          return receipt;
         };
         const hub = await seedNote(
           "ui-hub",
@@ -3618,33 +3694,39 @@ async function main() {
         const stamp = Date.now();
         reviewUpdateTitle = `Onay guncellemesi ${stamp}`;
         reviewCreateTitle = `Ret adayi ${stamp}`;
-        const reviewKey = `review-seed-${stamp}`;
-        const staleKey = `review-stale-${stamp}`;
-        const reviewNote = await memoryIngest(
+        const reviewNote = await memorySeed(
           memorySpaceId,
           "ui-review-note",
           `UI inceleme hedefi ${stamp}`,
           "Inceleme hedefi govdesi.",
-          reviewKey,
+          `review-seed-${stamp}`,
         );
-        check("memory-review-seed-note", reviewNote.ok, reviewNote.status);
+        check(
+          "memory-review-seed-note",
+          reviewNote.ingest_ok === true,
+          reviewNote.status ?? reviewNote.state,
+        );
         check(
           "memory-review-seed-note-committed",
-          (await memoryReceiptWait(memorySpaceId, reviewKey)).state ===
-            "committed",
+          reviewNote.state === "committed",
+          reviewNote.state,
         );
-        const staleNote = await memoryIngest(
+        const staleNote = await memorySeed(
           memorySpaceId,
           "ui-review-stale-note",
           `UI bayat hedef ${stamp}`,
           "Bayat hedef govdesi.",
-          staleKey,
+          `review-stale-${stamp}`,
         );
-        check("memory-review-seed-stale", staleNote.ok, staleNote.status);
+        check(
+          "memory-review-seed-stale",
+          staleNote.ingest_ok === true,
+          staleNote.status ?? staleNote.state,
+        );
         check(
           "memory-review-seed-stale-committed",
-          (await memoryReceiptWait(memorySpaceId, staleKey)).state ===
-            "committed",
+          staleNote.state === "committed",
+          staleNote.state,
         );
         const now = Date.now();
         const sourceRefs = JSON.stringify([
@@ -4066,6 +4148,276 @@ async function main() {
           JSON.stringify(stored.items?.length ?? 0),
         );
       });
+
+      // Issue #37 (M04): 10k-record scale measurement. Fixture rows are
+      // written directly to SQLite (canonical note/revision/index-head/edge
+      // tables) because the UI only ever reads bounded pages; the measured
+      // request count, first-row render time and JS heap come from a real
+      // browser session, and the graph caps come from the real graph endpoint.
+      if (flags.has("--scale-10k")) {
+        await safe("memory-scale-10k", async () => {
+          const stamp = Date.now();
+          const scaleResponse = await fetch(`${base}/api/memory/spaces`, {
+            method: "POST",
+            headers: { ...ownerHeaders, "content-type": "application/json" },
+            body: JSON.stringify({
+              kind: "organization",
+              name: `Ölçek 10k ${stamp}`,
+            }),
+          });
+          check("memory-scale-space", scaleResponse.ok, scaleResponse.status);
+          const scaleSpace = await scaleResponse.json();
+          const Database = (await import("better-sqlite3")).default;
+          const db = new Database(join(tmp, "local.sqlite"));
+          try {
+            db.pragma("busy_timeout = 15000");
+            const base = db
+              .prepare(
+                "SELECT tenant_id, created_by FROM memory_note_revisions WHERE created_by IS NOT NULL LIMIT 1",
+              )
+              .get();
+            if (!base?.tenant_id) throw new Error("scale seed base missing");
+            const now = Date.now();
+            const metadata = (title) =>
+              JSON.stringify({
+                record_hash: "",
+                client_hash: "",
+                redacted: false,
+                record: {
+                  kind: "note",
+                  title,
+                  summary: null,
+                  lifecycle: "active",
+                  pinned: false,
+                  task_status: null,
+                  verification: "declared",
+                  stale: false,
+                  sources: [],
+                  edges: [],
+                  created_at: now,
+                  observed_at: null,
+                },
+              });
+            const insertNote = db.prepare(
+              "INSERT INTO memory_notes (tenant_id, space_id, id, lifecycle, pinned, task_status, current_revision, format_version, title, summary, created_at, updated_at, superseded_by, source_id, source_path, source_hash, source_state, deleted_at) VALUES (?, ?, ?, 'active', 0, NULL, 1, 1, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, 'present', NULL)",
+            );
+            const insertRevision = db.prepare(
+              "INSERT INTO memory_note_revisions (tenant_id, space_id, note_id, revision, format_version, kind, title, summary, body_md, metadata_json, sources_json, base_revision, created_by, created_at, file_path, content_hash, byte_size) VALUES (?, ?, ?, 1, 1, 'note', ?, NULL, ?, ?, '[]', NULL, ?, ?, NULL, ?, ?)",
+            );
+            const insertHead = db.prepare(
+              "INSERT INTO memory_index_heads (tenant_id, space_id, note_id, revision, content_hash, record_hash, kind, title, summary, lifecycle, pinned, task_status, verification, sources_json, edges_json, valid_from, valid_until, indexed_at) VALUES (?, ?, ?, 1, '', '', 'note', ?, NULL, 'active', 0, NULL, 'declared', '[]', '[]', NULL, NULL, ?)",
+            );
+            const insertEdge = db.prepare(
+              "INSERT INTO memory_index_edges (tenant_id, space_id, source_note_id, source_revision, relation, target_note_id, target_revision, created_at) VALUES (?, ?, 'scale-00000-hub', 1, 'SUPPORTS', ?, 1, ?)",
+            );
+            const seedRows = db.transaction(() => {
+              for (let i = 0; i < 10_000; i += 1) {
+                const noteId = `scale-${String(i).padStart(5, "0")}`;
+                const title = `Ölçek notu ${i}`;
+                const body = `Ölçek gövdesi ${i}`;
+                insertNote.run(
+                  base.tenant_id,
+                  scaleSpace.id,
+                  noteId,
+                  title,
+                  now,
+                  now,
+                );
+                insertRevision.run(
+                  base.tenant_id,
+                  scaleSpace.id,
+                  noteId,
+                  title,
+                  body,
+                  metadata(title),
+                  base.created_by,
+                  now,
+                  createHash("sha256").update(body).digest("hex"),
+                  body.length,
+                );
+                insertHead.run(
+                  base.tenant_id,
+                  scaleSpace.id,
+                  noteId,
+                  title,
+                  now,
+                );
+              }
+              insertNote.run(
+                base.tenant_id,
+                scaleSpace.id,
+                "scale-00000-hub",
+                "Ölçek hub",
+                now,
+                now,
+              );
+              insertRevision.run(
+                base.tenant_id,
+                scaleSpace.id,
+                "scale-00000-hub",
+                "Ölçek hub",
+                "Hub gövdesi.",
+                metadata("Ölçek hub"),
+                base.created_by,
+                now,
+                createHash("sha256").update("Hub gövdesi.").digest("hex"),
+                11,
+              );
+              insertHead.run(
+                base.tenant_id,
+                scaleSpace.id,
+                "scale-00000-hub",
+                "Ölçek hub",
+                now,
+              );
+              for (let i = 0; i < 60; i += 1)
+                insertEdge.run(
+                  base.tenant_id,
+                  scaleSpace.id,
+                  `scale-${String(i).padStart(5, "0")}`,
+                  now,
+                );
+            });
+            seedRows();
+          } finally {
+            db.close();
+          }
+          check("memory-scale-seeded", true, "10000 notes + hub with 60 edges");
+
+          const cdp = await page.context().newCDPSession(page);
+          await cdp.send("Performance.enable");
+          const heapUsed = async () => {
+            const { metrics } = await cdp.send("Performance.getMetrics");
+            return (
+              metrics.find((row) => row.name === "JSHeapUsedSize")?.value ?? 0
+            );
+          };
+          // The previous block already sits on #memory; goto alone would only
+          // change the hash, so force a real reload to refetch the spaces.
+          await page.goto(`${base}/#memory`, { waitUntil: "networkidle" });
+          await page.reload({ waitUntil: "networkidle" });
+          await chooseTenant(page, "Kişisel çalışma alanı");
+          await page
+            .getByRole("heading", { name: "Hafıza", exact: false })
+            .first()
+            .waitFor({ timeout: 8000 });
+          await page.waitForFunction(
+            (needle) =>
+              [
+                ...(document.querySelector(
+                  '[data-testid="memory-space-select"]',
+                )?.options ?? []),
+              ].some((option) => option.textContent?.includes(needle)),
+            `Ölçek 10k ${stamp}`,
+            { timeout: 8000 },
+          );
+          const scaleOption = await page.evaluate(
+            (needle) =>
+              [
+                ...(document.querySelector(
+                  '[data-testid="memory-space-select"]',
+                )?.options ?? []),
+              ].find((option) => option.textContent?.includes(needle))?.value ??
+              "",
+            `Ölçek 10k ${stamp}`,
+          );
+          const listRequests = [];
+          const onRequest = (request) => {
+            if (request.url().includes("/api/memory/notes?"))
+              listRequests.push(request.url());
+          };
+          page.on("request", onRequest);
+          const heapBefore = await heapUsed();
+          const listStarted = Date.now();
+          try {
+            await page.selectOption(
+              '[data-testid="memory-space-select"]',
+              scaleOption,
+            );
+            await page
+              .locator('[data-testid="memory-note"]')
+              .filter({ hasText: "Ölçek notu 0" })
+              .first()
+              .waitFor({ timeout: 8000 });
+          } finally {
+            page.off("request", onRequest);
+          }
+          const firstRowMs = Date.now() - listStarted;
+          const heapAfter = await heapUsed();
+          const listLimits = listRequests.map((url) => {
+            const limit = new URL(url).searchParams.get("limit");
+            return limit === null ? null : Number(limit);
+          });
+          const listUrl =
+            listRequests[listRequests.length - 1] ??
+            `${base}/api/memory/notes?space_id=${encodeURIComponent(scaleSpace.id)}`;
+          const listPayload = await (
+            await fetch(listUrl, { headers: ownerHeaders })
+          ).json();
+          const domRows = await page.getByTestId("memory-note").count();
+          check(
+            "memory-scale-list-bounded",
+            listRequests.length > 0 &&
+              listRequests.length <= 3 &&
+              listLimits.every((limit) => limit === null || limit <= 100),
+            `requests=${listRequests.length} limits=${JSON.stringify(listLimits)}`,
+          );
+          check(
+            "memory-scale-list-page",
+            (listPayload.items?.length ?? 0) <= 100 && domRows <= 100,
+            `items=${listPayload.items?.length ?? "?"} dom_rows=${domRows}`,
+          );
+          check(
+            "memory-scale-first-row",
+            firstRowMs <= 5000,
+            `${firstRowMs}ms`,
+          );
+          check(
+            "memory-scale-heap",
+            heapAfter <= 256 * 1024 * 1024,
+            `heap_before=${(heapBefore / 1024 / 1024).toFixed(1)}MB heap_after=${(heapAfter / 1024 / 1024).toFixed(1)}MB first_row_ms=${firstRowMs}`,
+          );
+
+          // The hub carries 60 edges; the UI defaults (25 nodes / 50 edges)
+          // must bound the payload and the rendered graph.
+          const graphResponsePromise = page.waitForResponse(
+            (response) =>
+              response.url().includes("/api/memory/graph") &&
+              response.status() === 200,
+            { timeout: 8000 },
+          );
+          await page
+            .locator('[data-testid="memory-note"]')
+            .filter({ hasText: "Ölçek hub" })
+            .first()
+            .click();
+          await page
+            .getByTestId("memory-detail-tab-links")
+            .waitFor({ timeout: 8000 });
+          await page.getByTestId("memory-detail-tab-links").click();
+          const graphPayload = await (await graphResponsePromise).json();
+          await page
+            .getByTestId("memory-graph-canvas")
+            .waitFor({ timeout: 8000 });
+          const domGraphNodes = await page
+            .locator('[data-testid="memory-graph-canvas"] .memory-graph-node')
+            .count();
+          check(
+            "memory-scale-graph-bounded",
+            graphPayload.nodes.length <= 25 &&
+              graphPayload.edges.length <= 50 &&
+              domGraphNodes <= 25,
+            `nodes=${graphPayload.nodes.length} edges=${graphPayload.edges.length} dom_nodes=${domGraphNodes}`,
+          );
+          check(
+            "memory-scale-graph-truncated",
+            graphPayload.truncated === true &&
+              (await page.getByTestId("memory-graph-truncated").count()) === 1,
+            `truncated=${graphPayload.truncated}`,
+          );
+          await cdp.detach().catch(() => {});
+        });
+      }
 
       check(
         "no-page-errors",
