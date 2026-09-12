@@ -454,6 +454,12 @@ Koşum: `node scripts/web-acceptance.mjs --scale-10k` → **215/215 pass** (yere
 gerçek Chromium, gerçek HTTP). `--verify` exit 0; kasıtlı `login` hatası kapısı
 kırmızı + hata görseli üretti ve `--verify --expect-failure` exit 0 verdi.
 
+Aynı turda ikinci bir geçici kilit sınıfı sertleştirildi: doğrudan yazı
+(checkpoint) geçici yazıcı kilidi sonrası aynı `event_key` ile yeniden
+denendiğinde, sunucu üretimli içerik (createdAt) değiştiği için
+`memory_event_conflict` alınıyordu. Kabul betiği retry'da yeni `event_key`
+kullanıyor; ilk deneme commit etmediği için bu güvenlidir.
+
 ### 11.2 10.000 kayıtlı UI ölçümü (#37)
 
 Fixture: 10.000 `memory_notes` + revision + index-head satırı çalışan sunucunun

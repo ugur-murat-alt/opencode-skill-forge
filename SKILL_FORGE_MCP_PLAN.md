@@ -1882,7 +1882,8 @@ Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türeti
 
 #### Kapanış turu (2026-09-12, `73bfd7b` tabanı)
 - **#45 kabul dayanıklılığı:** makbuz bütçesi 60 sn; terminal reddedilen seed
-  olayı yeni `event_key` ile bounded re-ingest + not okumasından doğrulama.
+  olayı yeni `event_key` ile bounded re-ingest + not okumasından doğrulama;
+  doğrudan yazı retry'ı da geçici kilit sonrası yeni `event_key` kullanıyor.
 - **#37 10k UI ölçümü:** `--scale-10k` bayrağı ana CI kabul koşusuna eklendi;
   yerel koşum **215/215** (1 liste isteği / 50 kayıt, ilk satır 32 ms, heap
   27,7→28,2 MB, graf 25 düğüm/50 kenar `truncated`, DOM 24).

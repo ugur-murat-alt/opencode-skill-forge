@@ -147,6 +147,7 @@
   "date": "2026-09-12",
   "changes": [
    "scripts/web-acceptance.mjs: 60 sn makbuz butcesi + terminal redde yeni event_key ile bounded re-ingest (#45)",
+   "scripts/web-acceptance.mjs: dogrudan yazi retry'inda yeni event_key (gecici writer_busy sonrasi memory_event_conflict onlendi)",
    "scripts/web-acceptance.mjs: --scale-10k 10.000 kayit fixture olcumu (#37)",
    ".github/workflows/verify.yml: ana kabul kosusuna --scale-10k eklendi",
    "test/memory-backup-postgres.test.ts: gercek PostgreSQL backup/restore kaniti (#41)"

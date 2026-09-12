@@ -665,12 +665,20 @@ async function main() {
     };
     // Direct typed writes share the vault writer lock with the ingest worker;
     // a transient memory_writer_busy is retried a bounded number of times.
+    // The checkpoint/update payloads assemble server-side content with
+    // server-generated timestamps, so resending the same event_key after a
+    // transient error would be rejected as memory_event_conflict; retries use
+    // a fresh event_key instead (the first attempt did not commit).
     const memoryDirectWrite = async (path, body) => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        const attemptBody =
+          attempt === 0 || !body?.event_key
+            ? body
+            : { ...body, event_key: `${body.event_key}-r${attempt}` };
         const response = await fetch(`${base}${path}`, {
           method: "POST",
           headers: { ...ownerHeaders, "content-type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(attemptBody),
         });
         const payload = await response.json().catch(() => ({}));
         const transient =
