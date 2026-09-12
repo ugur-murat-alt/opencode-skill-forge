@@ -176,6 +176,15 @@
    "result": "1/1 pass, 21 expect",
    "backup_suite": "memory-backup-cli + memory-backup-postgres + memory-backup-reconcile: 4/4 pass"
   },
+  "ci": {
+   "head": "4b240fb",
+   "push_run": "34701442504",
+   "pr_run": "34701444492",
+   "merge_commit": "e0898d8",
+   "jobs": "beş iş yeşil (linux-contracts, web-acceptance, portable-artifact linux/macos/windows)",
+   "web_acceptance": "215/215; --scale-10k: ilk satır 35 ms, heap 23.5->24.1 MB, liste 1 istek/50 kayıt, graf 25 düğüm/50 kenar truncated",
+   "pg_backup": "yeni PostgreSQL yedek/restore testi linux-contracts içinde geçti"
+  },
   "remaining_boundaries": [
    "Native Codex/Claude istemci matrisi: istemci CLI'leri bu ortamda yok",
    "Canli model kalitesi/maliyeti: saglayici/hesap yok; sahte stream sample-limited",

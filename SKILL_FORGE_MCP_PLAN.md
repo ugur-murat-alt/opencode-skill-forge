@@ -1895,3 +1895,10 @@ Main'e girmeyi bekleyen uygulama ve doğrulama katmanları (dal main'den türeti
   retention otomatik silme bilinçli olarak açık yetkili işlem. Ayrıntı:
   `docs/tr/hafiza-kabul.md` §11 ve `docs/evidence/issues-progress-memory.json`
   `final_round`.
+- Entegrasyon PR'ı **#46** birleşti (merge `e0898d8`); push `34701442504` ve PR
+  `34701444492` beş işte yeşil (linux-contracts, web-acceptance, portable-artifact
+  linux/macos/windows). Web kabulü `--scale-10k` ile **215/215**; CI ölçümü:
+  ilk satır 35 ms, heap 23,5→24,1 MB, graf 25 düğüm/50 kenar `truncated`.
+  **#45, #37, #41** ve **#38** kapatıldı; #41/#38 sınır kaydıyla şartlı,
+  epic **#33** kapatıldı. Canlı AGZ verisi değiştirilmedi; sürüm yayını ve
+  üretim geçişi yapılmadı.
